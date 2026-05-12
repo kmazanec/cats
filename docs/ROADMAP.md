@@ -16,82 +16,99 @@
 
 ## How this roadmap is organized
 
-CATS is built in **rounds**, each delivering a demonstrable
-increment of working product. The first two rounds are larger by
-necessity — Round 1 stands up the foundation; Round 2 brings every
-agent into existence in its most basic form. From Round 3 onward,
-each iteration is **tightly scoped to a single category or
-technique** from the threat model — *adding scope to existing
-agents, not building new ones.*
+CATS is built in **rounds**. Each round ships an increment of
+working product a user can pick up and use. The first two rounds
+are larger by necessity: Round 1 stands up the platform's
+foundations (users, targets, audit, reachability), and Round 2
+lands the first end-to-end attack against the live target —
+after Round 2, CATS *does* the thing it exists to do, even if
+only one technique is covered. From Round 3 onward, each round
+is **tightly scoped to a single attack category or technique
+from the threat model**, deepening coverage rather than adding
+internal machinery.
 
 This shape exists to avoid the classic agile failure mode of "we
 built lots of infrastructure but nothing demoable." After Round 2,
 CATS is the platform; everything that follows is the platform
-getting better at its job.
+getting better at its job. Each round is meant to be small
+enough to ship cleanly and self-contained enough that the user
+can see the value before the next round starts.
 
 ### Definition of done — applies to every round
 
 Every round, regardless of scope, must satisfy these gates before
 it is considered complete:
 
-1. **Demoable.** The round's stated outcome is exercisable end-to-end
-   against the live deployed co-pilot (or against the local docker
-   target where the round explicitly says so).
-2. **Tested.** Unit tests cover new pure-function logic.
-   Integration tests cover new agent behavior using fake LLMs and
-   the fake target Co-Pilot harness. Both run in CI on every commit.
-3. **Evaluated** where relevant. If the round adds to the Judge's
-   fixture set or category prompts, the eval suite runs against
-   real LLMs (nightly CI job, not per-commit) and meets the
-   per-category accuracy threshold.
+1. **Demoable.** The round's stated outcome works end-to-end
+   against the live target the round names — usually the
+   deployed Co-Pilot.
+2. **Tested at two levels.** Fast, deterministic tests cover the
+   round's logic and run on every change. Slower, real-model
+   evaluations run on a schedule (not on every change) to keep
+   the judge honest.
+3. **Evaluated where it matters.** When a round changes how the
+   judge decides things, the round comes with an answer key the
+   judge is measured against, and the agreed accuracy bar is met.
 4. **Documented.** The round's `Tasks`, `Decisions`, and
    `Retrospective` sections in this doc are filled in. Any
    architectural change is reflected back into
    [`../ARCHITECTURE.md`](../ARCHITECTURE.md) or
    [`../THREAT_MODEL.md`](../THREAT_MODEL.md) as appropriate.
-5. **Audit-logged.** Every campaign run in this round is captured
-   in the `audit_log` table per `ARCHITECTURE.md` §6.1, even in
-   dev.
-6. **Type-clean.** `mypy --strict` passes; `ruff check` passes.
+5. **Audit-logged.** Every action a user or the platform takes
+   during the round is captured in the platform's audit trail
+   — even in dev. The trust boundaries described in
+   [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §6.1 are not
+   optional for some environments.
+6. **Engineering quality.** The platform's standard engineering
+   quality checks pass — typing, linting, test suite — on every
+   change. The specifics of those checks belong with the engineering
+   contribution rules, not this product roadmap.
 7. **Secrets-clean.** No real credentials in the repo, in
-   commits, or in test fixtures.
+   commits, in test fixtures, or in logs.
 
 ### Cross-cutting workstreams
 
-Some work is not a milestone — it threads through every round and
-needs continuous attention rather than a single ship date.
+Some work is not a milestone — it threads through every round
+and needs continuous attention rather than a single ship date.
 
-- **CI/CD.** GitLab jobs running ruff + mypy
-  + pytest on every push from Round 1 forward. Nightly job
-  running real-LLM evals from Round 3 forward.
-- **Security hygiene.** OpenRouter keys per-env, spend caps, no
-  `Authorization` header logging, `.env` in `.gitignore`,
-  pre-commit hook for secrets scanning. Continuous from Round 1.
-- **Observability.** LangSmith tracing on every LLM call from
-  Round 2 forward. Postgres-backed coverage and cost rollups
-  from Round 2 forward. Dashboard panels added per round as the
-  data appears.
-- **Threat-model sync.** When a round teaches us something about
-  the target (new attack surface, a defense that holds or
-  doesn't), update [`../THREAT_MODEL.md`](../THREAT_MODEL.md) §6
-  verification results.
+- **Automated checks on every change.** From Round 1 forward,
+  every change runs the platform's quality checks
+  automatically. From Round 3 forward, a separate scheduled
+  job exercises the judge against real models so we know it
+  hasn't drifted.
+- **Security hygiene.** Keys, budgets, and credentials are
+  managed conservatively from the first round and stay that
+  way — every round inherits the discipline; no round gets to
+  relax it.
+- **Observability.** Once the platform starts running attacks
+  (Round 2 forward), every action is traced and every cost is
+  attributed. Dashboard surfaces grow as the platform produces
+  new data; the rule is that nothing the platform does is
+  invisible to the user.
+- **Keeping the threat model honest.** When a round teaches us
+  something new about the target — a defense that holds or
+  doesn't, an attack surface we hadn't catalogued — the threat
+  model is updated. It's a living document, not a snapshot.
 
 ### Out of scope for this roadmap
 
 These are deliberate post-roadmap items. Surfacing them here
 prevents scope creep into earlier rounds.
 
-- White-hat mode (per [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §7).
-  Data model is forward-compatible from Round 1 (`mode` and
-  `exploitability` columns); implementation is post-roadmap.
-- Multi-tenant deployments (different teams sharing one CATS
-  instance with isolated Project sets).
-- Dashboard polish beyond the operator-functional minimum —
-  charts, heatmaps, custom views.
-- Cross-Judge ensemble voting (decision deferred until single-Judge
-  drift is empirically observed).
-- BYOK direct routing for cost optimization at 100K-run scale.
-- Self-hosted inference workers.
+- **White-hat mode**, the platform-as-defender's-red-team
+  variant described in [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+  §7. The platform's data model leaves room for it from
+  Round 1 onward, but its activation comes later.
+- **Multi-tenant deployments.** One CATS instance serving
+  multiple teams with isolated target sets.
+- **Dashboard polish** beyond the functional minimum each round
+  requires — fancy charts, custom views, heat maps.
+- **Multiple judges voting on findings.** Held back until
+  real evidence shows the single-judge approach drifts.
+- **Cost-optimization work** for very large run scales —
+  alternate model-provider arrangements, dedicated inference
+  capacity. Worth doing when CATS is running enough volume to
+  justify the engineering investment; not now.
 
 ### Round template
 
@@ -112,79 +129,69 @@ Every round below uses the same shape:
 
 ## Round 1 — Foundation
 
-**Goal.** Stand up the rails for everything else: a CATS service
-that knows about Projects and can talk to OpenRouter and LangSmith,
-behind authentication and audit logging, with no agents yet.
+**Goal.** Give a user somewhere to log in, somewhere to register
+the targets they want CATS to test, and confidence that the
+platform can reach the external services it depends on.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. `cats project add <name> --base-url=...` register a target
-2. `cats project list` see registered Projects
-3. Open the dashboard at `localhost:8080` and see the Projects list
-4. Authenticate (basic role-gated auth) and verify the audit log
-   captured the login
-5. Run `cats health` and see a green OpenRouter check, green
-   LangSmith check, green Postgres check, green Redis check
+1. Sign in with a role that determines what they can do.
+2. Register a new target (a deployed Co-Pilot URL or a local
+   docker version of it), edit it, and delete it.
+3. See the list of registered targets and which environment each
+   one lives in.
+4. See an audit trail showing who did what, when.
+5. Run a one-command health check and get a clear yes/no answer
+   on whether CATS can reach its model provider, its trace sink,
+   and its own data store.
 
 **Scope.**
 
 In:
-- Python service skeleton (FastAPI, alembic, pydantic, async
-  SQLAlchemy or psycopg, redis-py)
-- Postgres schema: `projects`, `audit_log`, `campaigns` (empty
-  table, schema only), `users` for auth, with `mode` and
-  `exploitability` columns on `findings` reserved for the
-  white-hat track even though the table is otherwise empty
-- Project CRUD via CLI and REST (`POST /projects`,
-  `GET /projects`, `PATCH /projects/<id>`, `DELETE /projects/<id>`)
-- Project `allow_run_against` flag (defaults to false)
-- Four-role RBAC (`viewer`, `operator`, `senior_operator`, `admin`)
-- OpenRouter client wrapper with per-env key from env vars + spend
-  cap + family-diversity policy as data (not enforced yet — just
-  the config schema)
-- LangSmith client wrapper with project name from env
-- Dashboard skeleton: HTMX-served `/`, `/projects`, `/audit`, all
-  read-only views
-- Audit log table + middleware that writes every authenticated
-  request to it
-- `cats health` CLI command exercising all external dependencies
+- Authentication, roles, and audit visibility for those roles
+- The "Project" concept (the unit CATS tests against) — create,
+  edit, list, delete; tag with environment; mark as runnable or
+  not
+- An always-on, append-only record of who did what
+- Reachability checks against every external service the
+  platform depends on, surfaced as a one-shot operational
+  command
+- A minimal, functional dashboard that shows the above to the
+  right roles
 
 Out:
-- Any agent (Round 2)
-- Any campaign-start endpoint (Round 2)
-- Any Findings UI (Round 3+)
-- Any dashboard styling beyond functional minimum
+- Any agent behavior — no campaigns, no attacks, no findings
+- Any view of findings or attack history
+- Dashboard styling beyond what's needed to demonstrate the
+  surfaces above
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] Local docker-compose brings up Postgres + Redis + the CATS
-      service with one command
-- [ ] All four global health checks green
-- [ ] Project CRUD round-trip tested end-to-end via integration
-      test
-- [ ] Audit log row exists for every CRUD action in the test
-- [ ] Dashboard accessible via browser, all three pages render
-      with seeded data
-- [ ] Pre-commit hook installed and verified to catch a planted
-      secret
-- [ ] CI pipeline running on every push: ruff, mypy --strict,
-      pytest (unit + integration)
-- [ ] README updated with quickstart commands
-- [ ] At least one Project successfully registered against the
-      deployed co-pilot URL (live target)
+- [ ] A new engineer can follow the README and register their
+      first target end-to-end in well under ten minutes.
+- [ ] At least one real target — the deployed Co-Pilot — is
+      registered and visible in the dashboard.
+- [ ] Performing any user action (sign-in, create, edit, delete)
+      produces an audit-log entry visible in the dashboard.
+- [ ] A user with the wrong role cannot perform a privileged
+      action, and the dashboard makes that obvious rather than
+      silently swallowing the attempt.
+- [ ] The health check accurately reports green when everything
+      is wired and red (with which dependency is failing) when
+      it isn't.
 
 **Risks & blockers.**
 
-- **OpenRouter keys.** Need a development account with budget
-  before any LLM-touching round. Resolve at start of R1.
-- **LangSmith project setup.** Project name must match co-pilot's
-  org per [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §3.4. Verify
-  early.
-- **Postgres on the droplet.** Confirm capacity / port / managed
-  vs self-hosted before R1 deploy.
-- **Auth scope creep.** RBAC is easy to over-engineer. Aim for
-  the cheapest correct implementation (e.g. four-row roles table,
-  middleware decorator); resist building a full identity system.
+- **External service access.** We need accounts and budget on
+  every external dependency before downstream rounds can use
+  them. Resolve early in this round, not later.
+- **Scope creep on auth.** Identity is easy to over-engineer.
+  The bar is "the right roles can do the right things and the
+  audit log shows it" — not a full identity platform.
+- **The deployed target's readiness.** This round is the first
+  time CATS tries to register the live Co-Pilot. If the
+  Co-Pilot's URL or authentication contract isn't pinned down
+  before this round starts, the round can't complete.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -202,101 +209,88 @@ Out:
 
 ---
 
-## Round 2 — All seven agents end-to-end on one technique
+## Round 2 — First end-to-end attack against the live target
 
-**Goal.** Every agent role from
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1 exists in its most
-basic form, wired through the LangGraph state machine, end-to-end
-against the live target. The platform becomes the platform.
+**Goal.** Make CATS *do* the thing it exists to do: take a single
+known attack technique, run it against the live target, evaluate
+whether it worked, and produce a vulnerability report — with
+every agent role from the architecture in place to play its
+part. After this round, the platform is the platform.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. `cats campaign run --project=<id> --category=prompt-injection-direct`
-2. Watch the dashboard's `/campaigns/<id>` page show the
-   Orchestrator's plan, then the Injection specialist's attack,
-   then the Output Filter's verdict, then the Judge's verdict,
-   then a Finding row appearing in `/findings`
-3. Click into the Finding to see the attack, response, Judge
-   verdict, and LangSmith trace deep-link
-4. See cost / token usage per agent in the dashboard
+1. Start a campaign against a registered target from the
+   command line, picking one attack category.
+2. Watch the campaign unfold live in the dashboard: see the
+   plan being made, see the attack being generated, see it
+   reach the target, see the verdict come back, see a finding
+   appear.
+3. Open the finding in the dashboard and see the attack, the
+   target's response, the judge's verdict, and a deep-link out
+   to the trace of every LLM call that produced it.
+4. See how much each agent contributed to the cost of the
+   campaign.
 
 **Scope.**
 
 In:
-- All seven agent nodes implemented in their basic shape:
-  - **Orchestrator** — for R2, a *trivial* policy: "run the
-    category specified in the campaign config, one attack, then
-    halt." Bandit policy is post-R2.
-  - **Red Team Router** — dispatches to the single Injection
-    specialist; other specialists return `not implemented` for now.
-  - **Injection Specialist** — one hard-coded attack from the
-    threat-research corpus (e.g. Policy Puppetry against the
-    co-pilot's chat endpoint). System prompt + zero-shot Hermes 4
-    call.
-  - **Mutator** — for R2, identity-only (returns the attack
-    unchanged). Real mutation is Round 3+.
-  - **Output Filter** — regex layer only (LLM classifier deferred
-    to a later round). Strips zero-width, NFKC-normalizes,
-    quarantines obvious PII patterns.
-  - **Judge** — deterministic-only for R2. For Policy Puppetry the
-    success condition is "did the response contain the planted
-    instruction's payload?" — string-match check, no LLM rubric.
-  - **Documentation Agent** — Claude Sonnet 4.6 writes a
-    structured `vulnerability_reports` row. No critical-severity
-    human gate yet (every Finding is severity `medium` in R2).
-- Postgres tables filled out: `campaigns`, `attack_events`,
-  `findings`, `vulnerability_reports` (with the `mode` and
-  `exploitability` columns set to defaults)
-- LangGraph state machine wiring with checkpointing
-- LangSmith tracing on every LLM call
-- Dashboard pages: `/campaigns/<id>` (live SSE-fed), `/findings`,
-  `/findings/<id>`
-- `cats campaign run` CLI
-- Per-agent cost tracking in `attack_events`
+- A working end-to-end pipeline against the live target for a
+  single, well-defined attack technique
+- All agent roles present and exercising their basic job — even
+  the ones that don't have rich behavior yet (e.g. the Mutator
+  is present and visible even if it just passes the attack
+  through unchanged this round)
+- A live campaign view in the dashboard
+- A findings list and a per-finding detail view
+- Per-agent cost visibility on each campaign
 
 Out:
-- Real Orchestrator bandit (Round 4 or later)
-- Real Mutator (Round 4 or later)
-- LLM-classifier output filter (later)
-- Critical-severity human gate (later)
-- Multiple specialists working (Round 3 brings Exfil; Round 4
-  ToolAbuse; etc.)
-- Regression harness / triple gate (Round N where it matters)
+- Multiple attack techniques (later rounds expand category by
+  category)
+- Real adaptive planning — the orchestrator just runs the
+  technique the user named, end of story
+- Real variant generation
+- Smart safety filtering of the agents' output (a basic
+  pattern-based safety net is enough this round)
+- Approval gates on high-severity findings (later round)
+- Re-running findings against new releases to verify fixes
+  (later round)
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] A campaign starts via CLI and produces exactly one Finding
-      row against the live deployed co-pilot
-- [ ] Every LangGraph node transition is checkpointed and
-      resumable (kill the process mid-campaign, restart, finish)
-- [ ] Every LLM call has a LangSmith trace; the Finding row
-      carries the trace ID
-- [ ] Integration test: full pipeline against a fake target Co-Pilot
-      with a fake LLM, deterministic and runs under 5 seconds
-- [ ] Integration test for each agent node in isolation against
-      a stubbed upstream
-- [ ] Cost per agent is non-zero and reasonable in
-      `attack_events` rows
-- [ ] Output filter integration test: a payload containing a
-      planted PII pattern is quarantined and does not reach the
-      target
+- [ ] A campaign against the live deployed Co-Pilot produces
+      one finding, end-to-end, every time.
+- [ ] If the campaign is interrupted mid-run, it can be resumed
+      from where it left off without re-doing completed work.
+- [ ] The dashboard's campaign view updates live as the
+      campaign progresses — no manual refresh.
+- [ ] Every finding carries a trace deep-link that brings the
+      reader to the full LLM-call history that produced it.
+- [ ] The platform records per-agent cost on every campaign,
+      and that cost shows up in the dashboard.
+- [ ] An obviously unsafe payload generated by an agent is
+      caught by the safety net before it reaches the live
+      target — there is a test that demonstrates this.
 
 **Risks & blockers.**
 
-- **Hermes 4 availability on OpenRouter.** Validate model ID and
-  pricing at start of R2; if availability is flaky, swap fallback
-  order in the model assignment table.
-- **LangGraph checkpointer version.** Pin per
-  [`../THREAT_MODEL.md`](../THREAT_MODEL.md) §6.1 audit (Postgres
-  checkpointer; no SQLite). Verify before R2 begins.
-- **Fake target Co-Pilot harness.** Need this for fast integration
-  tests; building it well is itself a small project. Budget time.
-- **LangSmith trace volume.** Free tier may not cover R2 + nightly
-  evals. Verify plan/billing before R2.
-- **The "hard-coded attack" temptation.** Round 2's Injection
-  specialist runs one zero-shot attack. Resist the urge to add
-  variants here — that is Round 3's job. Keep R2 boring on the
-  attack-craft side so all the energy goes into wiring.
+- **External-model availability.** This is the first round that
+  actually depends on the chosen LLM providers being up,
+  responsive, and within budget for the operator's account.
+  Validate at the start of the round.
+- **Live target behavior under attack.** This is the first round
+  CATS actually attacks the deployed Co-Pilot. The Co-Pilot's
+  team needs to be aware so they don't mistake the activity for
+  a real incident, and rate limits / IP allow-lists need to be
+  squared away.
+- **Test infrastructure for agents.** Building agents that
+  exercise external services without a way to run them
+  deterministically in tests will eat the round. Plan for
+  test-time fakes early.
+- **The "one technique" discipline.** This round is one
+  technique, full stop. Adding a second is what Round 3 is
+  for. Resist scope creep — the value of this round is
+  end-to-end shape, not attack coverage.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -316,82 +310,77 @@ Out:
 
 ## Round 3 — Prompt Injection, in depth
 
-**Goal.** Take the rank-1 category from
-[`../THREAT_MODEL.md`](../THREAT_MODEL.md) §2.1 (L×I = 25) and
-make it real — the Injection specialist now exercises the full
-technique table, the Mutator actually mutates, the Judge handles
-behavioral cases via the LLM rubric, and the Finding output is
-publishable.
+**Goal.** Take the highest-priority attack category from the
+threat model and exercise it for real. Up to this point CATS has
+proven it can run one attack; now it learns to run a *family* of
+related attacks, iterate on the ones that show promise, and
+produce a vulnerability report a security engineer could act on.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run a campaign with `--category=prompt-injection` and have the
-   Injection specialist try multiple techniques (Policy Puppetry,
-   Many-Shot Jailbreaking, Crescendo single-shot, encoded
-   payloads, SPE-LLM extraction probes)
-2. See the Mutator producing variants of partial-successes
-3. See the Judge using deterministic-first then LLM rubric, with
-   the rubric version recorded on every verdict
-4. Open a Finding and see it labeled with its MITRE ATLAS
-   technique ID and OWASP LLM Top 10 ID
-5. Run the nightly eval CI job and see Injection-category Judge
-   accuracy reported against the ground-truth fixture set
+1. Run a campaign in the prompt-injection category and see the
+   platform attempt several distinct techniques in one run —
+   not just one technique repeated.
+2. Watch the platform automatically iterate when an attack
+   partially succeeds: it produces variants of the
+   near-success, looking for one that fully breaks through.
+3. Open any finding and see it labeled with the industry-standard
+   classifications that a CISO or external auditor would
+   recognize.
+4. Trust that the judge's verdicts are consistent: there is a
+   nightly accuracy check against a hand-labeled answer key, and
+   the build fails if the judge drifts below the agreed bar.
+5. Read at least one polished vulnerability report produced by
+   CATS, suitable for handing to the Co-Pilot's owning team.
 
 **Scope.**
 
 In:
-- Injection specialist prompt expanded to cover the
-  [`./W3_THREAT_RESEARCH.md`](./W3_THREAT_RESEARCH.md) §1.1, §1.3,
-  §1.6, §1.8 technique table — direct injection only for this
-  round (docx indirect is Round 4)
-- Mutator implementation: real Mutator on DeepSeek V3.2 producing
-  N variants of a partial-success
-- Judge rubric v1 for `prompt-injection-direct` category, locked
-  and versioned in `cats/categories/prompt-injection-direct/rubric/v1.md`
-- Ground-truth fixture set: 30-50 hand-labeled
-  `(attack, response, expected_verdict)` triples seeded from
-  LLMail-Inject + hand-authored against co-pilot specifics
-- Per-category deterministic post-condition implementations
-  (canary string match, SPE locked-prompt extraction detector,
-  emitted-URL pattern check)
-- Nightly CI eval job running real-LLM Judge against fixtures;
-  fails the build if accuracy drops below 95% on Injection
-- Findings carry `atlas_technique_id` and `owasp_llm_id` columns
-- Documentation Agent produces a real vulnerability report (the
-  brief requires ≥3 by Final; this round delivers the first one)
+- Several distinct direct-injection techniques run in one
+  campaign — the platform picks among them, not just the user.
+- Real variant generation when an attack partially succeeds.
+- An evaluation regime for the judge: a versioned answer key,
+  a nightly check against it, and an accuracy threshold the
+  build enforces.
+- Industry-standard labels (the relevant adversarial AI and
+  LLM-security taxonomies) on every finding.
+- The first polished, hand-reviewed vulnerability report.
 
 Out:
-- Indirect injection via uploaded docx (Round 4 — different
-  pipeline, deserves its own round)
-- Real Orchestrator bandit (Round 6 or later — Round 3 still
-  uses the trivial "run this category" policy from R2)
-- Other categories (Exfil = Round 5, etc.)
+- Attacks that arrive through uploaded documents (next round).
+- Other attack categories (Exfil, ToolAbuse — their own rounds).
+- The platform deciding what category to test on its own (later
+  round; this round, the user still names the category).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] Injection specialist's system prompt covers all five
-      direct-injection sub-techniques from §1.1, §1.3, §1.6, §1.8
-- [ ] Mutator produces N ≥ 3 variants per partial-success and
-      these are visible in `attack_events`
-- [ ] Locked rubric v1 lives at the per-category path; CI
-      forbids modifying v1 (must bump to v2 instead)
-- [ ] Judge fixture set has at least 30 entries; nightly eval
-      passes with accuracy ≥ 95%
-- [ ] One vulnerability report exists at
-      `reports/<finding-id>.md` produced by the Documentation
-      Agent and reviewed by a human
-- [ ] Finding rows carry both ATLAS and OWASP IDs
+- [ ] A single campaign visibly exercises multiple distinct
+      techniques and visibly produces variants of partial
+      successes.
+- [ ] The judge has a locked, versioned answer key for this
+      category, and the nightly accuracy check passes against
+      a stated threshold.
+- [ ] If the answer key needs to change, the change is a *new
+      version* of the key — the old version stays intact for
+      historical comparison.
+- [ ] At least one finished, human-readable vulnerability
+      report exists in the repo for a finding from this round.
+- [ ] A non-author reading the report could reproduce the
+      finding from what's written there.
 
 **Risks & blockers.**
 
-- **Fixture labeling bias.** Hand-labeling 30-50 triples is real
-  hand-work and the labels can reflect the labeler's blind spots.
-  Mitigation: have a second reviewer spot-check 20% of labels.
-- **Judge LLM cost on nightly eval.** 30-50 fixtures × Haiku 4.5
-  is small per run but adds up. Cap nightly spend explicitly.
-- **Rubric drift across LLM versions.** If OpenRouter routes us
-  to a different Haiku build than yesterday, accuracy can shift.
-  Pin via OpenRouter's provider config; alert on drift.
+- **The answer key is hand-built.** Labeling enough examples to
+  judge the judge takes real human effort, and the labeler's
+  blind spots become the platform's blind spots. Get a second
+  pair of eyes on a portion of the labels.
+- **Cost discipline on the nightly check.** Running the judge
+  against an answer key every night is small per run but grows
+  with the key. Cap the spend explicitly.
+- **Vendor-side model drift.** If the model behind the judge
+  changes subtly between today and tomorrow, accuracy can shift
+  without code changes. Pin where the platform allows it and
+  alert on drift.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -417,75 +406,64 @@ uploaded `.docx` referral letters (the EchoLeak / ForcedLeak
 shape). This round teaches the platform to *upload* attacks, not
 just send them in chat.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run a campaign with `--category=prompt-injection-indirect-docx`
-   and watch the Injection specialist generate adversarial docx
-   payloads
-2. See the Output Filter accept them (they're attack payloads, not
-   dangerous PII)
-3. See the campaign upload them to the live co-pilot via the docx
-   ingestion endpoint
-4. See the Judge verify whether the planted instruction reached
-   the model's behavior (via canary token leak or behavioral
-   tell)
-5. See findings labeled with the specific docx technique that
-   succeeded (white-text / zero-width / homoglyph / etc.)
+1. Run a campaign that delivers its attacks as uploaded
+   documents rather than as chat messages.
+2. See the platform craft adversarial documents — documents
+   that look ordinary to a clinician but carry hidden
+   instructions for the AI that reads them.
+3. Watch those documents go through the Co-Pilot's real upload
+   path and see whether the planted instructions survived.
+4. Open findings labeled with the specific *type* of
+   document-based attack that succeeded, so the Co-Pilot team
+   knows precisely which document handling to harden.
 
 **Scope.**
 
 In:
-- Docx generation pipeline: the Injection specialist emits
-  *structured docx attack specs* (which technique, where to
-  plant the payload, what the canary string is) and a
-  deterministic builder turns the spec into a real `.docx` ZIP
-- Per-technique builders for white-color text, tiny-font,
-  off-page positioning, zero-width smuggling, homoglyph
-  substitution, tracked-changes, header/footer hiding,
-  field-code injection
-- Upload-to-target pipeline: hits the co-pilot's actual docx
-  upload endpoint with the generated `.docx`
-- Judge deterministic check: did the canary string appear in
-  the assistant's response? Did the assistant follow the
-  planted instruction?
-- Fixture set expanded with docx-specific labeled triples
-- Findings tagged with the specific technique that succeeded
+- Document-shaped attacks against the live target, using the
+  Co-Pilot's real upload path.
+- Several distinct document-hiding techniques (covering the
+  range catalogued in the threat-landscape research — invisible
+  text, structural hiding, encoded smuggling, document-metadata
+  payloads, and so on).
+- Findings tagged with which technique succeeded, so the report
+  is specific.
 
 Out:
-- Extraction Poisoning → `accept_fact` simulation (the
-  end-to-end "clinician clicks Accept" path is its own round)
-- PHI Exfiltration (Round 5)
+- Triggering the Co-Pilot's "accept this extracted fact" flow
+  end-to-end (a later round; it needs a simulated clinician).
+- PHI exfiltration (next round).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] At least six docx techniques implemented as structured
-      builders, each round-trip tested via unit test
-- [ ] One end-to-end test against the live deployed co-pilot
-      demonstrating an actual successful injection (or a clear
-      negative result if the co-pilot's defenses hold — both
-      are valuable)
-- [ ] Judge fixture set extended; accuracy holds ≥ 95% on the
-      indirect category
-- [ ] A vulnerability report on the most impactful docx finding
-      lands in `reports/`
-- [ ] If any docx defense in the co-pilot was breached, the
-      finding is reflected back into
-      [`../THREAT_MODEL.md`](../THREAT_MODEL.md) §6.2 (verified
-      gap)
+- [ ] The platform can produce, upload, and evaluate document
+      attacks across a meaningfully broad range of techniques —
+      enough that the round seriously exercises the attack
+      surface, not just one trick.
+- [ ] Every generated document opens cleanly in real-world
+      document readers; the techniques are invisible to a
+      human reviewer.
+- [ ] The round produces at least one full vulnerability
+      report — either describing a successful breach, or
+      documenting that the Co-Pilot's defenses held against
+      the techniques tried. Both are valuable outputs.
+- [ ] If a defense the threat model assumed strong turns out
+      not to be, the threat model is updated to reflect that.
 
 **Risks & blockers.**
 
-- **Live target acceptance.** The deployed co-pilot may rate-limit
-  or reject docx uploads from the CATS service IP. Verify early.
-- **Docx structural correctness.** Adversarial docx is still
-  *valid* docx — file must open in Word, Pages, and Google Docs
-  without warnings. The technique payloads have to be invisible
-  to humans AND survive validation. Test in real Word / Pages /
-  Drive.
-- **Canary token detection in noisy responses.** Some attacks
-  succeed but the response paraphrases the canary; the canary
-  doesn't string-match. Need careful canary design (rare token
-  sequences) or a Judge fallback to LLM-rubric.
+- **Target-side acceptance of CATS traffic.** The Co-Pilot may
+  rate-limit, allow-list, or reject upload traffic from CATS.
+  Coordinate with the Co-Pilot team early.
+- **Document validity.** Attacks have to look like ordinary
+  documents to a real human and to real document software.
+  Test in real readers before declaring a technique working.
+- **Detecting subtle success.** Some attacks succeed in ways
+  the obvious detector misses (the AI paraphrases the planted
+  instruction rather than echoing it). The judge has to handle
+  the fuzzy case, not just the exact-match case.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -505,77 +483,71 @@ Out:
 
 ## Round 5 — PHI / Cross-Patient Exfiltration
 
-**Goal.** Activate the Exfil specialist (currently a stub from R2)
-against the rank-3 category in [`../THREAT_MODEL.md`](../THREAT_MODEL.md)
-(L×I = 15 after the audit). Verify the markdown-image-renderer
-defense in the co-pilot is as solid as the verification pass
-claims (§6.2 of the threat model). Surface what does still work
-— tool-parameter exfil, steganographic SSE, citation-payload
-side channels.
+**Goal.** Find out whether the Co-Pilot can be tricked into
+leaking patient data — across the channels the threat-landscape
+research catalogues, not just the obvious one. Either prove the
+existing defenses hold or document exactly where they don't.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run a campaign with `--category=phi-exfil` and watch the Exfil
-   specialist generate exfil-shaped attacks (canary-token
-   planted patient data, markdown-image probes, tool-parameter
-   stuffing)
-2. See the Judge verify exfil success via the deterministic
-   canary-token check
-3. See findings clearly distinguishing which exfil channel
-   succeeded (or, ideally, that none did because the co-pilot's
-   defenses hold)
+1. Run a campaign focused on patient-data exfiltration and
+   watch the platform attempt several distinct exfiltration
+   patterns against the live target.
+2. See clear evidence whether any planted "marker" data was
+   carried back to the attacker through *any* channel — the
+   visible response, a tool call, a side channel.
+3. Open findings that distinguish which exfiltration channel
+   succeeded, so the Co-Pilot team knows exactly which path to
+   close — or read a published report stating that all channels
+   tested held under the attacks attempted (which is itself a
+   valuable finding).
+4. Trust that the round tested cross-patient leakage, not just
+   in-context leakage: an attacker scoped to one patient should
+   not be able to retrieve another patient's data.
 
 **Scope.**
 
 In:
-- Exfil specialist prompt and few-shots covering
-  [`./W3_THREAT_RESEARCH.md`](./W3_THREAT_RESEARCH.md) §2.1,
-  §2.3, §2.4, §2.5, §2.7
-- Canary token planting protocol: synthetic patient charts in
-  the local docker target with unique tokens; the deployed prod
-  target gets a per-campaign canary in a dedicated test chart
-- Judge deterministic checks: token-presence in response,
-  token-presence in any tool-call parameter, audit-log scan for
-  unusual tool-param sizes
-- Judge rubric for behavioral exfil cases (model emitted a
-  markdown-image URL containing exfil-shaped data even if the
-  client wouldn't render it)
-- Fixture set for the Exfil category
-- Cross-patient probing tests: can a campaign authed as
-  Clinician-A get Patient-B's data?
+- Exfiltration-shaped attacks covering the range of channels
+  catalogued in the threat-landscape research.
+- A reliable "marker" protocol that lets the platform plant
+  distinctive synthetic data in a target chart, then detect
+  whether that data surfaces anywhere it shouldn't.
+- A cross-patient probe: explicit verification of the
+  authorization boundary, not just the prompt boundary.
 
 Out:
-- Citation Fabrication (Round 6 — different shape, different
-  techniques)
-- Extraction Poisoning (Round 8 — needs the docx pipeline + a
-  simulated Accept-click model)
+- Document-borne attacks on citations or extraction outputs
+  (their own rounds).
+- The end-to-end "clinician accepts a poisoned extraction" flow
+  (its own round; needs simulated user behavior).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] Exfil specialist generates at least four distinct
-      exfil-shaped attacks per campaign
-- [ ] Canary-token plant and detect pipeline works end-to-end
-      in the local target
-- [ ] Cross-patient probe test exists and passes (or fails with
-      a real finding)
-- [ ] Judge accuracy on Exfil fixtures ≥ 90% (lower threshold
-      than Injection because signal is fuzzier per the threat
-      model)
-- [ ] One Exfil vulnerability report (or "no exploitable exfil
-      found in this run" report — both are publishable)
+- [ ] The round produces a finding that distinguishes which
+      exfil channel succeeded — or a published report stating
+      that all channels tested held.
+- [ ] A cross-patient probe ran during the round, and its
+      result is documented: either it held (good) or a real
+      cross-patient leak was found (the round's most important
+      output).
+- [ ] No real patient data is in the repo, in commits, in
+      logs, or in traces. Synthetic only.
 
 **Risks & blockers.**
 
-- **PHI handling in the local target.** Use synthetic data only.
-  Triple-check no real PHI leaks into commits, logs, or
-  LangSmith traces.
-- **Canary token uniqueness vs detection.** Tokens must be
-  unique-enough to false-positive at near-zero, but pattern-able
-  enough that the Judge can scan for them. Design carefully.
-- **The "no findings" outcome.** R5 might confirm the threat
-  model is right (the markdown-image renderer blocks the easy
-  path). That's a valuable finding and the report should treat
-  it as one — not a failure.
+- **Patient data hygiene.** This is the first round to talk
+  about PHI by name. Synthetic-only is the rule, and it's easy
+  to slip up. Set up the markers and the test charts before
+  the round runs hot.
+- **Marker design.** Markers must be distinctive enough that
+  detection is nearly perfect, but ordinary-looking enough that
+  the AI doesn't treat them as out-of-distribution. This is a
+  real design call, not a checkbox.
+- **The "nothing leaked" outcome.** This round's result may be
+  "the defenses held." That's not a failure of the round — the
+  round's job is to *measure*, and a clean measurement is a
+  measurement. The report has to read that way.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -593,56 +565,68 @@ Out:
 
 ---
 
-## Round 6 — Orchestrator bandit policy + coverage matrix
+## Round 6 — The platform decides what to test next
 
-**Goal.** Replace R2's trivial "run the category specified"
-policy with the real epsilon-greedy bandit from
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4. CATS becomes a
-*platform that learns* — the next attack is chosen from
-observability state, not from a CLI flag.
+**Goal.** Stop making the user pick which attack category to run.
+CATS becomes a platform that *learns*: it reads its own history,
+notices what's been under-tested, what has open findings of what
+severity, what's been quiet for too long, and chooses where to
+spend the next attack on its own.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run `cats campaign run --project=<id> --budget=$5` *without
-   specifying a category*
-2. Watch the Orchestrator pick the next category based on
-   coverage gaps × severity weights × recency decay
-3. See the dashboard's `/coverage` page showing the matrix and
-   the bandit's weighting
-4. Observe over multiple campaigns that the bandit re-prioritizes
-   categories as findings land and coverage fills in
+1. Start a campaign with just a target and a budget — no
+   category — and the platform picks where to attack.
+2. See a coverage view in the dashboard that shows, for every
+   attack category, how much testing has happened, how recently,
+   and what's currently open.
+3. Watch the platform's category choices shift over a series of
+   campaigns as findings land and coverage fills in — the
+   under-tested categories rise, the saturated ones fall.
+4. Set the platform's spending budget for a campaign and trust
+   it to stop when the budget is exhausted, when nothing
+   useful is being found, or when something is going badly
+   wrong.
 
 **Scope.**
 
 In:
-- Deterministic epsilon-greedy bandit implementation, pure Python
-- Coverage matrix view in dashboard
-- Bandit weighting parameters (coverage gap, severity, recency,
-  epsilon) configurable per environment
-- Halt conditions: budget exhausted, no signal (N consecutive
-  fails), emergency stop on Judge errors
-- Unit tests for bandit math (no LLMs involved)
+- Automatic category selection driven by the platform's
+  observable state (coverage, severity of open findings,
+  recency, plus a small dose of random exploration so nothing
+  gets starved).
+- A coverage view in the dashboard.
+- Stop conditions: budget exhausted, no useful signal after a
+  reasonable number of attempts, emergency halt when the judge
+  is misbehaving.
+- The platform's choice logic is deterministic and inspectable
+  — a user can ask "why did it pick X next?" and get a
+  legible answer.
 
 Out:
-- Meta-loop LLM weight tuning (later round — first verify the
-  deterministic bandit works on its own)
+- Using a separate LLM to re-tune the choice logic over time.
+  This round proves the inspectable logic works; a smarter
+  meta-layer can come later.
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] Bandit unit-tested with seeded RNG: identical input state
-      → identical category choice
-- [ ] Coverage matrix updates after every campaign
-- [ ] Halt conditions trigger correctly under each condition
-- [ ] Over a 10-campaign sequence, the bandit visibly
-      re-prioritizes (verified in a dashboard screenshot or a
-      reproducible script)
+- [ ] Campaigns can be launched without specifying a category;
+      the platform picks.
+- [ ] Over a sequence of at least ten consecutive campaigns,
+      the dashboard visibly shows priority shifting — and a
+      user can read out why.
+- [ ] Every stop condition triggers correctly when its
+      condition holds; in particular, an obviously misbehaving
+      judge halts the campaign rather than corrupting findings.
 
 **Risks & blockers.**
 
-- **Cold-start.** With zero history, the bandit needs reasonable
-  defaults. Document them.
-- **Weight tuning by feel.** Resist the urge to over-tune weights
-  to make the demo look good. Tune from data, not vibes.
+- **Cold start.** With no history, the choice logic has to do
+  something reasonable. Document the defaults; they will get
+  pushed on.
+- **Tuning by feel.** It will be tempting to tune the weights
+  until the demo looks compelling. The discipline is to tune
+  from real data, not from what makes the chart pretty.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -660,63 +644,64 @@ Out:
 
 ---
 
-## Round 7 — Tool Misuse specialist
+## Round 7 — Tool misuse and over-reach
 
-**Goal.** Activate the ToolAbuse specialist (stubbed in R2)
-against the rank-5 category (L×I = 16). Surface the over-fetch
-amplifier story from [`../THREAT_MODEL.md`](../THREAT_MODEL.md)
-§2.3 — even with no chat-callable write tool, the supervisor can
-be coerced into reading more chart data than the briefing
-warrants, amplifying any later exfil.
+**Goal.** Test whether the Co-Pilot's tools can be coerced into
+doing work the user didn't ask for — calling the wrong tool,
+reading more data than the task warrants, or being driven into
+expensive loops that legitimate use would never trigger.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run a campaign with `--category=tool-misuse` and watch the
-   ToolAbuse specialist generate forced-tool-invocation attacks
-2. See the Judge verify success via tool-call audit-log scan
-   against a "legitimate-need set" per briefing type
-3. See findings clearly tagged with the misused tool and the
-   over-fetched data classes
+1. Run a campaign focused on tool misuse and watch the platform
+   try to get the Co-Pilot to over-reach — reading more chart
+   data than the current task calls for, repeatedly invoking
+   tools, or pulling categories of data that aren't relevant
+   to the conversation.
+2. Open findings that compare what tools the Co-Pilot actually
+   called during the campaign against what it *should* have
+   needed for the task it was given.
+3. See findings clearly labeled with which tool was misused and
+   what data classes the Co-Pilot ended up touching.
 
 **Scope.**
 
 In:
-- ToolAbuse specialist prompt covering
-  [`./W3_THREAT_RESEARCH.md`](./W3_THREAT_RESEARCH.md) §3.1, §3.2,
-  §3.3, §3.4, §3.5
-- Audit-log scan post-condition implementation: given a campaign,
-  pull the co-pilot's tool-call audit log and compare against the
-  campaign's "legitimate-need set" for that briefing type
-- Parameter-pollution test corpus (Zod-schema-violation attempts)
-- Fixture set for ToolAbuse category
-- "Legitimate-need set" data structure per briefing type
-  documented in `cats/categories/tool-misuse/legitimate-need.yaml`
+- Attacks that coerce the Co-Pilot's tool-using behavior into
+  going beyond what a legitimate task requires.
+- A way to characterize, per task type, what "appropriate tool
+  use" looks like — so the platform has a baseline to measure
+  misuse against.
+- Findings that pinpoint which tool and which over-reach
+  pattern triggered the verdict.
 
 Out:
-- Confused-deputy via prior chart content (separate sub-technique,
-  later round)
-- Clawdrain-style cost amplification (DoS lives in its own round)
+- Coercing the Co-Pilot into a cost-amplification spiral. That
+  is its own attack family and gets its own round later.
+- Tool misuse driven by content from previous clinicians'
+  chart notes (a separate sub-technique).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] ToolAbuse specialist generates at least three distinct
-      forced-over-fetch attacks per campaign
-- [ ] Audit-log scan compares actual tool calls against the
-      legitimate-need set; mismatches become findings
-- [ ] Parameter-pollution test corpus exists; the Judge classifies
-      each correctly
-- [ ] Judge accuracy on ToolAbuse fixtures ≥ 90%
-- [ ] One ToolAbuse vulnerability report (or "scope is correctly
-      enforced" report)
+- [ ] The platform produces findings that specifically identify
+      which tool was misused and what extra data was touched.
+- [ ] The "appropriate tool use" baseline is recorded in a
+      reviewable form, not hard-coded — a security engineer
+      can read it and challenge the assumptions.
+- [ ] The round produces at least one full vulnerability
+      report, or a published report that scope enforcement
+      held against the misuse attempts tried.
 
 **Risks & blockers.**
 
-- **Access to the co-pilot's tool-call audit log.** Verify CATS
-  can read it (read-only) before this round begins. May require
-  an OpenEMR-side change.
-- **Defining "legitimate need" objectively.** This is subjective
-  per briefing. Document the rationale in the category's
-  legitimate-need.yaml so the labeler's reasoning is auditable.
+- **Visibility into the Co-Pilot's tool calls.** The platform
+  needs to see what tools the Co-Pilot actually called during
+  a campaign, not just what it *said* it called. Coordinate
+  with the Co-Pilot team on read access to the underlying
+  audit trail before this round starts.
+- **Defining "appropriate."** What counts as legitimate tool
+  use is judgment, not arithmetic. The baseline has to be
+  written down with rationale, not assumed.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -734,65 +719,67 @@ Out:
 
 ---
 
-## Round 8 — Regression harness and triple-gate
+## Round 8 — Verifying that fixes hold across releases
 
-**Goal.** Implement the regression-suite triple gate from
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §6.4. Once findings
-exist (from R3-R7), the platform needs to verify whether fixes
-actually held. Without this, every CATS run is a one-shot.
+**Goal.** Once CATS has surfaced findings, the Co-Pilot team will
+ship fixes for them. This round lets the platform answer the
+hard question: *did the fix actually fix the bug, or did the
+model just stop misbehaving in the same way?* The cost of getting
+that answer wrong is high — the brief calls this out explicitly,
+and the architecture has the answer (a multi-gate check).
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Confirm a finding from R3-R7 in the dashboard
-2. After the co-pilot team ships a fix, click "Re-run regression"
-3. Watch the regression harness re-fire the attack against the
-   redeployed target
-4. See the triple gate evaluate: deterministic post-condition
-   passes? Judge against the locked rubric version returns
-   `fail`? Behavioral fingerprint matches a captured refusal
-   exemplar?
-5. See the finding marked `fixed` only if all three gates pass;
-   otherwise escalated for human review
+1. Take a confirmed finding from an earlier round and ask the
+   platform to re-test it against the current version of the
+   Co-Pilot.
+2. See the platform mark the finding as fixed only when every
+   layer of the regression check agrees — not just when the
+   obvious symptom is gone.
+3. See findings that *appear* fixed but fail one of the
+   subtler checks get flagged for human review, with a clear
+   explanation of which check disagreed and why.
+4. Have CATS automatically re-test the full set of confirmed
+   findings whenever the Co-Pilot is redeployed, so regressions
+   are caught at deploy time, not weeks later.
 
 **Scope.**
 
 In:
-- Behavioral-fingerprint implementation: capture refusal exemplar
-  on first verified fix; embedding-distance check at regression
-  time using a small sentence-transformers model
-- Triple-gate orchestration: a dedicated graph branch that runs
-  all three checks and surfaces results
-- Dashboard regression panel
-- Deployment-triggered campaign mode: GitLab CI webhook receiver
-  that fires regression suite on co-pilot redeploy
-- Locked-rubric versioning enforcement: the regression uses the
-  rubric version that produced the original finding, even if the
-  current rubric has been bumped
+- A multi-gate regression check that distinguishes "the bug is
+  actually fixed" from "the model just refuses differently now."
+- Automatic re-testing when the Co-Pilot redeploys.
+- A regression view in the dashboard showing, per finding, the
+  current status and which gates passed.
+- Use of the *original* judgment criteria for each finding, not
+  the latest — so the bar doesn't drift under us as we update
+  rubrics over time.
 
 Out:
-- Critical-severity human approval gate (next round)
+- Approval workflow for critical findings (next round).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] Re-run regression on a known finding produces a verdict
-      with all three gates explicitly recorded
-- [ ] A regression with a "refused differently" pattern (fails
-      gate 3 but passes gates 1-2) is flagged for human review,
-      not auto-marked fixed
-- [ ] Deployment webhook tested end-to-end: simulate co-pilot
-      redeploy, watch CATS auto-fire the regression suite
-- [ ] Sentence-transformers model dependency is pinned and
-      cached locally (don't re-download per CI run)
+- [ ] Re-running a confirmed finding produces a verdict that
+      shows each gate's individual result, not just an overall
+      pass/fail.
+- [ ] A finding that looks fixed on the surface but fails the
+      subtler behavioral check is *not* auto-marked fixed —
+      it's flagged for human review with the reason.
+- [ ] When the Co-Pilot redeploys, the platform re-runs its
+      confirmed findings against the new version without a
+      human pushing a button.
 
 **Risks & blockers.**
 
-- **Refusal exemplar staleness.** If the co-pilot's prompt
-  changes substantially, the captured exemplar may stop matching
-  even valid refusals. Need a strategy for re-capturing.
-- **Embedding model drift.** Sentence-transformers releases new
-  models; pin a specific revision.
-- **GitLab CI webhook security.** Verify HMAC signatures; don't
-  accept arbitrary POSTs.
+- **Behavioral baselines drift.** The platform compares against
+  captured "safe behavior" examples. If the Co-Pilot's prompt
+  changes substantially, those baselines may no longer match
+  even legitimate refusals. Plan for a re-capture path.
+- **Deploy-time webhook security.** The platform listens for
+  Co-Pilot deploy signals. Those signals have to be
+  authenticated — anyone sending one shouldn't be able to
+  burn budget by firing the regression suite at will.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -810,63 +797,71 @@ Out:
 
 ---
 
-## Round 9 — Critical-severity human approval gate
+## Round 9 — Human approval before critical findings ship
 
-**Goal.** Implement the trust boundary from
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §6.1 and
-[`../THREAT_MODEL.md`](../THREAT_MODEL.md) §0 — when the
-Documentation Agent is about to mark a finding `critical`, it
-pauses and waits for an explicit `senior_operator` approval
-before the finding becomes a tracked, remediation-bound row.
+**Goal.** Honor the trust boundary the brief asks for. When CATS
+is about to label a finding as the highest-severity tier, it
+should not do that on its own — a senior human should sign off
+before the finding becomes part of the official record that
+triggers remediation work.
 
-**Outcome.** An engineer with `senior_operator` role can:
+**Outcome.** A senior reviewer can:
 
-1. See the dashboard's `/approval-queue` page showing pending
-   critical-severity findings
-2. Drill into a pending finding, see the attack, response,
-   Judge verdict, and proposed report
-3. Approve or reject; approval is recorded against the finding's
-   trace ID in the audit log
-4. Watch the finding become `confirmed-and-tracked` only after
-   approval; an `operator` (not senior) attempting the same
-   action gets `403 Forbidden`
+1. See a queue of high-severity findings that are waiting on
+   their approval.
+2. Open a pending finding and review everything that produced
+   it: the attack, the Co-Pilot's response, the judgment, the
+   trace.
+3. Approve or reject the finding, leaving a written rationale
+   that becomes part of the audit record.
+4. Trust that only senior reviewers can approve — an operator
+   without that role cannot push something through and gets a
+   clear "not your call" response if they try.
+5. Know that high-severity findings don't sit in the queue
+   forever — after a reasonable wait they move into an
+   "investigation needed" state rather than ageing into the
+   official record by default.
 
 **Scope.**
 
 In:
-- Documentation Agent's pause-on-critical behavior using a
-  LangGraph interrupt
-- Approval queue API + dashboard page
-- RBAC enforcement on `POST /findings/<id>/approve` (only
-  `senior_operator` and `admin`)
-- Notification dispatch (Slack webhook or email — pick whichever
-  the team uses) when a critical finding lands in the queue
-- Audit-log entry per approval/rejection with the approver, the
-  trace ID, and the rationale (text field, required)
+- A pause on the path from "the platform thinks this is critical"
+  to "this is now an officially confirmed critical finding."
+  The pause waits for explicit human approval.
+- An approval queue with a clear path from notification to
+  review to decision.
+- A notification to the right person when the queue gets a new
+  entry.
+- A written rationale captured at approval time as part of the
+  audit record.
 
 Out:
-- Cross-Judge ensemble voting (deferred indefinitely per the
-  out-of-scope list)
+- Multiple judges voting on findings to reduce drift (decided
+  out of scope; revisit if single-judge drift becomes a real
+  problem).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] LangGraph interrupt-and-resume works end-to-end; a campaign
-      that produces a critical finding pauses, waits for approval,
-      then resumes
-- [ ] Forbidden role attempting approval gets 403; allowed role
-      gets through
-- [ ] Notification dispatch verified in dev (Slack test channel)
-- [ ] Audit log shows approval rationale text
+- [ ] A campaign that produces a high-severity finding pauses;
+      the finding does not appear in the official "confirmed"
+      list until a senior reviewer approves it.
+- [ ] Approval is gated by role; a non-senior user trying to
+      approve gets a clear and visible block, not a silent
+      no-op.
+- [ ] Every approval and rejection appears in the audit trail
+      with the approver, the time, and the written rationale.
+- [ ] Findings that sit in the queue past the agreed window
+      move to "investigation needed" automatically.
 
 **Risks & blockers.**
 
-- **LangGraph interrupt semantics.** Verify that interrupting and
-  resuming preserves state correctly across process restarts.
-  This is what checkpointing is for, but test it.
-- **Approval queue growing unboundedly.** Findings should
-  auto-stale after N days with no approval — define N (e.g. 14
-  days). After staling, they become "investigation needed"
-  rather than `confirmed-and-tracked`.
+- **Pause-and-resume reliability.** Pausing a campaign for
+  human input has to survive a process restart, a server
+  reboot, and a deploy. Verify before declaring the round done.
+- **Notification fatigue.** If notifications fire too freely
+  the reviewer stops looking. If they fire too rarely the
+  queue fills up unseen. The default behavior should be
+  conservative; tuning is by data.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -884,57 +879,57 @@ Out:
 
 ---
 
-## Round 10 — Multi-turn / Crescendo
+## Round 10 — Multi-turn attacks
 
-**Goal.** Add multi-turn campaign support so the platform can
-run Crescendo-style attacks (rank-7 category, L×I = 16). Up to
-this point every campaign has been single-turn; this round
-extends the LangGraph state machine and the Mutator to handle
-multi-turn attack sequences.
+**Goal.** Up to this point, every CATS attack has been a single
+exchange. Real attackers don't work that way — they build trust
+over several turns, then break the safeguard at the end. This
+round teaches the platform to run multi-turn campaigns where
+each turn looks benign in isolation but the cumulative
+conversation crosses a line.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run a campaign with `--category=multi-turn-crescendo` and
-   watch a multi-turn dialogue unfold (each turn benign in
-   isolation, cumulative effect crossing a safeguard)
-2. See the Judge evaluate the *final* turn against the rubric
-   while having access to the full conversation history
-3. See findings labeled with the turn-count required to break
-   through
+1. Run a multi-turn campaign and watch the platform have a
+   conversation with the Co-Pilot — multiple exchanges, each
+   building on the prior turn.
+2. See findings that pinpoint which turn was the one that
+   finally crossed the line.
+3. See the platform's judgment of the conversation take the
+   whole conversation into account, not just the last message.
 
 **Scope.**
 
 In:
-- Multi-turn CampaignState extensions (turn history, per-turn
-  agent state)
-- Crescendo specialist (a variant of the Injection specialist
-  with a multi-turn system prompt)
-- Mutator extension: mutate by *adding a next turn* rather than
-  rewriting the existing attack
-- Judge rubric covering multi-turn success conditions
-- Fixture set with multi-turn triples (each entry is now a
-  sequence, not a single attack)
+- Multi-turn attack flow end-to-end — the platform initiates,
+  observes, iterates, and decides when to push.
+- Judgment that sees the full conversation history, not just
+  the last turn.
 
 Out:
-- MINJA-shape persistent memory poisoning (later — needs a
-  different threat model: cross-session state surviving
-  conversation reset)
+- Attacks that survive conversation resets and re-activate in
+  later sessions. That is a distinct threat (persistent memory
+  poisoning) and needs its own round.
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] A multi-turn campaign with at least 5 turns runs end-to-end
-- [ ] The Judge receives the full turn history and produces a
-      verdict that references which turn the attack succeeded on
-- [ ] Per-turn cost is tracked separately in `attack_events`
-- [ ] Multi-turn fixtures have at least 15 entries
+- [ ] A multi-turn campaign of several exchanges runs
+      end-to-end against the live target.
+- [ ] When the campaign produces a finding, it identifies which
+      turn was decisive.
+- [ ] Per-turn cost is visible — multi-turn campaigns are
+      expensive, and a user should not be surprised by the
+      bill.
 
 **Risks & blockers.**
 
-- **Per-conversation cost explosion.** Multi-turn attacks
-  multiply token usage. Per-campaign budget caps need to be
-  enforced more tightly.
-- **State serialization growing.** LangGraph state for a 10-turn
-  conversation can be large; verify checkpointer handles it.
+- **Cost runaway.** Multi-turn campaigns can use many times
+  the tokens of a single-turn one. Per-campaign budget
+  enforcement, already present from earlier rounds, gets a
+  real workout here.
+- **State weight.** A long conversation produces a lot of
+  state to checkpoint. Confirm the platform's persistence
+  layer handles it before declaring the round done.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -952,60 +947,69 @@ Out:
 
 ---
 
-## Round 11 — Clinical Misinformation Propagation
+## Round 11 — Clinical misinformation propagation
 
-**Goal.** Reach the rank-2 category by L×I (= 25): a
-healthcare-specific threat that's tied with Prompt Injection for
-top-priority. The Nature Comm Med 2025 vignette set is the seed
-corpus.
+**Goal.** Test the healthcare-specific failure mode the
+threat-landscape research flags as one of the two top-priority
+risks: when a clinician's question contains a wrong clinical
+fact, does the Co-Pilot push back, or does it anchor on the
+false premise and propagate it through the briefing? Published
+healthcare-AI research shows this propagation happens at very
+high rates across frontier models — this round measures whether
+ours is one of them.
 
-**Outcome.** An engineer can:
+**Outcome.** A user can:
 
-1. Run a campaign with `--category=clinical-misinformation` and
-   watch the platform inject a deliberately false clinical
-   premise into a briefing question
-2. See the Judge evaluate whether the co-pilot's response
-   propagated the false premise verbatim or as established
-   context
-3. See findings tied to specific Nature Comm Med vignette IDs
-   for reproducibility
+1. Run a campaign that asks the Co-Pilot questions seeded with
+   a deliberately wrong clinical fact (a wrong lab value, a
+   misattributed diagnosis, a contradicted history).
+2. See the platform judge whether the Co-Pilot repeated the
+   wrong fact, reasoned from it as if it were true, or
+   correctly flagged it as not matching the chart.
+3. Read findings tied back to specific clinical scenarios so
+   the Co-Pilot team can reproduce and fix.
+4. Trust that the judgment threshold for this category is set
+   honestly — this is the hardest category to judge cleanly
+   and the bar reflects that.
 
 **Scope.**
 
 In:
-- Clinical Misinformation specialist (decision at build time:
-  reuse Injection specialist with a category prompt, or new
-  fourth specialist file — pick based on R3-R5 learnings)
-- Nature Comm Med 2025 vignette corpus imported as fixtures
-- Judge deterministic check: did the planted false value appear
-  verbatim in the response?
-- Judge rubric for premise propagation (LLM rubric for the
-  fuzzy case where the model paraphrases the false premise)
+- An attack flow that plants false clinical premises in
+  questions to the Co-Pilot.
+- Judgment of whether the Co-Pilot's response propagated, paraphrased, or rejected
+  the false premise.
+- A library of seeded scenarios grounded in the published
+  research, so findings are reproducible and the test corpus
+  isn't ad hoc.
 
 Out:
-- Cross-Judge ensemble voting (still deferred)
+- Multiple judges voting on findings (still out of scope).
 
 **Definition of done (in addition to global DoD).**
 
-- [ ] Nature Comm Med vignette corpus is in the fixture set
-      (or a representative subset of 50+ vignettes)
-- [ ] Clinical Misinformation specialist runs end-to-end against
-      the live target
-- [ ] Judge accuracy on this category ≥ 85% (lower threshold
-      because the harm is fuzzier than direct injection)
-- [ ] At least one finding documented as a clinical-safety risk
-      (or a "premise propagation correctly resisted" finding)
+- [ ] A representative library of seeded clinical scenarios is
+      in the fixture set and reproducible.
+- [ ] The platform runs the category end-to-end against the
+      live target.
+- [ ] The accuracy threshold for judgment on this category is
+      written down, lower than for the easier categories, and
+      met honestly — not by trimming fixtures.
+- [ ] The round produces at least one full report, either
+      flagging a clinical-safety risk or documenting that the
+      Co-Pilot correctly rejected the false premises tested.
 
 **Risks & blockers.**
 
-- **Fixture licensing.** Verify the Nature Comm Med 2025 corpus
-  can be redistributed in the fixture set, or if we need to
-  cite-and-derive rather than copy.
-- **The "did it propagate" call is genuinely hard.** Even a
-  human medical reviewer can disagree on whether a response
-  "anchored" on the false premise. Expect lower Judge accuracy
-  here and resist the urge to tune fixtures to make accuracy
-  look better.
+- **Source-corpus rights.** The published research has a
+  catalog of seeded scenarios. Check whether we can reuse
+  it directly or need to derive our own analogous scenarios.
+- **Judgment is genuinely hard here.** A trained physician
+  reviewing the same response can disagree on whether the
+  Co-Pilot "anchored" on the false premise. Expect lower
+  judgment accuracy than in other categories. Do not tune
+  the fixture set to make the number look better — tune the
+  threshold to be honest about the difficulty.
 
 **Tasks.** *(builder fills in as completed)*
 
@@ -1027,27 +1031,33 @@ Out:
 
 After Round 11, every high-priority threat-model category has
 been exercised against the live target. Further rounds become
-*depth, not breadth*:
+*depth, not breadth*. Likely candidates, in no particular order:
 
-- **Extraction Poisoning → `accept_fact`** (L×I = 20, the
-  highest-stakes write path). Needs a simulated-clinician-Accept
-  model — a new agent-shape, deserves its own round.
-- **Citation & Evidence Fabrication** (L×I = 20). Bbox pipeline
-  awareness; closer to depth in the Exfil specialist's territory
-  than its own round.
-- **Identity & Role** (L×I = 6 after audit). Low priority;
-  scheduled when other categories are stable.
-- **DoS / Cost Amplification** (L×I = 12). Deterministic-only,
-  no LLM Red Team needed; cheap to add when prioritized.
-- **Output Filter LLM classifier** (deferred from R2's regex-only
-  layer). Cheap small model for the second-layer scan.
-- **Cost-analysis publishing**. The brief's required AI Cost
-  Analysis deliverable (100 / 1K / 10K / 100K runs); pull from
-  real telemetry once enough campaigns have run.
-- **White-hat mode**. Per
-  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §7. Listed as
-  post-roadmap above.
+- **Extraction poisoning that ends in a chart write.** The
+  highest-stakes write path on the Co-Pilot — a poisoned
+  upload that a clinician unwittingly accepts into a real
+  patient record. Needs a simulated clinician's behavior in
+  the loop, so it's its own round.
+- **Citation and evidence fabrication.** Whether the
+  Co-Pilot's citations actually support the claims they're
+  attached to, or just look like they do.
+- **Cost-amplification attacks.** Whether the Co-Pilot can be
+  coerced into expensive loops without producing useful
+  output for the user.
+- **Identity and role exploitation.** Whether the Co-Pilot can
+  be persuaded to misrepresent its own scope or authority to a
+  clinician.
+- **Smarter safety filtering** on the platform's own attack
+  output (today's filter handles the obvious cases; a smarter
+  one handles the subtle ones).
+- **A published cost analysis** at the run scales the brief
+  asks for — pulled from real telemetry once the platform has
+  enough run history to be credible.
+- **White-hat mode.** The architecture is forward-compatible.
+  Activating it lets the platform's specialists use read-only
+  source knowledge to find vulnerabilities a black-box
+  attacker couldn't reach.
 
 The roadmap stays open-ended past Round 11 deliberately — what
 to build next is a function of what the platform finds and where
-the co-pilot evolves.
+the Co-Pilot evolves.
