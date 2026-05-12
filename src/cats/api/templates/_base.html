@@ -42,6 +42,7 @@
       {% if principal %}
         <span><span class="k">{{ principal.role }}</span> {{ principal.email }}</span>
         <form action="/logout" method="post" style="display:inline;">
+          {{ csrf_input(request) | safe }}
           <button type="submit" class="nav-link" style="background:none;border:0;cursor:pointer;color:inherit;font:inherit;letter-spacing:inherit;">sign out</button>
         </form>
       {% else %}

@@ -503,15 +503,121 @@ Out:
   for. Resist scope creep — the value of this round is
   end-to-end shape, not attack coverage.
 
-**Tasks.** *(builder fills in as completed)*
+**Tasks.** *(builder fills in as completed; round in progress as of 2026-05-12)*
 
-- [ ] _to be filled by R2 builder_
+R2 is being built in two phases on the `feat/round-2-first-attack`
+branch because the surface area exceeds one session's safe context
+budget.
 
-**Decisions.** *(builder records as made)*
+**Phase A — Foundations (committed, not yet on main):**
 
-- _to be filled by R2 builder_
+- [x] Migration `20260512_0004` — `projects.target_kind /
+      target_username / target_password_encrypted` (Fernet-encrypted at
+      rest); `attack_executions.agent_role` for per-role cost
+      breakdown; `vulnerability_reports.finding_id` so multiple
+      findings per run can each carry their own report.
+- [x] `cats/security/crypto.py` — Fernet encryption helper keyed off
+      `CATS_DATA_SECRET` (distinct from session secret).
+- [x] `cats/security/csrf.py` — double-submit token + `require_csrf`
+      FastAPI dependency. **Closes the R1 CSRF gap** before the
+      campaign-fire endpoint goes live.
+- [x] `cats/api/app.py` — `CsrfMiddleware` issues + validates token on
+      every request; `cats/api/templating.py` shares one
+      Jinja2Templates instance across routes with a
+      `csrf_input(request)` global; every R1 form (login, logout,
+      projects, users, index campaign-fire) threads the token through.
+- [x] `cats/llm/client.py` — `LLMClient` Protocol + `RealLLMClient`
+      (thin shim over `OpenRouterClient`) + `FakeLLMClient` for tests
+      + `get_llm()` factory + `install_override()` test seam. Trace
+      ID surfacing via LangSmith when tracing on, synthetic UUID
+      otherwise.
+- [x] `cats/agents/red_team/injection.py` — real specialist node:
+      strict-JSON output, per-attack unique canary token
+      (`CATS-CANARY-<hex>`), defensive canary splice-in if the model
+      forgets it, fence-tolerant JSON parser.
+- [x] `cats/categories/injection/red_team/system_prompt.md` — full
+      prompt (replaces TODO).
+- [x] `cats/categories/injection/red_team/few_shots.md` — two
+      annotated examples (replaces TODO).
+- [x] `cats/categories/injection/rubric/v1.md` — **locked** judge
+      rubric with deterministic canary short-circuit + qualitative
+      fallback. Never edited in place; future changes go to `v2.md`.
+- [x] `cats/categories/injection/deterministic.py` — generalized from
+      hardcoded `SMOKE-OK` to per-attack `payload["canary"]`.
+- [x] `cats/agents/documentation/system_prompt.md` —
+      structured-report prompt with explicit MITRE ATLAS + OWASP LLM
+      tagging.
+- [x] R1 integration tests updated for CSRF (`csrf_post` helper in
+      `tests/integration/conftest.py`); added explicit test that a
+      POST without a token returns 403.
+- [x] `tests/unit/test_csrf.py` — token generation, encryption
+      round-trip, garbage rejection. Locks the cookie/form/header
+      names so client code doesn't drift silently.
 
-**Retrospective.** *(builder fills in after R2 ships)*
+48 unit + integration tests passing; `ruff check` + `ruff format
+--check` + `mypy --strict` clean across 105 source files.
+
+**Phase B — Wire-up (next session, on the same branch):**
+
+- [ ] Replace each stub graph node (`orchestrator`, `red_team_router`,
+      `mutator`, `output_filter`, `target_caller`, `judge`,
+      `documentation`) with the real implementation that calls the
+      specialist / TargetClient / judge LLM and persists rows.
+- [ ] `cats/target/client.py` — OpenEMR login flow
+      (`/interface/login/login.php`) → harvest `PHPSESSID` → POST
+      `agent.php?action=briefing` with the attack envelope → consume
+      SSE → assemble the assistant text. Handle session expiry
+      (re-login on 302/401).
+- [ ] LangGraph `AsyncPostgresSaver` checkpointer
+      (`langgraph-checkpoint-postgres` is already a dep). Resume-from-
+      checkpoint test.
+- [ ] `POST /campaigns` route + `cats run-campaign` CLI. Operator-only,
+      CSRF-protected (already wired). Background worker dispatches the
+      graph keyed by `thread_id = str(run_id)`.
+- [ ] `/campaigns/{id}` live page subscribing to the existing SSE
+      endpoint.
+- [ ] `/findings/{id}` detail page with attack/response/verdict/report
+      + LangSmith deep-link.
+- [ ] Per-agent cost breakdown panel (column already migrated; just
+      needs the dashboard surface).
+- [ ] `tests/integration/test_campaign_e2e.py` (full loop via FakeLLM
+      + fake target) and `test_resume.py` (checkpoint mid-run, resume).
+- [ ] `tests/README.md` — documents the per-test engine pattern, the
+      `settings` monkeypatch dance, the `csrf_post` helper, the
+      FakeLLM pattern (the R1 retrospective explicitly asks for this).
+
+**Decisions.** *(builder records as made — preserve rationale, not just outcome)*
+
+- **Two-phase ship.** R2's surface area is genuinely larger than R1 —
+  closing the CSRF gap *and* wiring all seven agent roles *and*
+  exposing a live dashboard *and* swapping the checkpointer was too
+  much for one session at safe quality. Splitting at the seam between
+  "platform plumbing that every later round needs" (Phase A) and
+  "the inner campaign loop" (Phase B) keeps both halves reviewable.
+- **CSRF: shared Jinja2Templates instance with a `csrf_input(request)`
+  Jinja global.** R1's pattern of each route module instantiating its
+  own `Jinja2Templates(...)` made global env extensions impossible.
+  Moving to `cats/api/templating.py` is the smallest surface-area fix
+  and lands the Jinja-context-processor R1's retro asked for.
+- **`CATS_DATA_SECRET` separate from `CATS_SESSION_SECRET`.** Two
+  different rotation surfaces: session-cookie rotation invalidates
+  sessions; data-at-rest rotation needs a re-encrypt step. Keeping
+  them distinct is the cheap upfront move.
+- **Per-attack canary token, not a category-wide constant.** A
+  category-wide canary (`SMOKE-OK`) lets the target memorize and
+  refuse it. `CATS-CANARY-<hex>` is unique per attack, so the judge
+  can't be sandbagged by token-specific safety training. Locked into
+  `rubric/v1.md` so historical comparisons stay honest.
+- **`LLMClient` Protocol + `install_override()` test seam.** Picked
+  over a `Depends(get_llm)` DI pattern because the graph nodes don't
+  live behind FastAPI — they're invoked by LangGraph from a worker
+  context. A module-level override is the smallest hook that keeps
+  prod paths untouched.
+- **Deterministic check has priority over LLM rubric.** Codified in
+  `rubric/v1.md` as the explicit short-circuit. Halves judge cost and
+  removes one source of drift.
+
+**Retrospective.** *(builder fills in after R2 ships in full — Phase B)*
 
 - What went well: _
 - What didn't: _

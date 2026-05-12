@@ -62,6 +62,7 @@
                   {% if principal.role == 'admin' %}
                     <form action="/projects/{{ p.id }}/delete" method="post" style="display:inline;"
                           onsubmit="return confirm('Delete project {{ p.name }}? This cannot be undone.');">
+                      {{ csrf_input(request) | safe }}
                       <button class="btn ghost" type="submit" style="color: var(--red);">delete</button>
                     </form>
                   {% endif %}

@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from fastapi.templating import Jinja2Templates
 
 from cats.api.auth import Principal, require_user
+from cats.api.templating import templates
 from cats.config import settings
 from cats.health.checks import HealthCheckResult, run_all_checks
 
 router = APIRouter()
-
-TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _result_dict(r: HealthCheckResult) -> dict[str, str]:

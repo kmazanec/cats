@@ -6,6 +6,8 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from tests.integration.conftest import csrf_post
+
 pytestmark = pytest.mark.integration
 
 
@@ -26,10 +28,10 @@ async def test_full_health_requires_auth(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_full_health_after_login(client: AsyncClient) -> None:
-    await client.post(
+    await csrf_post(
+        client,
         "/login",
         data={"email": "admin@cats.test", "password": "admin-password-1234"},
-        follow_redirects=False,
     )
     r = await client.get("/health/full")
     # 200 if all configured deps green, 503 if any configured dep failed.

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
 
 from cats.api.auth import Principal, Role, require_role
+from cats.api.templating import templates
 from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
@@ -20,11 +19,9 @@ from cats.db.repositories.user_repo import (
     list_users,
     set_user_active,
 )
+from cats.security.csrf import require_csrf
 
 router = APIRouter()
-
-TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 _VALID_ROLES = set(get_args(Role))
@@ -56,7 +53,7 @@ async def list_users_page(
     return templates.TemplateResponse(request, "users_list.html", ctx)
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_csrf)])
 async def create_user_submit(
     request: Request,
     email: Annotated[str, Form()],
@@ -100,7 +97,7 @@ async def create_user_submit(
     return RedirectResponse(url="/users", status_code=303)
 
 
-@router.post("/{user_id}/deactivate")
+@router.post("/{user_id}/deactivate", dependencies=[Depends(require_csrf)])
 async def deactivate_user(
     user_id: UUID,
     principal: Principal = Depends(require_role("admin")),
@@ -120,7 +117,7 @@ async def deactivate_user(
     return RedirectResponse(url="/users", status_code=303)
 
 
-@router.post("/{user_id}/reactivate")
+@router.post("/{user_id}/reactivate", dependencies=[Depends(require_csrf)])
 async def reactivate_user(
     user_id: UUID,
     principal: Principal = Depends(require_role("admin")),

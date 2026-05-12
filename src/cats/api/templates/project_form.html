@@ -20,6 +20,7 @@
     </header>
     <div class="body">
       <form action="{{ form_action }}" method="post" class="stack" style="gap: 14px;">
+        {{ csrf_input(request) | safe }}
         <label class="field">
           <span class="l">Name</span>
           <input type="text" name="name" required maxlength="200"

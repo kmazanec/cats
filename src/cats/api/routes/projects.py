@@ -8,15 +8,14 @@ Every mutation lands in the audit log."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
 
 from cats.api.auth import Principal, require_role, require_user
+from cats.api.templating import templates
 from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
@@ -27,11 +26,9 @@ from cats.db.repositories.project_repo import (
     list_projects,
     update_project,
 )
+from cats.security.csrf import require_csrf
 
 router = APIRouter()
-
-TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _chrome_ctx(principal: Principal) -> dict[str, Any]:
@@ -96,7 +93,7 @@ async def new_project_form(
     return templates.TemplateResponse(request, "project_form.html", ctx)
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_csrf)])
 async def create_project_submit(
     name: Annotated[str, Form()],
     base_url: Annotated[str, Form()],
@@ -155,7 +152,7 @@ async def edit_project_form(
     return templates.TemplateResponse(request, "project_form.html", ctx)
 
 
-@router.post("/{project_id}")
+@router.post("/{project_id}", dependencies=[Depends(require_csrf)])
 async def update_project_submit(
     project_id: UUID,
     name: Annotated[str, Form()],
@@ -197,7 +194,7 @@ async def update_project_submit(
     return RedirectResponse(url="/projects", status_code=303)
 
 
-@router.post("/{project_id}/delete")
+@router.post("/{project_id}/delete", dependencies=[Depends(require_csrf)])
 async def delete_project_submit(
     project_id: UUID,
     principal: Principal = Depends(require_role("admin")),

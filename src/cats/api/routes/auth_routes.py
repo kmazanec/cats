@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
 
 from cats.api.auth import (
     SESSION_COOKIE_NAME,
@@ -16,14 +14,13 @@ from cats.api.auth import (
     current_principal,
     issue_session_token,
 )
+from cats.api.templating import templates
 from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
+from cats.security.csrf import require_csrf
 
 router = APIRouter()
-
-TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @router.get("/login")
@@ -50,7 +47,7 @@ async def login_form(
     )
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(require_csrf)])
 async def login_submit(
     request: Request,
     email: Annotated[str, Form()],
@@ -98,7 +95,7 @@ async def login_submit(
     return response
 
 
-@router.post("/logout")
+@router.post("/logout", dependencies=[Depends(require_csrf)])
 async def logout(
     principal: Principal | None = Depends(current_principal),
 ) -> Response:

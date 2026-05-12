@@ -212,7 +212,8 @@
           <div class="meta">budget shown before run</div>
         </header>
         <div class="body">
-          <form hx-post="/campaigns" hx-swap="outerHTML" class="stack" style="gap: 14px;">
+          <form hx-post="/campaigns" hx-swap="outerHTML" hx-headers='{"X-CSRF-Token": "{{ request.state.csrf_token }}"}' class="stack" style="gap: 14px;">
+            {{ csrf_input(request) | safe }}
             <label class="field">
               <span class="l">Project</span>
               <select name="project_id" required>

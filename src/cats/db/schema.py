@@ -82,8 +82,17 @@ projects = Table(
     Column("api_contract", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("auth_material_encrypted", Text, nullable=True),
     Column("allow_run_against", Boolean, nullable=False, server_default=text("false")),
+    # R2 — target authentication for the PHP proxy on OpenEMR (kind=copilot_proxy)
+    # or direct internal access for local docker (kind=copilot_internal).
+    Column("target_kind", String(32), nullable=False, server_default="copilot_proxy"),
+    Column("target_username", String(200), nullable=True),
+    Column("target_password_encrypted", Text, nullable=True),
     _ts(),
     CheckConstraint("env IN ('local','staging','prod')", name="ck_projects_env"),
+    CheckConstraint(
+        "target_kind IN ('copilot_proxy','copilot_internal')",
+        name="ck_projects_target_kind",
+    ),
 )
 
 project_versions = Table(
@@ -253,6 +262,9 @@ attack_executions = Table(
     Column("error", Text, nullable=True),
     Column("started_at", DateTime(timezone=True), nullable=True),
     Column("ended_at", DateTime(timezone=True), nullable=True),
+    # R2 — which agent role's LLM call produced this row, for per-role cost
+    # breakdown ('redteam_injection', 'judge', 'documentation', etc.).
+    Column("agent_role", String(64), nullable=False, server_default=""),
     _ts(),
     Index("ix_attack_executions_run_id", "run_id"),
     Index("ix_attack_executions_attack_id", "attack_id"),
@@ -320,7 +332,14 @@ vulnerability_reports = Table(
         UUID(as_uuid=True),
         ForeignKey("runs.id"),
         nullable=False,
-        unique=True,
+    ),
+    # R2: attach to a specific Finding so multiple findings in one run each
+    # get their own report.
+    Column(
+        "finding_id",
+        UUID(as_uuid=True),
+        ForeignKey("findings.id", ondelete="CASCADE"),
+        nullable=True,
     ),
     Column("title", String(300), nullable=False),
     Column("body_markdown", Text, nullable=False),
@@ -328,6 +347,7 @@ vulnerability_reports = Table(
     Column("approved_by", String(120), nullable=True),
     Column("approved_at", DateTime(timezone=True), nullable=True),
     _ts(),
+    Index("ix_vulnerability_reports_finding_id", "finding_id"),
 )
 
 regression_cases = Table(

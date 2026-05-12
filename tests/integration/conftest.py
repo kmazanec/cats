@@ -1,14 +1,21 @@
 """Integration test fixtures. Assumes Postgres + Redis are running locally
 on the compose-mapped ports (5433 / 6380). Each test gets a fresh DB state
-and a freshly-built engine (so it lives on the test's own event loop)."""
+and a freshly-built engine (so it lives on the test's own event loop).
+
+Helpers:
+- `csrf_post(client, url, data=...)`: warms the CSRF cookie via a GET if
+  needed, then POSTs with the matching `csrf_token` form field.
+- See `tests/README.md` for the full pattern.
+"""
 
 from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -17,6 +24,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 os.environ.setdefault("CATS_ADMIN_EMAIL", "admin@cats.test")
 os.environ.setdefault("CATS_ADMIN_PASSWORD", "admin-password-1234")
 os.environ.setdefault("CATS_SESSION_SECRET", "test-secret-not-for-prod")
+os.environ.setdefault("CATS_DATA_SECRET", "test-data-secret-not-for-prod")
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://cats:cats@localhost:5433/cats",
@@ -81,3 +89,23 @@ async def client() -> AsyncIterator[AsyncClient]:
         await cats_engine._engine.dispose()
         cats_engine._engine = None
         cats_engine._session_factory = None
+
+
+async def csrf_post(
+    client: AsyncClient,
+    url: str,
+    *,
+    data: dict[str, Any] | None = None,
+    follow_redirects: bool = False,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """POST with a valid CSRF token. Warms the cookie via a no-op GET on
+    `/healthz` if the client doesn't yet have one — the CsrfMiddleware
+    sets it on every request."""
+    token = client.cookies.get("cats_csrf")
+    if not token:
+        await client.get("/healthz")
+        token = client.cookies.get("cats_csrf") or ""
+    body = dict(data or {})
+    body["csrf_token"] = token
+    return await client.post(url, data=body, follow_redirects=follow_redirects, headers=headers)

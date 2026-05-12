@@ -12,8 +12,9 @@ from typing import Any
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 
 from cats.api.auth import Principal, current_principal
 from cats.api.context import build_overview_context
@@ -28,16 +29,32 @@ from cats.api.routes import (
     user_admin,
     webhooks,
 )
+from cats.api.templating import templates
 from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.user_repo import ensure_admin_seeded
 from cats.logging import configure_logging, get_logger
+from cats.security.csrf import attach_cookie_if_new, ensure_token
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-templates.env.filters["pluralize"] = lambda n, suffix="s": "" if n == 1 else suffix
+
+class CsrfMiddleware(BaseHTTPMiddleware):
+    """Ensures every request has a CSRF token on `request.state`, and sets
+    the cookie on the response if a fresh token was minted.
+
+    This is the only place the cookie touches the wire — every template
+    just reads `request.state.csrf_token`.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        ensure_token(request)
+        response = await call_next(request)
+        attach_cookie_if_new(request, response)
+        return response
 
 
 @asynccontextmanager
@@ -66,6 +83,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="CATS", version="0.1.0", lifespan=_lifespan)
+
+    app.add_middleware(CsrfMiddleware)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

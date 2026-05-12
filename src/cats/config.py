@@ -57,9 +57,19 @@ class Settings(BaseSettings):
     admin_email: str = Field(default="", alias="CATS_ADMIN_EMAIL")
     admin_password: str = Field(default="", alias="CATS_ADMIN_PASSWORD")
 
+    # Data-at-rest encryption (R2) — Fernet-key seed for stored target
+    # credentials. Distinct from session_secret so rotation is independent.
+    data_secret: str = Field(default="dev-data-secret-change-me", alias="CATS_DATA_SECRET")
+
     # Build / deploy metadata (R1) — populated by the deploy job
     build_sha: str = Field(default="dev", alias="CATS_BUILD_SHA")
     gitlab_pipeline_url: str = Field(default="", alias="CATS_GITLAB_PIPELINE_URL")
+
+    # LangSmith deep-link base (R2). Findings link to traces here.
+    langsmith_url_base: str = Field(
+        default="https://smith.langchain.com",
+        alias="LANGSMITH_URL_BASE",
+    )
 
 
 @lru_cache(maxsize=1)

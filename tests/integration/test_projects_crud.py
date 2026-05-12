@@ -6,33 +6,31 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select, text
 
+from tests.integration.conftest import csrf_post
+
 pytestmark = pytest.mark.integration
 
 
 async def _login_admin(client: AsyncClient) -> None:
-    await client.post(
+    await csrf_post(
+        client,
         "/login",
         data={"email": "admin@cats.test", "password": "admin-password-1234"},
-        follow_redirects=False,
     )
 
 
 async def _create_user_as_admin(
     client: AsyncClient, *, email: str, password: str, role: str
 ) -> None:
-    await client.post(
+    await csrf_post(
+        client,
         "/users",
         data={"email": email, "password": password, "role": role},
-        follow_redirects=False,
     )
 
 
 async def _login_as(client: AsyncClient, email: str, password: str) -> None:
-    await client.post(
-        "/login",
-        data={"email": email, "password": password},
-        follow_redirects=False,
-    )
+    await csrf_post(client, "/login", data={"email": email, "password": password})
 
 
 @pytest.mark.asyncio
@@ -43,13 +41,12 @@ async def test_operator_can_create_project_admin_can_delete(
     await _create_user_as_admin(
         client, email="op@cats.test", password="oppassword!", role="operator"
     )
-    # Admin creates a viewer to verify the role gate later.
     await _create_user_as_admin(client, email="v@cats.test", password="vpassword!", role="viewer")
-    # Admin signs out, operator signs in.
-    await client.post("/logout", follow_redirects=False)
+    await csrf_post(client, "/logout")
     await _login_as(client, "op@cats.test", "oppassword!")
 
-    r = await client.post(
+    r = await csrf_post(
+        client,
         "/projects",
         data={
             "name": "Co-Pilot prod",
@@ -57,16 +54,12 @@ async def test_operator_can_create_project_admin_can_delete(
             "env": "prod",
             "description": "live target",
         },
-        follow_redirects=False,
     )
     assert r.status_code == 303
     list_r = await client.get("/projects", headers={"accept": "text/html"})
     assert list_r.status_code == 200
     assert "Co-Pilot prod" in list_r.text
 
-    # Operator cannot delete — needs admin.
-    # Find the project_id from the page.
-    # Simpler: query the DB through the test engine.
     from cats.db.engine import session_scope
     from cats.db.schema import projects
 
@@ -74,17 +67,16 @@ async def test_operator_can_create_project_admin_can_delete(
         rows = (await session.execute(select(projects.c.id, projects.c.name))).all()
     project_id = next(r.id for r in rows if r.name == "Co-Pilot prod")
 
-    del_as_op = await client.post(
+    del_as_op = await csrf_post(
+        client,
         f"/projects/{project_id}/delete",
-        follow_redirects=False,
         headers={"accept": "text/html"},
     )
     assert del_as_op.status_code == 403
 
-    # Sign back in as admin and delete.
-    await client.post("/logout", follow_redirects=False)
+    await csrf_post(client, "/logout")
     await _login_admin(client)
-    del_r = await client.post(f"/projects/{project_id}/delete", follow_redirects=False)
+    del_r = await csrf_post(client, f"/projects/{project_id}/delete")
     assert del_r.status_code == 303
 
 
@@ -92,17 +84,17 @@ async def test_operator_can_create_project_admin_can_delete(
 async def test_viewer_cannot_create_project(client: AsyncClient) -> None:
     await _login_admin(client)
     await _create_user_as_admin(client, email="v@cats.test", password="vpassword!", role="viewer")
-    await client.post("/logout", follow_redirects=False)
+    await csrf_post(client, "/logout")
     await _login_as(client, "v@cats.test", "vpassword!")
 
-    r = await client.post(
+    r = await csrf_post(
+        client,
         "/projects",
         data={
             "name": "Should fail",
             "base_url": "https://example.test",
             "env": "local",
         },
-        follow_redirects=False,
         headers={"accept": "text/html"},
     )
     assert r.status_code == 403
@@ -111,10 +103,10 @@ async def test_viewer_cannot_create_project(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_invalid_base_url_rejected(client: AsyncClient) -> None:
     await _login_admin(client)
-    r = await client.post(
+    r = await csrf_post(
+        client,
         "/projects",
         data={"name": "x", "base_url": "not-a-url", "env": "local"},
-        follow_redirects=False,
     )
     assert r.status_code == 400
 
@@ -122,10 +114,10 @@ async def test_invalid_base_url_rejected(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_invalid_env_rejected(client: AsyncClient) -> None:
     await _login_admin(client)
-    r = await client.post(
+    r = await csrf_post(
+        client,
         "/projects",
         data={"name": "x", "base_url": "https://x.test", "env": "bogus"},
-        follow_redirects=False,
     )
     assert r.status_code == 400
 
@@ -133,10 +125,10 @@ async def test_invalid_env_rejected(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_each_mutation_writes_audit_entry(client: AsyncClient) -> None:
     await _login_admin(client)
-    await client.post(
+    await csrf_post(
+        client,
         "/projects",
         data={"name": "Audited", "base_url": "https://a.test", "env": "local"},
-        follow_redirects=False,
     )
     from cats.db.engine import session_scope
 
@@ -145,6 +137,5 @@ async def test_each_mutation_writes_audit_entry(client: AsyncClient) -> None:
             await session.execute(text("SELECT action, actor FROM audit_log ORDER BY at"))
         ).all()
     actions = [r.action for r in rows]
-    # auth.login + project.create (at least).
     assert "auth.login" in actions
     assert "project.create" in actions

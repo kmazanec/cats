@@ -26,6 +26,7 @@
         </div>
       {% endif %}
       <form action="/users" method="post" class="row" style="gap: 10px; align-items: flex-end;">
+        {{ csrf_input(request) | safe }}
         <label class="field" style="flex: 2;">
           <span class="l">Email</span>
           <input type="email" name="email" required />
@@ -81,10 +82,12 @@
                   {% if u.id != principal.user_id %}
                     {% if u.is_active %}
                       <form action="/users/{{ u.id }}/deactivate" method="post" style="display:inline;">
+                        {{ csrf_input(request) | safe }}
                         <button class="btn ghost" type="submit">deactivate</button>
                       </form>
                     {% else %}
                       <form action="/users/{{ u.id }}/reactivate" method="post" style="display:inline;">
+                        {{ csrf_input(request) | safe }}
                         <button class="btn ghost" type="submit">reactivate</button>
                       </form>
                     {% endif %}

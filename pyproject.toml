@@ -14,36 +14,31 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.0", # NOT sqlite — CVE-2025-67644
     "langsmith>=0.2.0",
     "langchain-openai>=0.2.0",              # used as the OpenRouter client (OpenAI-compatible)
-
     # Models / validation
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
-
     # API + UI
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "jinja2>=3.1",
     "sse-starlette>=2.1",
     "python-multipart>=0.0.12",
-
     # DB + cache
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30",
     "alembic>=1.14",
     "redis>=5.2",
-
     # HTTP
     "httpx>=0.28",
-
     # CLI
     "typer>=0.15",
-
     # Logging
     "structlog>=24.4",
-
     # Auth (R1)
     "bcrypt>=4.2",
     "itsdangerous>=2.2",
+    # Crypto (R2 — Fernet encryption for stored target credentials)
+    "cryptography>=43",
 ]
 
 [project.optional-dependencies]
