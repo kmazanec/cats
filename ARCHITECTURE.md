@@ -264,6 +264,180 @@ Each role is independently testable and replaceable.
 - Mutator can stay on Tier-1 OSS forever (cheap, refuses nothing) and
   scale independently.
 
+#### Diagram — agent topology
+
+<p align="center">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 660" width="100%" role="img" aria-label="CATS agent topology — Orchestrator dispatches to three Red Team specialists plus Mutator, through Output Filter to Target Co-Pilot; response routes to Judge then Documentation, which writes to Postgres and LangSmith">
+  <defs>
+    <marker id="atop-arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+    <marker id="atop-arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
+    <marker id="atop-arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7591"/></marker>
+    <marker id="atop-arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+  </defs>
+
+  <!-- self-contained background so the diagram reads the same on light or dark GitHub themes -->
+  <rect x="0" y="0" width="1280" height="660" fill="#0a0e1a"/>
+
+  <!-- subtle grid overlay -->
+  <g stroke="#1e2740" stroke-width="0.5" opacity="0.4">
+    <path d="M0,80 H1280 M0,160 H1280 M0,240 H1280 M0,320 H1280 M0,400 H1280 M0,480 H1280 M0,560 H1280"/>
+    <path d="M160,0 V660 M320,0 V660 M480,0 V660 M640,0 V660 M800,0 V660 M960,0 V660 M1120,0 V660"/>
+  </g>
+
+  <!-- TRIGGER -->
+  <g>
+    <rect x="40" y="40" width="200" height="56" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="56" y="62" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">TRIGGER</text>
+    <text x="56" y="82" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">CLI · UI · CI webhook</text>
+  </g>
+
+  <!-- ORCHESTRATOR -->
+  <g>
+    <rect x="340" y="30" width="320" height="80" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
+    <text x="356" y="52" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">PLATFORM · 01</text>
+    <text x="356" y="74" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">ORCHESTRATOR</text>
+    <text x="356" y="92" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">bandit · meta-LLM · Claude Sonnet 4.6</text>
+  </g>
+
+  <!-- RED TEAM ROUTER -->
+  <g>
+    <rect x="340" y="158" width="320" height="56" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="356" y="180" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">DISPATCH</text>
+    <text x="356" y="200" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">RED TEAM ROUTER</text>
+  </g>
+
+  <!-- Specialist: INJECTION -->
+  <g>
+    <rect x="40" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="56" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">ADVERSARY · A</text>
+    <text x="56" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">INJECTION SPECIALIST</text>
+    <text x="56" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Hermes 4 · 405B</text>
+    <text x="56" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">direct · indirect · docx · SPE</text>
+  </g>
+
+  <!-- Specialist: EXFIL -->
+  <g>
+    <rect x="340" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="356" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">ADVERSARY · B</text>
+    <text x="356" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">EXFIL SPECIALIST</text>
+    <text x="356" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Hermes 4 · 405B</text>
+    <text x="356" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">cross-patient · markdown img · canary</text>
+  </g>
+
+  <!-- Specialist: TOOL ABUSE -->
+  <g>
+    <rect x="640" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="656" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">ADVERSARY · C</text>
+    <text x="656" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TOOL ABUSE SPECIALIST</text>
+    <text x="656" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">DeepSeek V3.2</text>
+    <text x="656" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">confused deputy · param pollution · EDoS</text>
+  </g>
+
+  <!-- MUTATOR -->
+  <g>
+    <rect x="940" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="956" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">VARIANTS</text>
+    <text x="956" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">MUTATOR</text>
+    <text x="956" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">DeepSeek V3.2</text>
+    <text x="956" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">N variants per partial-success</text>
+  </g>
+
+  <!-- TARGET CO-PILOT -->
+  <g>
+    <rect x="40" y="396" width="260" height="68" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="56" y="418" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">EXTERNAL · LIVE</text>
+    <text x="56" y="440" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TARGET CO-PILOT</text>
+    <text x="56" y="456" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">per-project HTTP contract</text>
+  </g>
+
+  <!-- OUTPUT FILTER -->
+  <g>
+    <rect x="340" y="396" width="320" height="68" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
+    <text x="356" y="418" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">SAFETY GATE</text>
+    <text x="356" y="440" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">OUTPUT FILTER</text>
+    <text x="356" y="456" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">regex · NFKC · LLM classifier · quarantine</text>
+  </g>
+
+  <!-- JUDGE -->
+  <g>
+    <rect x="340" y="510" width="320" height="92" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
+    <text x="356" y="532" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">PLATFORM · 02</text>
+    <text x="356" y="554" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">JUDGE</text>
+    <text x="356" y="572" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Haiku 4.5 · cached rubric</text>
+    <text x="356" y="588" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">deterministic post-condition first</text>
+  </g>
+
+  <!-- DOC AGENT -->
+  <g>
+    <rect x="700" y="510" width="280" height="92" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
+    <text x="716" y="532" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">PLATFORM · 03</text>
+    <text x="716" y="554" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">DOCUMENTATION</text>
+    <text x="716" y="572" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Sonnet 4.6</text>
+    <text x="716" y="588" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">critical · human approval gate</text>
+  </g>
+
+  <!-- POSTGRES + LANGSMITH -->
+  <g>
+    <rect x="1020" y="510" width="180" height="42" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1"/>
+    <text x="1036" y="528" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">STORE</text>
+    <text x="1036" y="544" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Postgres</text>
+  </g>
+  <g>
+    <rect x="1020" y="560" width="180" height="42" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1"/>
+    <text x="1036" y="578" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">TRACE</text>
+    <text x="1036" y="594" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">LangSmith</text>
+  </g>
+
+  <!-- EDGES -->
+  <!-- trigger → orchestrator -->
+  <path d="M240,68 L340,68" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-gray)"/>
+  <!-- orch → router -->
+  <path d="M500,110 L500,158" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
+  <!-- router → 3 specialists -->
+  <path d="M420,214 L420,242 L170,242 L170,256" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <path d="M500,214 L500,242 L470,242 L470,256" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <path d="M580,214 L580,242 L770,242 L770,256" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <!-- specialists → mutator -->
+  <path d="M300,300 L340,300" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)" opacity="0.5"/>
+  <path d="M600,300 L640,300" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)" opacity="0.5"/>
+  <path d="M900,300 L940,300" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <!-- mutator → output filter -->
+  <path d="M1070,346 L1070,430 L660,430" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <!-- output filter → target -->
+  <path d="M340,430 L300,430" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
+  <!-- target → judge (response, dashed gray) -->
+  <path d="M170,464 L170,540 L340,540" stroke="#6b7591" stroke-width="1.4" stroke-dasharray="4 3" fill="none" marker-end="url(#atop-arr-gray)"/>
+  <!-- judge → doc -->
+  <path d="M660,554 L700,554" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
+  <!-- doc → postgres / langsmith -->
+  <path d="M980,538 L1020,531" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
+  <path d="M980,568 L1020,581" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
+  <!-- orchestrator reads back (dotted violet) -->
+  <path d="M1110,510 L1110,140 L660,140" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#atop-arr-violet)" opacity="0.7"/>
+
+  <!-- Annotations -->
+  <text x="510" y="134" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">campaign plan</text>
+  <text x="178" y="424" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591" text-anchor="end">attack</text>
+  <text x="222" y="510" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">response</text>
+  <text x="678" y="544" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">verdict</text>
+  <text x="1124" y="332" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591" transform="rotate(-90 1124 332)">coverage · findings · audit</text>
+
+  <!-- Legend -->
+  <g transform="translate(40,620)">
+    <rect x="0" y="0" width="10" height="10" fill="#f5a524"/>
+    <text x="18" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">ADVERSARIAL ROLE</text>
+    <rect x="220" y="0" width="10" height="10" fill="#38bdf8"/>
+    <text x="238" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">PLATFORM ROLE</text>
+    <rect x="430" y="0" width="10" height="10" fill="#a78bfa"/>
+    <text x="448" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">DURABLE STORE / TRACE</text>
+    <rect x="680" y="0" width="10" height="10" fill="#6b7591"/>
+    <text x="698" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">EXTERNAL SURFACE</text>
+  </g>
+</svg>
+
+</p>
+
 ### 2.2 Communication & state
 
 - **Intra-campaign state:** typed LangGraph `CampaignState` carrying
@@ -1040,68 +1214,204 @@ Full report: **[`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md)**.
   context), treat tool descriptions as **untrusted input**, not
   documentation — see research §3.2 / CVE-2025-6514.
 
-## 7. Architecture diagram (textual; final SVG/PNG before Friday)
+## 7. System architecture diagram
 
-```
-                       ┌─────────────────────┐
-                       │   Web UI / CLI      │
-                       │  (viewer/operator/  │
-                       │  senior_operator)   │
-                       └─────────┬───────────┘
-                                 │ campaign request
-                                 ▼
-                       ┌─────────────────────┐         reads coverage,
-                       │   ORCHESTRATOR      │◀─────── findings, audit
-                       │  (deterministic     │         from Postgres
-                       │  bandit + meta-LLM) │
-                       └─────────┬───────────┘
-                                 │ campaign plan
-                                 ▼
-            ┌────────────────────────────────────────────┐
-            │      RED TEAM ROUTER (LangGraph node)      │
-            └─────┬──────────────┬──────────────┬────────┘
-                  │              │              │
-            ┌─────▼────┐    ┌────▼─────┐   ┌────▼────────┐
-            │Injection │    │  Exfil   │   │ ToolAbuse   │
-            │ RedTeam  │    │ RedTeam  │   │  RedTeam    │
-            └─────┬────┘    └────┬─────┘   └────┬────────┘
-                  │              │              │
-                  └──────┬───────┴──────────────┘
-                         ▼
-                    ┌──────────┐         ┌──────────────────┐
-                    │ MUTATOR  │────────▶│  OUTPUT FILTER   │
-                    └──────────┘         │  (regex + LLM)   │
-                                         └────────┬─────────┘
-                                                  │ safe-to-send
-                                                  ▼
-                                  ┌─────────────────────────────┐
-                                  │   TARGET CO-PILOT (live)    │
-                                  │  via Project HTTP contract  │
-                                  └────────────────┬────────────┘
-                                                   │ response
-                                                   ▼
-                                  ┌─────────────────────────────┐
-                                  │           JUDGE             │
-                                  │  deterministic check first, │
-                                  │  LLM rubric on inconclusive │
-                                  └────────────────┬────────────┘
-                                                   │ verdict
-                                                   ▼
-                                  ┌─────────────────────────────┐
-                                  │      DOCUMENTATION          │
-                                  │  files report; pauses on    │
-                                  │  critical → human approval  │
-                                  └────────────────┬────────────┘
-                                                   │
-                                                   ▼
-                              ┌────────────────────────────────────┐
-                              │ POSTGRES (findings, reports,       │
-                              │ regression_cases, coverage,        │
-                              │ audit_log)  +  LangSmith traces    │
-                              └────────────────────────────────────┘
-                                                   │
-                                                   ▼
-                              ┌────────────────────────────────────┐
-                              │ REDIS PUB/SUB → live dashboard     │
-                              └────────────────────────────────────┘
-```
+The agent topology (§2.1) shows *which agent talks to which agent*. The
+diagram below shows *where those agents live*, what they share, and
+what they reach out to — the deployment and data-plane view.
+
+<p align="center">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 600" width="100%" role="img" aria-label="CATS system architecture — Digital Ocean droplet hosting FastAPI edge, LangGraph agent runtime, Postgres state, and Redis pub/sub; external fan-out to OpenRouter, LangSmith, and registered target Co-Pilot URLs">
+  <defs>
+    <marker id="sys-arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+    <marker id="sys-arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
+    <marker id="sys-arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+    <marker id="sys-arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7591"/></marker>
+  </defs>
+
+  <!-- self-contained background -->
+  <rect x="0" y="0" width="1280" height="600" fill="#0a0e1a"/>
+
+  <!-- subtle grid overlay -->
+  <g stroke="#1e2740" stroke-width="0.5" opacity="0.4">
+    <path d="M0,60 H1280 M0,120 H1280 M0,180 H1280 M0,240 H1280 M0,300 H1280 M0,360 H1280 M0,420 H1280 M0,480 H1280 M0,540 H1280"/>
+    <path d="M120,0 V600 M240,0 V600 M360,0 V600 M480,0 V600 M600,0 V600 M720,0 V600 M840,0 V600 M960,0 V600 M1080,0 V600 M1200,0 V600"/>
+  </g>
+
+  <!-- DROPLET ENVELOPE -->
+  <rect x="20" y="20" width="900" height="560" rx="3" fill="none" stroke="#2a3553" stroke-width="1" stroke-dasharray="6 4"/>
+  <rect x="20" y="20" width="260" height="22" fill="#131a2e"/>
+  <text x="30" y="36" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5" letter-spacing="1.6" fill="#6b7591">Digital Ocean Droplet · cats-prod-01</text>
+
+  <!-- Layer labels -->
+  <text x="36" y="76"  font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5" letter-spacing="1.6" fill="#38bdf8">01 · USERS</text>
+  <text x="36" y="172" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5" letter-spacing="1.6" fill="#38bdf8">02 · EDGE</text>
+  <text x="36" y="268" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5" letter-spacing="1.6" fill="#f5a524">03 · AGENTS</text>
+  <text x="36" y="404" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5" letter-spacing="1.6" fill="#a78bfa">04 · DATA PLANE</text>
+  <text x="956" y="44" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="9.5" letter-spacing="1.6" fill="#6b7591">05 · EXTERNAL</text>
+
+  <!-- LAYER 1: USERS -->
+  <g>
+    <rect x="160" y="56" width="200" height="68" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="174" y="76" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">HUMAN</text>
+    <text x="174" y="96" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Engineer CLI</text>
+    <text x="174" y="114" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">ad-hoc campaigns · triage</text>
+  </g>
+  <g>
+    <rect x="380" y="56" width="200" height="68" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="394" y="76" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">HUMAN</text>
+    <text x="394" y="96" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Web UI · CISO / Ops</text>
+    <text x="394" y="114" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">dashboards · approval gate</text>
+  </g>
+  <g>
+    <rect x="600" y="56" width="200" height="68" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="614" y="76" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">AUTOMATED</text>
+    <text x="614" y="96" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">CI Webhook</text>
+    <text x="614" y="114" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">GitHub Actions · regression</text>
+  </g>
+
+  <!-- LAYER 2: EDGE -->
+  <g>
+    <rect x="160" y="152" width="640" height="68" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
+    <text x="174" y="172" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">SERVICE · EDGE</text>
+    <text x="174" y="192" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">FastAPI + HTMX</text>
+    <text x="174" y="208" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">REST · Server-Sent Events · role-gated auth · audit log</text>
+    <text x="784" y="192" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591" text-anchor="end">:8080</text>
+  </g>
+
+  <!-- LAYER 3: AGENTS -->
+  <g>
+    <rect x="160" y="248" width="640" height="128" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="174" y="268" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">AGENT RUNTIME</text>
+    <text x="174" y="290" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">LangGraph state machine</text>
+
+    <!-- agent chiclets -->
+    <g><rect x="174" y="302" width="116" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/><text x="186" y="319" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#38bdf8">Orchestrator</text></g>
+    <g><rect x="298" y="302" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/><text x="310" y="319" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#f5a524">RT · Injection</text></g>
+    <g><rect x="422" y="302" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/><text x="434" y="319" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#f5a524">RT · Exfil</text></g>
+    <g><rect x="546" y="302" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/><text x="558" y="319" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#f5a524">RT · ToolAbuse</text></g>
+    <g><rect x="670" y="302" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/><text x="682" y="319" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#f5a524">Mutator</text></g>
+    <g><rect x="174" y="336" width="180" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/><text x="186" y="353" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#38bdf8">Output Filter</text></g>
+    <g><rect x="362" y="336" width="180" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/><text x="374" y="353" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#38bdf8">Judge</text></g>
+    <g><rect x="550" y="336" width="236" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/><text x="562" y="353" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#38bdf8">Documentation · human gate</text></g>
+  </g>
+
+  <!-- LAYER 4: DATA PLANE -->
+  <g>
+    <rect x="160" y="404" width="380" height="132" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1"/>
+    <text x="174" y="424" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">STATE</text>
+    <text x="174" y="446" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Postgres 16</text>
+    <text x="174" y="464" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">campaigns · findings · reports</text>
+    <text x="174" y="480" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">regression_cases · coverage · audit_log</text>
+    <text x="174" y="500" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">9 tables · row-level enforcement on principal</text>
+    <text x="174" y="514" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">migrations: alembic</text>
+  </g>
+  <g>
+    <rect x="560" y="404" width="240" height="132" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1"/>
+    <text x="574" y="424" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">REALTIME</text>
+    <text x="574" y="446" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Redis 7</text>
+    <text x="574" y="464" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">pub/sub channels</text>
+    <text x="574" y="480" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">campaign.{id}.events</text>
+    <text x="574" y="500" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">drives HTMX SSE dashboard</text>
+    <text x="574" y="514" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">no durable state</text>
+  </g>
+
+  <!-- LAYER 5: EXTERNAL -->
+  <g>
+    <rect x="956" y="56" width="304" height="102" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="970" y="76" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">FAN-OUT · LLM</text>
+    <text x="970" y="98" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">OpenRouter</text>
+    <text x="970" y="116" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">Anthropic · OpenAI · Google</text>
+    <text x="970" y="132" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">DeepSeek · Nous · Meta</text>
+    <text x="970" y="150" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">family-diversity policy enforced</text>
+  </g>
+  <g>
+    <rect x="956" y="176" width="304" height="78" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="970" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">TRACE</text>
+    <text x="970" y="218" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">LangSmith</text>
+    <text x="970" y="234" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">every LLM call · per-agent cost</text>
+    <text x="970" y="248" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">trace_id stamped on every Finding</text>
+  </g>
+  <g>
+    <rect x="956" y="272" width="304" height="102" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="970" y="292" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">TARGETS · PROJECTS</text>
+    <text x="970" y="314" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Co-Pilot URLs</text>
+    <text x="970" y="332" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">local · staging · prod</text>
+    <text x="970" y="348" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">per-project HTTP contract + auth</text>
+    <text x="970" y="366" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">allowlist · run authorization required</text>
+  </g>
+  <g>
+    <rect x="956" y="392" width="304" height="60" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="970" y="412" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">INFRA</text>
+    <text x="970" y="434" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Backups · S3 (off-droplet)</text>
+  </g>
+
+  <!-- EDGES -->
+  <!-- users → edge -->
+  <path d="M260,124 L260,152" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-cyan)"/>
+  <path d="M480,124 L480,152" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-cyan)"/>
+  <path d="M700,124 L700,152" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-cyan)"/>
+  <!-- edge → agents -->
+  <path d="M480,220 L480,248" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-amber)"/>
+  <!-- agents → data -->
+  <path d="M350,376 L350,404" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-violet)"/>
+  <path d="M680,376 L680,404" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-violet)"/>
+  <!-- data → edge (read for dashboard, dotted) -->
+  <path d="M680,404 L860,404 L860,186 L800,186" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#sys-arr-violet)" opacity="0.7"/>
+  <!-- agents → openrouter -->
+  <path d="M800,310 L956,108" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-gray)"/>
+  <!-- agents → langsmith -->
+  <path d="M800,336 L956,214" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-gray)"/>
+  <!-- agents → targets -->
+  <path d="M800,352 L956,320" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#sys-arr-gray)"/>
+  <!-- postgres → s3 backups -->
+  <path d="M540,470 L880,470 L880,422 L956,422" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#sys-arr-violet)" opacity="0.7"/>
+
+  <!-- annotations -->
+  <text x="490" y="240" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">campaign API</text>
+  <text x="356" y="398" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">durable</text>
+  <text x="690" y="398" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">live events</text>
+  <text x="826" y="208" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">dashboard reads</text>
+
+  <!-- Legend -->
+  <g transform="translate(40,560)">
+    <rect x="0" y="0" width="10" height="10" fill="#38bdf8"/>
+    <text x="18" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">PLATFORM SERVICE</text>
+    <rect x="220" y="0" width="10" height="10" fill="#f5a524"/>
+    <text x="238" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">AGENT RUNTIME</text>
+    <rect x="430" y="0" width="10" height="10" fill="#a78bfa"/>
+    <text x="448" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">STATE / REALTIME</text>
+    <rect x="660" y="0" width="10" height="10" fill="#6b7591"/>
+    <text x="678" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">EXTERNAL INTEGRATION</text>
+  </g>
+</svg>
+
+</p>
+
+**Read this diagram alongside §2.1's agent topology.** §2.1 answers
+*which agent talks to which agent*. The diagram above answers *where
+those agents live, what they share, and what they reach out to.* The
+amber **AGENT RUNTIME** block in the middle of the droplet is the
+LangGraph state machine that §2.1 expands node-by-node.
+
+**Layer reading:**
+
+- **01 · Users** — three trigger sources, each authenticated and
+  audit-logged.
+- **02 · Edge** — FastAPI + HTMX surface; REST for campaign control,
+  SSE for live dashboard streaming.
+- **03 · Agents** — LangGraph state machine with the seven typed
+  agent nodes (Orchestrator, three Red Team specialists, Mutator,
+  Output Filter, Judge, Documentation).
+- **04 · Data plane** — Postgres for durable records, Redis for
+  ephemeral pub/sub. State and realtime are deliberately separated:
+  losing Redis loses live dashboard updates but no persistent data.
+- **05 · External** — OpenRouter for LLM fan-out across six model
+  families, LangSmith for trace sink, registered Co-Pilot URLs as
+  Project targets, off-droplet S3 for Postgres backups.
+
+The droplet boundary is the audit boundary: every request leaving
+the droplet (to OpenRouter, LangSmith, the targets, or S3) is
+logged with the originating Campaign id and Finding id where
+applicable.
