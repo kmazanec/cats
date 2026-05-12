@@ -76,6 +76,13 @@ and needs continuous attention rather than a single ship date.
   automatically. From Round 3 forward, a separate scheduled
   job exercises the judge against real models so we know it
   hasn't drifted.
+- **Continuous deploy.** From Round 1 forward, every green
+  change on the main branch reaches the deployed CATS URL
+  automatically. Every round inherits this rail; a round
+  isn't done until the change it shipped is reachable at the
+  deployed URL, not just on a laptop. Failed deploys are
+  visible, not silent, and the rollback path is always one
+  command.
 - **Security hygiene.** Keys, budgets, and credentials are
   managed conservatively from the first round and stay that
   way — every round inherits the discipline; no round gets to
@@ -130,8 +137,10 @@ Every round below uses the same shape:
 ## Round 1 — Foundation
 
 **Goal.** Give a user somewhere to log in, somewhere to register
-the targets they want CATS to test, and confidence that the
-platform can reach the external services it depends on.
+the targets they want CATS to test, confidence that the platform
+can reach the external services it depends on, and a deployed
+URL where the platform actually lives — with the pipelines in
+place that will carry every later round to that URL.
 
 **Outcome.** A user can:
 
@@ -144,6 +153,13 @@ platform can reach the external services it depends on.
 5. Run a one-command health check and get a clear yes/no answer
    on whether CATS can reach its model provider, its trace sink,
    and its own data store.
+6. Open the deployed CATS dashboard in a browser at
+   **`https://cats.biograph.dev`** — not just localhost — and
+   trust that pushing changes to the main branch lands them
+   there automatically.
+7. See the status of the most recent automated check and the
+   most recent deploy at a glance, so a red build or a failed
+   deploy isn't a silent failure.
 
 **Scope.**
 
@@ -158,12 +174,27 @@ In:
   command
 - A minimal, functional dashboard that shows the above to the
   right roles
+- A working deployment: CATS runs on the same Digital Ocean
+  droplet as the Co-Pilot, as another container behind the
+  host's existing Caddy reverse proxy, reachable from the
+  outside at `https://cats.biograph.dev`. Dashboard, health
+  check, and CRUD are all usable from outside the host.
+- A working pipeline: every change to the main branch runs the
+  platform's quality checks, and a green pipeline ships the
+  build to the deployed URL without a human pushing a button
+- Visibility into both pipelines (build status, deploy status,
+  most-recent-deploy timestamp) reachable from the dashboard
+- A documented, tested rollback path: if a deploy ships a bad
+  build, an operator can revert to the previous good build with
+  a single, well-known command
 
 Out:
 - Any agent behavior — no campaigns, no attacks, no findings
 - Any view of findings or attack history
 - Dashboard styling beyond what's needed to demonstrate the
   surfaces above
+- Blue/green or zero-downtime deploy strategies — a brief
+  restart window on each deploy is acceptable for this round
 
 **Definition of done (in addition to global DoD).**
 
@@ -179,6 +210,19 @@ Out:
 - [ ] The health check accurately reports green when everything
       is wired and red (with which dependency is failing) when
       it isn't.
+- [ ] The deployed CATS dashboard is reachable from outside
+      the host at `https://cats.biograph.dev`, with the
+      certificate served by the host's existing Caddy proxy.
+- [ ] A change merged to the main branch reaches that URL
+      automatically — no manual SSH, no manual scripts.
+- [ ] If a build fails its checks, it does not deploy, and the
+      dashboard shows the failure.
+- [ ] The rollback path has been rehearsed at least once
+      against a deliberately bad build, and the time-to-rollback
+      is documented in the README.
+- [ ] CATS' deploys do not disrupt the Co-Pilot running on the
+      same host — verified by leaving the Co-Pilot under light
+      synthetic load during a CATS deploy.
 
 **Risks & blockers.**
 
@@ -192,6 +236,31 @@ Out:
   time CATS tries to register the live Co-Pilot. If the
   Co-Pilot's URL or authentication contract isn't pinned down
   before this round starts, the round can't complete.
+- **Sharing the host with the Co-Pilot.** CATS deploys onto the
+  same Digital Ocean droplet, running as another Docker service
+  behind the host's existing Caddy reverse proxy. Resource
+  contention, port collisions, and the risk of a CATS-side
+  incident affecting the Co-Pilot are all real. Coordinate the
+  Caddy config change for `cats.biograph.dev` and the resource
+  envelope (CPU, memory, disk) with whoever owns the host
+  before the round starts.
+- **DNS for `cats.biograph.dev`.** The subdomain has to exist
+  and point at the droplet before the round can satisfy its
+  externally-reachable outcome. Whoever owns the `biograph.dev`
+  zone has to add the record; verify this is a phone call
+  away, not a procurement ticket away.
+- **Secrets in the deploy pipeline.** The pipeline needs API
+  keys, model-provider credentials, and trace-sink tokens to
+  do its job. Those secrets cannot live in the repo or in
+  build logs. Setting up secret storage that the pipeline can
+  read but the public artifact cannot is a real piece of work
+  and tends to be underestimated.
+- **First-deploy surprises.** Even with Caddy already handling
+  TLS for the Co-Pilot, the first time CATS comes up at its own
+  subdomain is the first time DNS, the new Caddy site block,
+  and the new container's network all get exercised together.
+  Plan for at least one round of "the deploy succeeded but
+  nothing is reachable" debugging.
 
 **Tasks.** *(builder fills in as completed)*
 
