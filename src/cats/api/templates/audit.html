@@ -1,0 +1,78 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Audit log{% endblock %}
+{% block crumb %}Audit log{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px;">
+  <section>
+    <span class="eyebrow">— Audit · append-only · DB-enforced</span>
+    <h1 class="title">Who did what, when.</h1>
+    <p class="subtitle">
+      Every user action mutates the audit log; the Postgres trigger blocks UPDATE
+      and DELETE. Filter by actor email or action name to scope the view.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Filters</div>
+      <div class="meta">{{ audit_rows|length }} entries shown · limit {{ limit }}</div>
+    </header>
+    <div class="body">
+      <form action="/audit" method="get" class="row" style="gap: 10px; align-items: flex-end;">
+        <label class="field" style="flex: 2;">
+          <span class="l">Actor</span>
+          <input type="text" name="actor" value="{{ filter_actor }}" placeholder="email@host" />
+        </label>
+        <label class="field" style="flex: 2;">
+          <span class="l">Action</span>
+          <input type="text" name="action" value="{{ filter_action }}" placeholder="project.create" />
+        </label>
+        <label class="field" style="flex: 1;">
+          <span class="l">Limit</span>
+          <input type="number" name="limit" value="{{ limit }}" min="1" max="1000" />
+        </label>
+        <button class="btn" type="submit"><span class="ch">▸</span>filter</button>
+        <a class="btn ghost" href="/audit">reset</a>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Audit entries</div>
+      <div class="meta">newest first</div>
+    </header>
+    <div class="body flush">
+      {% if audit_rows %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th class="num" style="width: 180px;">When (UTC)</th>
+              <th style="width: 220px;">Actor</th>
+              <th style="width: 200px;">Action</th>
+              <th style="width: 110px;">Target kind</th>
+              <th class="mono" style="width: 90px;">Target</th>
+              <th>Payload</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in audit_rows %}
+              <tr>
+                <td class="num mono muted">{{ r.at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>{{ r.actor }}</td>
+                <td><span class="mono">{{ r.action }}</span></td>
+                <td class="muted mono">{{ r.target_kind }}</td>
+                <td class="mono muted">{{ (r.target_id|string)[:8] if r.target_id else '—' }}</td>
+                <td class="mono muted" style="font-size: 11px;">{{ r.payload }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">no audit entries match your filter</div>
+      {% endif %}
+    </div>
+  </div>
+</main>
+{% endblock %}

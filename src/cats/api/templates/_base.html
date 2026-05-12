@@ -23,15 +23,30 @@
     </div>
     <nav>
       <a href="/" class="{% if active == 'home' %}active{% endif %}">Overview</a>
+      <a href="/projects" class="{% if active == 'projects' %}active{% endif %}">Projects</a>
       <a href="/campaigns" class="{% if active == 'campaigns' %}active{% endif %}">Campaigns</a>
       <a href="/findings" class="{% if active == 'findings' %}active{% endif %}">Findings</a>
-      <a href="/projects" class="{% if active == 'projects' %}active{% endif %}">Projects</a>
+      <a href="/audit" class="{% if active == 'audit' %}active{% endif %}">Audit</a>
+      <a href="/health" class="{% if active == 'health' %}active{% endif %}">Health</a>
+      {% if principal and principal.role == 'admin' %}
+        <a href="/users" class="{% if active == 'users' %}active{% endif %}">Users</a>
+      {% endif %}
       <a href="/docs">API</a>
     </nav>
     <div class="sysline">
       <span><span class="k">env</span> {{ env_tag }}</span>
-      <span><span class="k">build</span> {{ build_tag }}</span>
+      <span><span class="k">build</span>
+        {% if build_pipeline_url %}<a href="{{ build_pipeline_url }}" class="nav-link">{{ build_tag }}</a>{% else %}{{ build_tag }}{% endif %}
+      </span>
       <span><span class="k">ts</span> {{ now_utc }}</span>
+      {% if principal %}
+        <span><span class="k">{{ principal.role }}</span> {{ principal.email }}</span>
+        <form action="/logout" method="post" style="display:inline;">
+          <button type="submit" class="nav-link" style="background:none;border:0;cursor:pointer;color:inherit;font:inherit;letter-spacing:inherit;">sign out</button>
+        </form>
+      {% else %}
+        <span><a class="nav-link" href="/login">sign in</a></span>
+      {% endif %}
     </div>
   </header>
 

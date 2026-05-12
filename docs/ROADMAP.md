@@ -264,17 +264,159 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R1 builder_
+- [x] `users` table + Alembic migration `20260512_0003_users.py` (bcrypt
+      hashes, role enum, is_active flag).
+- [x] `cats/api/auth.py`: bcrypt password helpers, signed itsdangerous
+      session cookie, `current_principal` / `require_user` /
+      `require_role(min)` FastAPI dependencies. Replaces the scaffold stub.
+- [x] `cats/db/repositories/{user_repo,project_repo,audit_repo}.py` —
+      hand-written async SQL, one module per concern.
+- [x] Bootstrap admin seeded from `CATS_ADMIN_EMAIL` /
+      `CATS_ADMIN_PASSWORD` at app startup (lifespan handler, idempotent).
+- [x] Project CRUD: `/projects` list, `/projects/new`,
+      `/projects/{id}/edit`, `/projects/{id}/delete`. Operator+
+      create/edit; admin delete; viewer list-only. Validates `base_url`
+      and `env`.
+- [x] User-management CRUD (admin-only): `/users` list/create/deactivate.
+- [x] `/audit` view with actor + action filter; append-only enforced by
+      the DB trigger from migration `20260511_0001`.
+- [x] `cats/health/checks.py` reachability module (postgres / redis /
+      openrouter / langsmith) with ok / fail / not_configured semantics.
+- [x] `/health` HTML page + `/health/full` JSON endpoint + `cats health`
+      CLI command (exit-code-aware).
+- [x] R1 templates: `login.html`, `projects_list.html`,
+      `project_form.html`, `users_list.html`, `audit.html`, `health.html`,
+      `forbidden.html`. Reuse the existing `tokens.css` design system.
+- [x] Auth threaded into existing pages: chrome-top now shows role,
+      email, sign-out; the `/` route redirects to `/login` when
+      unauthenticated.
+- [x] `403`s render the `forbidden.html` page with the failed-role
+      message (visible, not silent). HTML `401`s redirect to `/login`;
+      JSON 401s stay JSON.
+- [x] Build-SHA + pipeline link in chrome-top
+      (`CATS_BUILD_SHA` / `CATS_GITLAB_PIPELINE_URL` env, set by the
+      deploy job).
+- [x] Unit tests: bcrypt round-trip, role-rank ordering, session-token
+      round-trip + tamper-rejection, healthcheck branches (ok / fail /
+      not_configured) for openrouter and langsmith.
+- [x] Integration tests against real Postgres: login flow, project CRUD
+      with role gating across operator + viewer + admin, audit-log
+      writes after each mutation, healthcheck endpoint shape + auth gate.
+- [x] `.gitlab-ci.yml`: `lint` (ruff + mypy strict) → `test-unit` →
+      `deploy` (only on `main`, shell runner on the droplet, in-place
+      `git pull` + `docker compose up -d --build`). Manual `rollback`
+      job that takes a `ROLLBACK_SHA` variable.
+- [x] `docs/DEPLOY.md` — Caddy site block snippet, GitLab variable
+      list, rehearsed rollback path with measured time, post-deploy
+      verification checklist.
+- [x] `README.md` — under-10-minute walkthrough from clone to first
+      registered project to first audit-log entry.
+- [x] `make lint` clean: ruff check + ruff format --check + mypy strict
+      across 98 source files; 40 tests passing (28 unit + 12 integration).
+- [x] `.env.example` updated with `CATS_ADMIN_*`, `CATS_SESSION_SECRET`,
+      build-SHA env hints.
 
 **Decisions.** *(builder records as made — preserve rationale, not just outcome)*
 
-- _to be filled by R1 builder_
+- **Auth = seeded admin + bcrypt + signed cookie, not OIDC.** OIDC would
+  blow the round budget on identity infra the round explicitly warns
+  against. Bcrypt + itsdangerous is real enough to make the audit log
+  honest, replaceable later without changing call sites
+  (`current_principal` is the only entry point routes use).
+- **Admin bootstraps from env, then admin creates other users in the
+  dashboard.** Picked over "all four roles in env" so the role gate is
+  *demoable* (admin can create a viewer; the viewer hits a 403 page)
+  rather than a code-only contract.
+- **Existing R2+ index.html stays intact; R1 adds new pages alongside.**
+  The dashboard panels for campaigns / findings render empty states
+  honestly. Throwing them away to "stay R1-pure" would lose useful
+  scaffold the next round will need anyway.
+- **Healthcheck split: liveness `/healthz` stays open; full
+  `/health/full` is auth-gated.** The full check exposes which provider
+  keys are set — meaningful info — so it sits behind the session cookie.
+  Liveness has to be unauthenticated for container orchestrators to use
+  it.
+- **`B008` ignored under `src/cats/api/**` only.** FastAPI's
+  `Depends(...)` in argument defaults is the dependency-injection idiom;
+  the lint rule is wrong for this package, not the code.
+- **GitLab CI shell-executor on the droplet itself.** The runner *is*
+  the deploy host, so `git reset --hard $SHA && docker compose up -d
+  --build` in place is the simplest correct answer. No registry, no
+  SSH, no remote build. Brief restart window per the round's accepted
+  scope.
+- **Rollback = manual GitLab job + documented manual SSH path.** Two
+  paths because path A depends on GitLab being up; path B works when it
+  isn't.
+- **`audit_log` writes go through `audit_repo.write_audit()`, not a
+  decorator.** A decorator would be cleaner across many routes but
+  hides that actor + payload shape differs per action; explicit calls
+  are easier to read in the route and easier to test.
+- **`aclose` over `close` for redis 5.x.** redis pushes toward `aclose`;
+  types-redis lags. `# type: ignore[attr-defined]` on that one line is
+  the smallest correct response and avoids the deprecation warning that
+  `close` would carry forever.
+- **CSRF: relying on `samesite=lax` for R1; no token.** All mutating
+  POSTs require a session cookie set with `samesite=lax`, which blocks
+  cross-site form submits and is the de-facto floor for HTMX-style
+  apps. Adding a real CSRF token + double-submit pattern is deferred
+  to R2 alongside the campaign-fire endpoint, where the blast radius
+  rises sharply (an attack against a live target). Logged here so the
+  next builder doesn't assume the gap is invisible.
 
 **Retrospective.** *(builder fills in after R1 ships)*
 
-- What went well: _
-- What didn't: _
-- What to change for R2: _
+- **What went well.**
+  - The R2+ scaffold left in `src/cats/api/templates/index.html` and the
+    `tokens.css` design system meant new R1 pages (login, projects,
+    audit, health, users, forbidden) dropped in without writing any
+    new CSS. Decision to keep the existing index intact paid off.
+  - `current_principal` / `require_user` / `require_role(min)` as a
+    three-tier dependency chain made route-by-route gating a one-liner
+    and the integration tests trivial to write — operator vs viewer vs
+    admin behaviors are six lines of test each.
+  - Integration tests against the live Postgres compose service
+    (rather than mocked sessions) caught two real bugs: `_engine` global
+    cache binding to the wrong event loop, and the 401 handler
+    re-raising instead of returning JSON. Both were silent in unit
+    tests; both surfaced immediately under httpx + ASGI.
+  - The separate-agent self-review caught three things the builder
+    didn't notice: a docstring lying about behavior, a defense-in-depth
+    gap in `hash_password`, and an undocumented CSRF posture. None
+    were blocking; all were trivially fixable. Worth the round trip.
+
+- **What didn't.**
+  - `pytest-asyncio` event-loop scoping cost ~30 minutes of confusion
+    before the per-test engine pattern clicked. Worth a `tests/README.md`
+    note for the next builder.
+  - The `cats.config.settings` global captured at import time means
+    tests have to monkeypatch the *module attribute* rather than
+    `os.environ` + `_load.cache_clear()`. Tripped once; documented in
+    the test file, but a `Settings.refresh()` classmethod or a
+    DI-via-dependency pattern would be cleaner long-term.
+  - `Depends(...)` in argument defaults trips ruff `B008` everywhere;
+    the per-file ignore is fine but the noise during early development
+    was distracting. Should have set the ignore at scaffold time.
+  - The `_http_exception_handler` had to be added late because the
+    default FastAPI handler doesn't redirect HTML 401s — only realised
+    after the integration test for `/health/full` blew up.
+
+- **What to change for R2.**
+  - Round 2 brings the campaign-fire endpoint, which has real blast
+    radius. The R1 CSRF gap (samesite=lax cookie only) needs to close
+    before that endpoint goes live — add a double-submit token or move
+    to header-based POST and reject form-encoded.
+  - Hide the `cats.config.settings` import-time global behind a
+    `Depends(get_settings)` pattern so tests don't have to monkeypatch
+    a module attribute.
+  - Add a `tests/README.md` documenting the per-test engine pattern
+    and the `_load.cache_clear()` / module-attribute monkeypatch dance.
+    The next builder should not have to relearn this.
+  - Wire deploy + lint + test-unit jobs against an actual GitLab
+    project (the YAML is in place; the project + runner registration
+    is a one-time R1 follow-up).
+  - Consider replacing the per-route `_chrome_ctx(principal)` helper
+    with a Jinja context processor so future pages don't have to
+    remember to pass it.
 
 ---
 

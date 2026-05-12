@@ -40,6 +40,10 @@ dependencies = [
 
     # Logging
     "structlog>=24.4",
+
+    # Auth (R1)
+    "bcrypt>=4.2",
+    "itsdangerous>=2.2",
 ]
 
 [project.optional-dependencies]
@@ -88,6 +92,9 @@ ignore = ["E501"]    # line length handled by formatter
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]
+# FastAPI's Depends() idiom requires function calls in defaults — that's the
+# whole point of the dependency injection pattern.
+"src/cats/api/**" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

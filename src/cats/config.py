@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8400, alias="CATS_API_PORT")
     log_level: str = Field(default="INFO", alias="CATS_LOG_LEVEL")
 
+    # Auth (R1)
+    session_secret: str = Field(default="dev-session-secret-change-me", alias="CATS_SESSION_SECRET")
+    session_max_age_seconds: int = Field(
+        default=60 * 60 * 24 * 7, alias="CATS_SESSION_MAX_AGE_SECONDS"
+    )
+    admin_email: str = Field(default="", alias="CATS_ADMIN_EMAIL")
+    admin_password: str = Field(default="", alias="CATS_ADMIN_PASSWORD")
+
+    # Build / deploy metadata (R1) — populated by the deploy job
+    build_sha: str = Field(default="dev", alias="CATS_BUILD_SHA")
+    gitlab_pipeline_url: str = Field(default="", alias="CATS_GITLAB_PIPELINE_URL")
+
 
 @lru_cache(maxsize=1)
 def _load() -> Settings:

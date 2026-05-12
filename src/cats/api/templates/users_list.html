@@ -1,0 +1,105 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Users{% endblock %}
+{% block crumb %}Users{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+  <section>
+    <span class="eyebrow">— Users · admin only</span>
+    <h1 class="title">Operators with access to CATS.</h1>
+    <p class="subtitle">
+      Roles in ascending order: <code class="mono">viewer</code> → <code class="mono">operator</code>
+      → <code class="mono">senior_operator</code> → <code class="mono">admin</code>. Each user
+      action is recorded in the <a class="nav-link" href="/audit">audit log</a>.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Add user</div>
+      <div class="meta">password ≥ 8 characters</div>
+    </header>
+    <div class="body">
+      {% if error %}
+        <div class="empty" style="border-color: var(--red); color: var(--red); margin-bottom: 14px;">
+          {{ error }}
+        </div>
+      {% endif %}
+      <form action="/users" method="post" class="row" style="gap: 10px; align-items: flex-end;">
+        <label class="field" style="flex: 2;">
+          <span class="l">Email</span>
+          <input type="email" name="email" required />
+        </label>
+        <label class="field" style="flex: 2;">
+          <span class="l">Initial password</span>
+          <input type="text" name="password" minlength="8" required />
+        </label>
+        <label class="field" style="flex: 1;">
+          <span class="l">Role</span>
+          <select name="role">
+            {% for r in roles %}
+              <option value="{{ r }}">{{ r }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="btn" type="submit"><span class="ch">+</span>add</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Existing users</div>
+      <div class="meta">{{ users|length }} total</div>
+    </header>
+    <div class="body flush">
+      {% if users %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th style="width: 130px;">Role</th>
+              <th style="width: 90px;">Active</th>
+              <th class="num" style="width: 110px;">Created</th>
+              <th style="width: 160px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in users %}
+              <tr>
+                <td>{{ u.email }}{% if u.id == principal.user_id %}<span class="muted mono" style="font-size: 11px;"> · you</span>{% endif %}</td>
+                <td><span class="mono muted">{{ u.role }}</span></td>
+                <td>
+                  {% if u.is_active %}
+                    <span class="dot green"></span>active
+                  {% else %}
+                    <span class="dot"></span>off
+                  {% endif %}
+                </td>
+                <td class="num muted">{{ u.created_at.strftime('%Y-%m-%d') }}</td>
+                <td>
+                  {% if u.id != principal.user_id %}
+                    {% if u.is_active %}
+                      <form action="/users/{{ u.id }}/deactivate" method="post" style="display:inline;">
+                        <button class="btn ghost" type="submit">deactivate</button>
+                      </form>
+                    {% else %}
+                      <form action="/users/{{ u.id }}/reactivate" method="post" style="display:inline;">
+                        <button class="btn ghost" type="submit">reactivate</button>
+                      </form>
+                    {% endif %}
+                  {% else %}
+                    <span class="muted mono" style="font-size: 11px;">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">no users yet</div>
+      {% endif %}
+    </div>
+  </div>
+</main>
+{% endblock %}

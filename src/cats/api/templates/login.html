@@ -1,0 +1,46 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Sign in{% endblock %}
+{% block crumb %}Sign in{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px; max-width: 480px; margin: 0 auto;">
+  <section>
+    <span class="eyebrow">— Authentication required</span>
+    <h1 class="title">Sign in to CATS.</h1>
+    <p class="subtitle">
+      Adversarial probes against live targets are role-gated and audit-logged.
+      Use your operator credentials.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Credentials</div>
+      <div class="meta">cookie session</div>
+    </header>
+    <div class="body">
+      {% if error %}
+        <div class="empty" style="border-color: var(--red); color: var(--red); margin-bottom: 14px;">
+          {{ error }}
+        </div>
+      {% endif %}
+      <form action="/login" method="post" class="stack" style="gap: 14px;">
+        <label class="field">
+          <span class="l">Email</span>
+          <input type="email" name="email" required autocomplete="username" autofocus />
+        </label>
+        <label class="field">
+          <span class="l">Password</span>
+          <input type="password" name="password" required autocomplete="current-password" />
+        </label>
+        <div class="row between" style="margin-top: 4px;">
+          <div class="mono" style="font-size: 11px; color: var(--ink-3); letter-spacing: 0.12em;">
+            session cookie · 7d default
+          </div>
+          <button class="btn" type="submit"><span class="ch">▸</span>sign in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+{% endblock %}

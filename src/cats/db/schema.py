@@ -48,6 +48,26 @@ def _uuid_pk() -> Column[Any]:
 
 
 # ---------------------------------------------------------------------------
+# Users (R1 — role-gated dashboard)
+# ---------------------------------------------------------------------------
+
+users = Table(
+    "users",
+    metadata,
+    _uuid_pk(),
+    Column("email", String(320), nullable=False, unique=True),
+    Column("password_hash", Text, nullable=False),
+    Column("role", String(32), nullable=False, server_default="viewer"),
+    Column("is_active", Boolean, nullable=False, server_default=text("true")),
+    _ts(),
+    CheckConstraint(
+        "role IN ('viewer','operator','senior_operator','admin')",
+        name="ck_users_role",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # Projects + versions
 # ---------------------------------------------------------------------------
 
@@ -396,5 +416,6 @@ __all__ = [
     "rubric_versions",
     "runs",
     "source_access_log",
+    "users",
     "vulnerability_reports",
 ]

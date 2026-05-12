@@ -1,0 +1,86 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Projects{% endblock %}
+{% block crumb %}Projects{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+  <section>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Projects · {{ projects|length }} registered</span>
+        <h1 class="title">Targets CATS knows about.</h1>
+        <p class="subtitle">
+          A Project is a target system under test — local docker, staging, or
+          deployed prod. Adding a Project does not authorize running attacks
+          against it; flip <code class="mono">allow_run_against</code> separately.
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        {% if principal.role in ('operator','senior_operator','admin') %}
+          <a class="btn" href="/projects/new"><span class="ch">+</span>register project</a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Registered projects</div>
+      <div class="meta">role: {{ principal.role }}</div>
+    </header>
+    <div class="body flush">
+      {% if projects %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th style="width: 90px;">Env</th>
+              <th>Base URL</th>
+              <th style="width: 130px;">Run-against?</th>
+              <th class="num" style="width: 110px;">Created</th>
+              <th style="width: 180px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in projects %}
+              <tr>
+                <td><strong>{{ p.name }}</strong>{% if p.description %}<div class="muted" style="font-size: 12px;">{{ p.description }}</div>{% endif %}</td>
+                <td><span class="dot {{ 'red' if p.env == 'prod' else 'amber' if p.env == 'staging' else 'cyan' }}"></span>{{ p.env }}</td>
+                <td class="mono muted">{{ p.base_url }}</td>
+                <td>
+                  {% if p.allow_run_against %}
+                    <span class="dot green"></span>allowed
+                  {% else %}
+                    <span class="dot"></span>denied
+                  {% endif %}
+                </td>
+                <td class="num muted">{{ p.created_at.strftime('%Y-%m-%d') }}</td>
+                <td class="row" style="gap: 8px;">
+                  {% if principal.role in ('operator','senior_operator','admin') %}
+                    <a class="btn ghost" href="/projects/{{ p.id }}/edit">edit</a>
+                  {% endif %}
+                  {% if principal.role == 'admin' %}
+                    <form action="/projects/{{ p.id }}/delete" method="post" style="display:inline;"
+                          onsubmit="return confirm('Delete project {{ p.name }}? This cannot be undone.');">
+                      <button class="btn ghost" type="submit" style="color: var(--red);">delete</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">
+          no projects registered
+          {% if principal.role in ('operator','senior_operator','admin') %}
+            <span class="hint"><a class="nav-link" href="/projects/new">register your first target</a></span>
+          {% else %}
+            <span class="hint">an operator can register the first target</span>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</main>
+{% endblock %}

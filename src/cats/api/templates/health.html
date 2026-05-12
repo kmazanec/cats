@@ -1,0 +1,60 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Health{% endblock %}
+{% block crumb %}Health{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px;">
+  <section>
+    <span class="eyebrow">— Reachability · external dependencies</span>
+    <h1 class="title">Can CATS reach what it needs?</h1>
+    <p class="subtitle">
+      One yes/no per dependency. <code class="mono">not_configured</code> is
+      neutral — credentials simply aren't set yet, which is fine in dev.
+      <code class="mono">fail</code> is red — the credential is set but the
+      call did not succeed.
+    </p>
+  </section>
+
+  <div class="panel {{ 'cy' if report.overall_ok else '' }}">
+    <header>
+      <div class="title">
+        Overall:
+        {% if report.overall_ok %}
+          <span class="dot green"></span>green
+        {% else %}
+          <span class="dot red"></span>blocked
+        {% endif %}
+      </div>
+      <div class="meta"><a class="nav-link" href="/health/full">JSON · /health/full</a></div>
+    </header>
+    <div class="body flush">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width: 200px;">Dependency</th>
+            <th style="width: 160px;">Status</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in report.checks %}
+            <tr>
+              <td><strong>{{ c.name }}</strong></td>
+              <td>
+                {% if c.status == 'ok' %}
+                  <span class="dot green"></span>ok
+                {% elif c.status == 'fail' %}
+                  <span class="dot red"></span>fail
+                {% else %}
+                  <span class="dot"></span>not configured
+                {% endif %}
+              </td>
+              <td class="mono muted" style="font-size: 12px;">{{ c.detail }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+{% endblock %}

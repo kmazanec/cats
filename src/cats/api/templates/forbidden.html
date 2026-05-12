@@ -1,0 +1,27 @@
+{% extends "_base.html" %}
+{% block title %}CATS · 403 Forbidden{% endblock %}
+{% block crumb %}Forbidden{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px; max-width: 720px;">
+  <section>
+    <span class="eyebrow">— 403 · role gate</span>
+    <h1 class="title">You don't have permission to do that.</h1>
+    <p class="subtitle">{{ detail }}</p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Where to go from here</div>
+      <div class="meta">role: {{ principal.role if principal else 'unauthenticated' }}</div>
+    </header>
+    <div class="body">
+      <ul class="q-list">
+        <li><a class="nav-link" href="/">return to overview</a></li>
+        <li><a class="nav-link" href="/projects">view projects (any signed-in role)</a></li>
+        <li><a class="nav-link" href="/audit">view audit log</a></li>
+      </ul>
+    </div>
+  </div>
+</main>
+{% endblock %}

@@ -1,0 +1,106 @@
+# GitLab CI for CATS.
+#
+# Runner: shell executor on the same Digital Ocean droplet that hosts CATS,
+# OpenEMR, and the existing Caddy reverse proxy. The runner *is* the deploy
+# host — `deploy` does `git pull` + `docker compose up -d --build` in place.
+#
+# Required CI variables (Project Settings -> CI/CD -> Variables):
+#   CATS_DEPLOY_DIR          - absolute path to the deploy checkout, e.g.
+#                              /srv/cats. Owned by the runner user, has the
+#                              docker-compose.yml in it.
+#   CATS_ADMIN_EMAIL         - bootstrap admin email
+#   CATS_ADMIN_PASSWORD      - bootstrap admin password (masked)
+#   CATS_SESSION_SECRET      - long random string (masked)
+#   OPENROUTER_API_KEY       - production key (masked, optional in R1)
+#   LANGSMITH_API_KEY        - production key (masked, optional in R1)
+#
+# Variables provided automatically by GitLab and consumed below:
+#   CI_COMMIT_SHORT_SHA       - baked into the image as CATS_BUILD_SHA
+#   CI_PIPELINE_URL           - shown in the dashboard as the build link
+
+stages:
+  - lint
+  - test
+  - deploy
+
+default:
+  tags:
+    - cats-droplet
+  interruptible: true
+
+# ---------------------------------------------------------------------------
+# Lint — fast, deterministic. Runs on every push.
+# ---------------------------------------------------------------------------
+
+lint:
+  stage: lint
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  before_script:
+    - uv sync --all-extras --no-progress
+  script:
+    - uv run ruff check .
+    - uv run ruff format --check .
+    - uv run mypy
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# ---------------------------------------------------------------------------
+# Test (unit) — fast. Integration tests have their own scheduled job.
+# ---------------------------------------------------------------------------
+
+test-unit:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  before_script:
+    - uv sync --all-extras --no-progress
+  script:
+    - uv run pytest tests/unit -q
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# ---------------------------------------------------------------------------
+# Deploy — main only. Shell runner pulls the new commit and rebuilds the
+# `cats-api` container in place. The brief restart window is acceptable per
+# round 1 scope.
+# ---------------------------------------------------------------------------
+
+deploy:
+  stage: deploy
+  script:
+    - test -n "$CATS_DEPLOY_DIR" || (echo "CATS_DEPLOY_DIR not set" && exit 2)
+    - cd "$CATS_DEPLOY_DIR"
+    - git fetch --prune origin main
+    - git checkout main
+    - git reset --hard "$CI_COMMIT_SHA"
+    - export CATS_BUILD_SHA="$CI_COMMIT_SHORT_SHA"
+    - export CATS_GITLAB_PIPELINE_URL="$CI_PIPELINE_URL"
+    - docker compose up -d --build
+    # Smoke the deployed instance from inside the host network.
+    - sleep 4
+    - docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8400/healthz').read()"
+  environment:
+    name: production
+    url: https://cats.biograph.dev
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success
+    - if: $CI_COMMIT_TAG
+      when: on_success
+
+# Manual rollback job — pin to a previous CI_COMMIT_SHA via the GitLab UI.
+rollback:
+  stage: deploy
+  script:
+    - test -n "$CATS_DEPLOY_DIR" || (echo "CATS_DEPLOY_DIR not set" && exit 2)
+    - test -n "$ROLLBACK_SHA" || (echo "Set ROLLBACK_SHA in the manual job UI" && exit 2)
+    - cd "$CATS_DEPLOY_DIR"
+    - git fetch --prune origin
+    - git checkout "$ROLLBACK_SHA"
+    - export CATS_BUILD_SHA="$ROLLBACK_SHA"
+    - export CATS_GITLAB_PIPELINE_URL="$CI_PIPELINE_URL"
+    - docker compose up -d --build
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual

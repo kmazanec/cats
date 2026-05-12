@@ -1,0 +1,62 @@
+{% extends "_base.html" %}
+{% block title %}CATS · {{ form_title }}{% endblock %}
+{% block crumb %}{{ form_title }}{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px; max-width: 720px;">
+  <section>
+    <span class="eyebrow">— Project · {{ submit_label }}</span>
+    <h1 class="title">{{ form_title }}</h1>
+    <p class="subtitle">
+      Required: name, base URL, and environment. Toggle <code class="mono">allow_run_against</code>
+      separately when you're ready to authorize attacks against this target.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Project details</div>
+      <div class="meta">{{ submit_label }} via POST {{ form_action }}</div>
+    </header>
+    <div class="body">
+      <form action="{{ form_action }}" method="post" class="stack" style="gap: 14px;">
+        <label class="field">
+          <span class="l">Name</span>
+          <input type="text" name="name" required maxlength="200"
+                 value="{{ project.name if project else '' }}"
+                 placeholder="OpenEMR Co-Pilot · prod" />
+        </label>
+        <label class="field">
+          <span class="l">Description (optional)</span>
+          <input type="text" name="description" maxlength="500"
+                 value="{{ project.description if project else '' }}" />
+        </label>
+        <label class="field">
+          <span class="l">Base URL</span>
+          <input class="mono" type="url" name="base_url" required
+                 value="{{ project.base_url if project else '' }}"
+                 placeholder="https://copilot.biograph.dev" />
+        </label>
+        <label class="field">
+          <span class="l">Environment</span>
+          <select name="env">
+            {% for e in ['local','staging','prod'] %}
+              <option value="{{ e }}" {% if project and project.env == e %}selected{% endif %}>{{ e }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="row" style="gap: 10px; margin-top: 4px;">
+          <input type="checkbox" name="allow_run_against" {% if project and project.allow_run_against %}checked{% endif %} />
+          <span class="mono" style="font-size: 12px; color: var(--ink-2);">
+            allow_run_against — authorize CATS to attack this target
+          </span>
+        </label>
+        <div class="row between" style="margin-top: 6px;">
+          <a href="/projects" class="nav-link">cancel</a>
+          <button class="btn" type="submit"><span class="ch">▸</span>{{ submit_label }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+{% endblock %}

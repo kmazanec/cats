@@ -362,7 +362,8 @@ async def build_overview_context(session: AsyncSession) -> dict[str, Any]:
     return {
         "active": "home",
         "env_tag": settings.default_target_env,
-        "build_tag": "0001",
+        "build_tag": settings.build_sha,
+        "build_pipeline_url": settings.gitlab_pipeline_url,
         "now_utc": now.strftime("%Y-%m-%d %H:%M"),
         "now_iso": now_iso,
         "db_status": "ok",
