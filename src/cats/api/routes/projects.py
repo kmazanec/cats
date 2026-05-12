@@ -203,9 +203,7 @@ async def update_project_submit(
             raise HTTPException(status_code=404, detail="project not found")
         # Empty target_password on edit = keep existing; we never display
         # the stored password back to the user.
-        encrypted_pw: str | None = (
-            encrypt(target_password) if target_password else None
-        )
+        encrypted_pw: str | None = encrypt(target_password) if target_password else None
         await update_project(
             session,
             project_id=project_id,

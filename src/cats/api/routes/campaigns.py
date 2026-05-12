@@ -167,9 +167,7 @@ def _cost_by_agent(executions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_role: dict[str, dict[str, Any]] = {}
     for e in executions:
         role = e.get("agent_role") or "unknown"
-        slot = by_role.setdefault(
-            role, {"role": role, "tokens_in": 0, "tokens_out": 0, "usd": 0.0}
-        )
+        slot = by_role.setdefault(role, {"role": role, "tokens_in": 0, "tokens_out": 0, "usd": 0.0})
         slot["tokens_in"] += int(e.get("tokens_in") or 0)
         slot["tokens_out"] += int(e.get("tokens_out") or 0)
         slot["usd"] += float(e.get("usd") or 0.0)

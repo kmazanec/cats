@@ -143,9 +143,7 @@ async def list_runs_for_campaign(
     ]
 
 
-async def list_findings_for_run(
-    session: AsyncSession, *, run_id: UUID
-) -> list[dict[str, Any]]:
+async def list_findings_for_run(session: AsyncSession, *, run_id: UUID) -> list[dict[str, Any]]:
     rows = (
         await session.execute(
             select(
@@ -175,9 +173,7 @@ async def list_findings_for_run(
     ]
 
 
-async def list_executions_for_run(
-    session: AsyncSession, *, run_id: UUID
-) -> list[dict[str, Any]]:
+async def list_executions_for_run(session: AsyncSession, *, run_id: UUID) -> list[dict[str, Any]]:
     rows = (
         await session.execute(
             select(
@@ -268,9 +264,7 @@ async def get_finding_with_report(
     }
 
 
-async def list_findings(
-    session: AsyncSession, *, limit: int = 200
-) -> list[dict[str, Any]]:
+async def list_findings(session: AsyncSession, *, limit: int = 200) -> list[dict[str, Any]]:
     rows = (
         await session.execute(
             select(

@@ -23,9 +23,7 @@ def _rubric_version_int(version: str) -> int:
     return int(version.lstrip("vV"))
 
 
-async def ensure_rubric_version(
-    session: AsyncSession, *, category: str, version: str
-) -> UUID:
+async def ensure_rubric_version(session: AsyncSession, *, category: str, version: str) -> UUID:
     """Idempotent. Loads the rubric file off disk and records it on
     first use so judge_verdicts can FK to it.
     """

@@ -254,11 +254,7 @@ async def test_full_campaign_records_audit_entry(client, patch_target_transport)
     await run_one(campaign_id=cid, run_id=rid, project_version_id=pvid, smoke_mode=False)
 
     async with session_scope() as session:
-        rows = (
-            await session.execute(
-                text("SELECT action FROM audit_log ORDER BY at")
-            )
-        ).all()
+        rows = (await session.execute(text("SELECT action FROM audit_log ORDER BY at"))).all()
     actions = [r.action for r in rows]
     assert "finding.promoted" in actions
 
@@ -388,9 +384,7 @@ async def test_filter_quarantine_short_circuits_to_documentation(
     async with session_scope() as session:
         row = (
             await session.execute(
-                text(
-                    "SELECT output_filter_verdict FROM attack_executions WHERE run_id = :rid"
-                ),
+                text("SELECT output_filter_verdict FROM attack_executions WHERE run_id = :rid"),
                 {"rid": str(rid)},
             )
         ).first()

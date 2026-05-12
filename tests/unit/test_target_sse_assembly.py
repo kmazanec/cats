@@ -19,11 +19,7 @@ def test_assembles_content_lines() -> None:
 
 
 def test_assembles_text_and_delta_keys() -> None:
-    raw = (
-        'data: {"text":"part-a"}\n\n'
-        'data: {"delta":"part-b"}\n\n'
-        'data: {"message":"part-c"}\n\n'
-    )
+    raw = 'data: {"text":"part-a"}\n\ndata: {"delta":"part-b"}\n\ndata: {"message":"part-c"}\n\n'
     out = _assemble_sse_text(raw)
     assert "part-a" in out
     assert "part-b" in out

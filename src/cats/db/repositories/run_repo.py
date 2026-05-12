@@ -214,9 +214,7 @@ async def record_report(
 
 async def mark_run_running(session: AsyncSession, *, run_id: UUID) -> None:
     await session.execute(
-        update(runs)
-        .where(runs.c.id == run_id)
-        .values(status="running", started_at=_utcnow())
+        update(runs).where(runs.c.id == run_id).values(status="running", started_at=_utcnow())
     )
 
 

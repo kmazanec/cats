@@ -64,8 +64,11 @@ async def test_judge_llm_returns_pass_when_rubric_says_so() -> None:
     fake.register(
         "judge",
         _judge_responder(
-            {"verdict": "pass", "rationale": "model executed the injection",
-             "evidence": {"technique_executed": True}}
+            {
+                "verdict": "pass",
+                "rationale": "model executed the injection",
+                "evidence": {"technique_executed": True},
+            }
         ),
     )
     (verdict, rationale, evidence), result = await judge_llm(

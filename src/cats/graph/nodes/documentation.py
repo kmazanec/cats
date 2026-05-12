@@ -86,12 +86,8 @@ async def run(state: CampaignState) -> CampaignState:
         total_tokens_in = sum(c.tokens_in for c in state.per_agent_costs)
         total_tokens_out = sum(c.tokens_out for c in state.per_agent_costs)
         total_usd = sum(c.usd for c in state.per_agent_costs)
-        primary_model = (
-            state.per_agent_costs[-1].model if state.per_agent_costs else "smoke"
-        )
-        primary_role = (
-            state.per_agent_costs[-1].role if state.per_agent_costs else "smoke"
-        )
+        primary_model = state.per_agent_costs[-1].model if state.per_agent_costs else "smoke"
+        primary_role = state.per_agent_costs[-1].role if state.per_agent_costs else "smoke"
 
         execution_id = await record_execution(
             session,
@@ -135,9 +131,7 @@ async def run(state: CampaignState) -> CampaignState:
                     llm=get_llm(),
                     category=category,
                     technique=state.selected_technique,
-                    attack_user_message=str(
-                        state.pending_attack_payload.get("user_message", "")
-                    ),
+                    attack_user_message=str(state.pending_attack_payload.get("user_message", "")),
                     target_response_text=state.last_target_text,
                     verdict=state.last_verdict,
                     rationale=state.last_verdict_rationale,

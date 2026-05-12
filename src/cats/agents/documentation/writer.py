@@ -12,9 +12,7 @@ from pathlib import Path
 
 from cats.llm.client import LLMClient, LLMResult
 
-_PROMPT_PATH = (
-    Path(__file__).parent.parent / "documentation" / "system_prompt.md"
-)
+_PROMPT_PATH = Path(__file__).parent.parent / "documentation" / "system_prompt.md"
 
 
 def _load_system_prompt() -> str:

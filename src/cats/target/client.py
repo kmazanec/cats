@@ -155,9 +155,7 @@ class TargetClient:
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             log.warning("target.proxy_error", error=repr(e))
-            return TargetCallResult(
-                text="", status_code=0, latency_ms=elapsed_ms, error=str(e)
-            )
+            return TargetCallResult(text="", status_code=0, latency_ms=elapsed_ms, error=str(e))
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return TargetCallResult(
@@ -248,9 +246,7 @@ class TargetClient:
             text = _assemble_sse_text(resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
-            return TargetCallResult(
-                text="", status_code=0, latency_ms=elapsed_ms, error=str(e)
-            )
+            return TargetCallResult(text="", status_code=0, latency_ms=elapsed_ms, error=str(e))
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return TargetCallResult(
             text=text,

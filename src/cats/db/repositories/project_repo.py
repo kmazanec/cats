@@ -141,9 +141,7 @@ async def update_project(
     }
     if target_password_encrypted is not None:
         values["target_password_encrypted"] = target_password_encrypted or None
-    await session.execute(
-        update(projects).where(projects.c.id == project_id).values(**values)
-    )
+    await session.execute(update(projects).where(projects.c.id == project_id).values(**values))
 
 
 async def delete_project(session: AsyncSession, *, project_id: UUID) -> None:

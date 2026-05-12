@@ -43,27 +43,26 @@ async def _hydrate_target_config(state: CampaignState) -> CampaignState:
                     projects.c.target_username,
                     projects.c.target_password_encrypted,
                     projects.c.auth_material_encrypted,
-                ).select_from(
+                )
+                .select_from(
                     projects.join(
                         project_versions,
                         projects.c.id == project_versions.c.project_id,
                     )
-                ).where(project_versions.c.id == state.project_version_id)
+                )
+                .where(project_versions.c.id == state.project_version_id)
             )
         ).first()
     if row is None:
         raise RuntimeError(
-            f"project_version {state.project_version_id} not found — "
-            "register a project first"
+            f"project_version {state.project_version_id} not found — register a project first"
         )
     state.project_id = row.id
     state.target_base_url = row.base_url
     state.target_kind = row.target_kind or "copilot_proxy"
     state.target_username = row.target_username or ""
     state.target_password = (
-        decrypt(row.target_password_encrypted)
-        if row.target_password_encrypted
-        else ""
+        decrypt(row.target_password_encrypted) if row.target_password_encrypted else ""
     )
     state.target_bearer_token = (
         decrypt(row.auth_material_encrypted) if row.auth_material_encrypted else ""
