@@ -5,18 +5,28 @@
 # host — `deploy` does `git pull` + `docker compose up -d --build` in place.
 #
 # Required CI variables (Project Settings -> CI/CD -> Variables):
-#   CATS_DEPLOY_DIR          - absolute path to the deploy checkout, e.g.
-#                              /srv/cats. Owned by the runner user, has the
-#                              docker-compose.yml in it.
-#   CATS_ADMIN_EMAIL         - bootstrap admin email
-#   CATS_ADMIN_PASSWORD      - bootstrap admin password (masked)
-#   CATS_SESSION_SECRET      - long random string (masked)
-#   OPENROUTER_API_KEY       - production key (masked, optional in R1)
-#   LANGSMITH_API_KEY        - production key (masked, optional in R1)
+#   CATS_DEPLOY_DIR  - absolute path on the droplet where the repo is
+#                      checked out and docker-compose runs from
+#                      (e.g. /srv/cats). The deploy job self-bootstraps
+#                      this dir on first run via the GitLab job token.
+#
+# Required ONCE on the droplet, in $CATS_DEPLOY_DIR/.env (NOT in CI
+# variables — we deliberately keep secrets off the job token):
+#   CATS_ADMIN_EMAIL, CATS_ADMIN_PASSWORD     - bootstrap admin login
+#   CATS_SESSION_SECRET                        - `openssl rand -hex 32`
+#   OPENROUTER_API_KEY                         - LLM provider (optional R1)
+#   LANGSMITH_API_KEY, LANGSMITH_PROJECT,      - observability (optional)
+#     LANGSMITH_TRACING
+#   DEFAULT_TARGET_NAME, DEFAULT_TARGET_BASE_URL, DEFAULT_TARGET_ENV
+#                                              - seeds the default target
+# See .env.example for the full template.
 #
 # Variables provided automatically by GitLab and consumed below:
-#   CI_COMMIT_SHORT_SHA       - baked into the image as CATS_BUILD_SHA
-#   CI_PIPELINE_URL           - shown in the dashboard as the build link
+#   CI_COMMIT_SHORT_SHA   - baked into the image as CATS_BUILD_SHA
+#   CI_PIPELINE_URL       - shown in the dashboard as the build link
+#   CI_JOB_TOKEN          - used by the deploy job to clone/fetch repo
+#   CI_SERVER_HOST,       - composed into the HTTPS clone URL
+#     CI_PROJECT_PATH
 
 stages:
   - lint
@@ -111,10 +121,26 @@ deploy:
   stage: deploy
   script:
     - test -n "$CATS_DEPLOY_DIR" || (echo "CATS_DEPLOY_DIR not set" && exit 2)
+    # Self-bootstrap: clone the repo into $CATS_DEPLOY_DIR on first deploy
+    # using the per-pipeline job token over HTTPS (no long-lived ssh key
+    # to manage). Idempotent — once a .git/ exists we just fetch + reset.
+    # NOTE: the secrets-bearing .env still has to be placed in
+    # $CATS_DEPLOY_DIR manually once; we deliberately never push secrets
+    # through the job token.
+    - |
+      if [ ! -d "$CATS_DEPLOY_DIR/.git" ]; then
+        echo "First-time deploy: cloning into $CATS_DEPLOY_DIR"
+        mkdir -p "$CATS_DEPLOY_DIR"
+        git clone "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$CATS_DEPLOY_DIR"
+      fi
     - cd "$CATS_DEPLOY_DIR"
+    # Re-point origin to the job-token URL each run so subsequent fetches
+    # work even if the on-disk remote URL was set up differently.
+    - git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
     - git fetch --prune origin main
     - git checkout main
     - git reset --hard "$CI_COMMIT_SHA"
+    - test -f .env || (echo ".env not found in $CATS_DEPLOY_DIR — place it once with the production secrets (see .env.example)" && exit 2)
     - export CATS_BUILD_SHA="$CI_COMMIT_SHORT_SHA"
     - export CATS_GITLAB_PIPELINE_URL="$CI_PIPELINE_URL"
     - docker compose up -d --build
@@ -137,6 +163,7 @@ rollback:
     - test -n "$CATS_DEPLOY_DIR" || (echo "CATS_DEPLOY_DIR not set" && exit 2)
     - test -n "$ROLLBACK_SHA" || (echo "Set ROLLBACK_SHA in the manual job UI" && exit 2)
     - cd "$CATS_DEPLOY_DIR"
+    - git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
     - git fetch --prune origin
     - git checkout "$ROLLBACK_SHA"
     - export CATS_BUILD_SHA="$ROLLBACK_SHA"
