@@ -37,21 +37,26 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Pull everything from the host-side .env (admin/session secrets, LLM keys,
+    # tracing toggles, target wiring). The explicit `environment:` block below
+    # only overrides values that have to differ inside the container.
+    env_file:
+      - .env
     environment:
+      # Container-network hostnames — .env points the host at localhost:5433/6380,
+      # but inside the compose network the services are reachable by name.
       DATABASE_URL: postgresql+asyncpg://cats:cats@postgres:5432/cats
       REDIS_URL: redis://redis:6379/0
+      # Bind to all interfaces inside the container; .env's host-side value
+      # could be 127.0.0.1, which would refuse the port mapping from outside.
       CATS_API_HOST: 0.0.0.0
       CATS_API_PORT: "8400"
-      CATS_LOG_LEVEL: INFO
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
-      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-cats-dev}
-      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
-      DEFAULT_TARGET_NAME: ${DEFAULT_TARGET_NAME:-Local Co-Pilot}
       # host.docker.internal resolves to the Mac host from inside the container,
-      # so the API can hit the openemr co-pilot running on the host at :8300.
-      DEFAULT_TARGET_BASE_URL: ${DEFAULT_TARGET_BASE_URL:-http://host.docker.internal:8300}
-      DEFAULT_TARGET_ENV: ${DEFAULT_TARGET_ENV:-local}
+      # so the API can reach the openemr co-pilot running on the host at :8300.
+      # .env uses localhost:8300 for host-side dev; we hardcode the in-container
+      # value here so it wins regardless of what `.env` says (otherwise
+      # env_file's localhost:8300 would unreachable from inside the container).
+      DEFAULT_TARGET_BASE_URL: http://host.docker.internal:8300
     ports:
       - "8400:8400"
     extra_hosts:
