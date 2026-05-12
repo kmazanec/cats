@@ -144,9 +144,20 @@ deploy:
     - export CATS_BUILD_SHA="$CI_COMMIT_SHORT_SHA"
     - export CATS_GITLAB_PIPELINE_URL="$CI_PIPELINE_URL"
     - docker compose up -d --build
-    # Smoke the deployed instance from inside the host network.
-    - sleep 4
-    - docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8400/healthz').read()"
+    # Smoke the deployed instance from inside the host network. Cold-start
+    # can take 10-15s (migrations + admin seed + uvicorn boot) on a fresh
+    # build, so retry rather than a single shot after a fixed sleep.
+    - |
+      for i in $(seq 1 30); do
+        if docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8400/healthz').read()" 2>/dev/null; then
+          echo "healthz ok after ${i}s"
+          exit 0
+        fi
+        sleep 1
+      done
+      echo "healthz never came up; last 60 lines of api logs:"
+      docker compose logs api --tail=60
+      exit 1
   environment:
     name: production
     url: https://cats.biograph.dev
