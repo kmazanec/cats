@@ -61,7 +61,7 @@ it is considered complete:
 Some work is not a milestone — it threads through every round and
 needs continuous attention rather than a single ship date.
 
-- **CI/CD.** GitHub Actions (or equivalent) running ruff + mypy
+- **CI/CD.** GitLab jobs running ruff + mypy
   + pytest on every push from Round 1 forward. Nightly job
   running real-LLM evals from Round 3 forward.
 - **Security hygiene.** OpenRouter keys per-env, spend caps, no
@@ -763,8 +763,8 @@ In:
 - Triple-gate orchestration: a dedicated graph branch that runs
   all three checks and surfaces results
 - Dashboard regression panel
-- Deployment-triggered campaign mode: GitHub Actions webhook
-  receiver that fires regression suite on co-pilot redeploy
+- Deployment-triggered campaign mode: GitLab CI webhook receiver
+  that fires regression suite on co-pilot redeploy
 - Locked-rubric versioning enforcement: the regression uses the
   rubric version that produced the original finding, even if the
   current rubric has been bumped
@@ -791,8 +791,8 @@ Out:
   even valid refusals. Need a strategy for re-capturing.
 - **Embedding model drift.** Sentence-transformers releases new
   models; pin a specific revision.
-- **GitHub Actions webhook security.** Verify HMAC signatures;
-  don't accept arbitrary POSTs.
+- **GitLab CI webhook security.** Verify HMAC signatures; don't
+  accept arbitrary POSTs.
 
 **Tasks.** *(builder fills in as completed)*
 
