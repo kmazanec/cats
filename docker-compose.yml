@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cats-postgres
+    environment:
+      POSTGRES_USER: cats
+      POSTGRES_PASSWORD: cats
+      POSTGRES_DB: cats
+    ports:
+      - "5433:5432"
+    volumes:
+      - cats_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cats -d cats"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: cats-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cats-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cats:cats@postgres:5432/cats
+      REDIS_URL: redis://redis:6379/0
+      CATS_API_HOST: 0.0.0.0
+      CATS_API_PORT: "8400"
+      CATS_LOG_LEVEL: INFO
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-cats-dev}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      DEFAULT_TARGET_NAME: ${DEFAULT_TARGET_NAME:-Local Co-Pilot}
+      # host.docker.internal resolves to the Mac host from inside the container,
+      # so the API can hit the openemr co-pilot running on the host at :8300.
+      DEFAULT_TARGET_BASE_URL: ${DEFAULT_TARGET_BASE_URL:-http://host.docker.internal:8300}
+      DEFAULT_TARGET_ENV: ${DEFAULT_TARGET_ENV:-local}
+    ports:
+      - "8400:8400"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Hot-reload during development: mount source over the baked image copy.
+      - ./src:/app/src
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn cats.api.app:app --host 0.0.0.0 --port 8400 --reload --reload-dir /app/src"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  cats_pg:

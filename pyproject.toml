@@ -1,0 +1,113 @@
+[project]
+name = "cats"
+version = "0.1.0"
+description = "Copilot Automated Tactical Security — multi-agent adversarial evaluation platform for the OpenEMR Clinical Co-Pilot"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Keith", email = "keith@devforward.com" }]
+
+dependencies = [
+    # Agent coordination
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint>=4.0.0",          # CVE-2026-27794 fix
+    "langgraph-checkpoint-postgres>=2.0.0", # NOT sqlite — CVE-2025-67644
+    "langsmith>=0.2.0",
+    "langchain-openai>=0.2.0",              # used as the OpenRouter client (OpenAI-compatible)
+
+    # Models / validation
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+
+    # API + UI
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "sse-starlette>=2.1",
+    "python-multipart>=0.0.12",
+
+    # DB + cache
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+
+    # HTTP
+    "httpx>=0.28",
+
+    # CLI
+    "typer>=0.15",
+
+    # Logging
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-redis>=4.6",
+    "anyio>=4.6",
+]
+
+[project.scripts]
+cats = "cats.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cats"]
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+    "ASYNC",         # async pitfalls
+]
+# Intentionally exclude TC* (type-checking blocks): pydantic + Typer + FastAPI
+# rely on runtime-resolvable annotations.
+ignore = ["E501"]    # line length handled by formatter
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["cats"]
+exclude = ["migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["langgraph.*", "langsmith.*", "sse_starlette.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: requires postgres + redis (skip in pure-unit runs)",
+    "smoke: end-to-end no-LLM smoke path",
+]

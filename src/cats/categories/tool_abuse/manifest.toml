@@ -1,0 +1,8 @@
+name = "tool_abuse"
+title = "Tool Misuse & Authorization Bypass"
+mvp = true
+severity_default = "high"
+atlas_technique_id = "AML.T0053"
+owasp_llm_id = "LLM07"
+judge_role = "judge"
+notes = "Audit-log post-condition gives a clean mechanical signal."
