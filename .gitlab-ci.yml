@@ -35,21 +35,21 @@ default:
 # inside `docker run` against the uv image, mirroring how the OpenEMR
 # project's CI runs PHP/Node test jobs on this same runner.
 #
-# File-ownership isolation: the uv container runs as root, and a naked bind
-# mount would let it drop root-owned files into the gitlab-runner-owned
-# checkout — which the next pipeline's `git clean` (run as gitlab-runner)
-# cannot remove. So every path the container writes to gets a named Docker
-# volume mounted on top:
-#   cats-ci-uv-cache    -> /root/.cache/uv      (uv's package cache, reused)
-#   cats-ci-venv        -> /work/.venv          (the project venv uv builds)
-#   cats-ci-ruff-cache  -> /work/.ruff_cache    (ruff's per-file cache)
-#   cats-ci-mypy-cache  -> /work/.mypy_cache    (mypy's incremental cache)
-#   cats-ci-pytest-cache-> /work/.pytest_cache  (pytest's lastfailed cache)
-# Volumes persist between pipelines on the same daemon, giving us cache
-# reuse for free. The runner's checkout only ever sees empty mount-point
-# dirs that gitlab-runner *can* rmdir because it owns the parent. The
-# `cache-prune` job at the bottom of this file is the manual nuke if one
-# of these ever gets into a weird state.
+# File-ownership isolation: containers run as the gitlab-runner UID/GID
+# (`-u "$(id -u):$(id -g)"`) so anything the container writes — `.venv/`,
+# tool caches, and especially `__pycache__/` directories that pytest/mypy
+# spray across `src/` and `tests/` on import — is owned by the runner user.
+# That makes the next pipeline's `git clean` work. (OpenEMR's CI works
+# around the same problem with named volumes per-path; we'd have to mount
+# a volume on every subdir Python imports from, which is unworkable, so
+# we run unprivileged instead.)
+#
+# Because the image's default user is root with HOME=/root, the non-root
+# uid has no writable HOME and uv's default cache path doesn't apply.
+# `HOME` and `UV_CACHE_DIR` are redirected to top-level paths under /work
+# that are themselves named volumes — giving us cross-pipeline cache reuse
+# without touching the bind-mounted checkout. The `cache-prune` job at the
+# bottom is the manual nuke if a volume gets into a weird state.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -61,12 +61,16 @@ lint:
   script:
     - |
       docker run --rm \
+        -u "$(id -u):$(id -g)" \
         -v "$CI_PROJECT_DIR:/work" \
-        -v cats-ci-uv-cache:/root/.cache/uv \
+        -v cats-ci-uv-cache:/work/.uv-cache-ci \
+        -v cats-ci-home:/work/.home-ci \
         -v cats-ci-venv:/work/.venv \
         -v cats-ci-ruff-cache:/work/.ruff_cache \
         -v cats-ci-mypy-cache:/work/.mypy_cache \
         -w /work \
+        -e HOME=/work/.home-ci \
+        -e UV_CACHE_DIR=/work/.uv-cache-ci \
         -e UV_LINK_MODE=copy \
         ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
         sh -c '
@@ -88,11 +92,15 @@ test-unit:
   script:
     - |
       docker run --rm \
+        -u "$(id -u):$(id -g)" \
         -v "$CI_PROJECT_DIR:/work" \
-        -v cats-ci-uv-cache:/root/.cache/uv \
+        -v cats-ci-uv-cache:/work/.uv-cache-ci \
+        -v cats-ci-home:/work/.home-ci \
         -v cats-ci-venv:/work/.venv \
         -v cats-ci-pytest-cache:/work/.pytest_cache \
         -w /work \
+        -e HOME=/work/.home-ci \
+        -e UV_CACHE_DIR=/work/.uv-cache-ci \
         -e UV_LINK_MODE=copy \
         ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
         sh -c '
@@ -162,5 +170,5 @@ cache-prune:
       when: manual
       allow_failure: true
   script:
-    - docker volume rm -f cats-ci-uv-cache cats-ci-venv cats-ci-ruff-cache cats-ci-mypy-cache cats-ci-pytest-cache
+    - docker volume rm -f cats-ci-uv-cache cats-ci-home cats-ci-venv cats-ci-ruff-cache cats-ci-mypy-cache cats-ci-pytest-cache
     - docker volume ls --filter name=cats-ci-
