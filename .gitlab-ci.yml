@@ -44,12 +44,13 @@ default:
 # a volume on every subdir Python imports from, which is unworkable, so
 # we run unprivileged instead.)
 #
-# Because the image's default user is root with HOME=/root, the non-root
-# uid has no writable HOME and uv's default cache path doesn't apply.
-# `HOME` and `UV_CACHE_DIR` are redirected to top-level paths under /work
-# that are themselves named volumes — giving us cross-pipeline cache reuse
-# without touching the bind-mounted checkout. The `cache-prune` job at the
-# bottom is the manual nuke if a volume gets into a weird state.
+# All caches live inside the bind-mounted checkout. We don't use named
+# Docker volumes for cache reuse: when Docker auto-creates a volume on
+# first use, its top-level dir is owned by root and our non-root UID
+# can't write into it without a pre-chown step. uv's cold install for
+# this project is ~3s, so the speed gain isn't worth the extra config
+# surface. HOME points at a per-job dir inside /work because the image's
+# default /root is unwritable to the non-root UID.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -63,15 +64,9 @@ lint:
       docker run --rm \
         -u "$(id -u):$(id -g)" \
         -v "$CI_PROJECT_DIR:/work" \
-        -v cats-ci-uv-cache:/work/.uv-cache-ci \
-        -v cats-ci-home:/work/.home-ci \
-        -v cats-ci-venv:/work/.venv \
-        -v cats-ci-ruff-cache:/work/.ruff_cache \
-        -v cats-ci-mypy-cache:/work/.mypy_cache \
         -w /work \
         -e HOME=/work/.home-ci \
         -e UV_CACHE_DIR=/work/.uv-cache-ci \
-        -e UV_LINK_MODE=copy \
         ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
         sh -c '
           uv sync --all-extras --no-progress &&
@@ -94,14 +89,9 @@ test-unit:
       docker run --rm \
         -u "$(id -u):$(id -g)" \
         -v "$CI_PROJECT_DIR:/work" \
-        -v cats-ci-uv-cache:/work/.uv-cache-ci \
-        -v cats-ci-home:/work/.home-ci \
-        -v cats-ci-venv:/work/.venv \
-        -v cats-ci-pytest-cache:/work/.pytest_cache \
         -w /work \
         -e HOME=/work/.home-ci \
         -e UV_CACHE_DIR=/work/.uv-cache-ci \
-        -e UV_LINK_MODE=copy \
         ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
         sh -c '
           uv sync --all-extras --no-progress &&
@@ -155,20 +145,3 @@ rollback:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual
-
-# ---------------------------------------------------------------------------
-# Manual nuke for the named CI volumes. Run from the GitLab UI (CI/CD →
-# Pipelines → "Run pipeline" on main, then click "Play" on this job) if a
-# lockfile-vs-installed mismatch — or any other inconsistency — leaves a
-# volume in a weird state. The next test pipeline reinstalls from scratch.
-# Same idiom as the OpenEMR project's `cache-prune` job.
-# ---------------------------------------------------------------------------
-cache-prune:
-  stage: lint
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      when: manual
-      allow_failure: true
-  script:
-    - docker volume rm -f cats-ci-uv-cache cats-ci-home cats-ci-venv cats-ci-ruff-cache cats-ci-mypy-cache cats-ci-pytest-cache
-    - docker volume ls --filter name=cats-ci-

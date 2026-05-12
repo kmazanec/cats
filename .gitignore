@@ -12,6 +12,8 @@ dist/
 # uv / venv
 .venv/
 .uv-cache/
+.uv-cache-ci/
+.home-ci/
 
 # Tooling
 .ruff_cache/
