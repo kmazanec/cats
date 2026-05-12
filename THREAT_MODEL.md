@@ -1,20 +1,14 @@
-# W3 — Threat Model: OpenEMR Clinical Co-Pilot
+# Threat Model — OpenEMR Clinical Co-Pilot
 
-> **Status:** in-progress design interview. The eventual `THREAT_MODEL.md`
-> at the project root is derived from this working doc.
->
-> **Scope:** the OpenEMR Clinical Co-Pilot service at `agent/` (Node /
-> TypeScript / LangGraph / Claude Sonnet 4.6 + Haiku 4.5). The
-> adversarial platform (**CATS**) is *out of scope* for this document —
-> CATS is the consumer of this threat model, not its subject.
+> **Target system:** the OpenEMR Clinical Co-Pilot service at `agent/`
+> in the OpenEMR repo (Node · TypeScript · LangGraph · Claude Sonnet 4.6
+> + Haiku 4.5). The adversarial platform that consumes this threat model
+> (**CATS**) is *out of scope* for this document — see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 >
 > **Companions:**
-> - `W3_ARCHITECTURE.md` — CATS platform architecture
-> - `W3_THREAT_RESEARCH.md` — May-2026 attack landscape research
->
-> **Hard gate:** brief mandates this document begin with a ~500-word
-> summary of key findings, highest-risk attack categories, and how the
-> platform will prioritize coverage.
+> - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — CATS platform architecture
+> - [`USERS.md`](./USERS.md) — users, workflows, automation justification
+> - [`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md) — May-2026 attack-landscape research
 
 ---
 

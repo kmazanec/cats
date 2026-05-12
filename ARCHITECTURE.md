@@ -1,12 +1,14 @@
-# W3 — AgentForge Architecture (Working Doc)
+# CATS — Architecture
 
-> **Status:** in-progress design interview. This doc is being built up as Keith
-> answers the architecture questions. It is the source of truth for the
-> Week-3 AgentForge platform — a separate multi-agent system that
-> continuously probes the OpenEMR Clinical Co-Pilot for vulnerabilities.
+> **CATS — Copilot Automated Tactical Security.** A continuously-running
+> multi-agent adversarial evaluation platform that probes the OpenEMR
+> Clinical Co-Pilot for vulnerabilities. Python · LangGraph · Postgres ·
+> Redis · OpenRouter · LangSmith.
 >
-> The eventual `ARCHITECTURE.md` (project-root, ~500-word summary + diagram)
-> will be derived from this working doc.
+> **Companions:**
+> - [`THREAT_MODEL.md`](./THREAT_MODEL.md) — target-system threat model
+> - [`USERS.md`](./USERS.md) — users, workflows, automation justification
+> - [`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md) — May-2026 attack-landscape research
 
 ## 0. Anchors (from the brief)
 
@@ -712,7 +714,7 @@ topology, more information, different findings character.
 | Best use | Continuous regression suite, release-over-release deltas | Pre-release deep audit, post-incident root-cause widening |
 
 A platform that does only black-hat misses the implementation-specific
-classes the open verification items in `W3_THREAT_MODEL.md` enumerate
+classes the open verification items in [`THREAT_MODEL.md`](./THREAT_MODEL.md) enumerate
 (e.g., "does `docxText.ts` strip white-color runs?"). A platform that
 does only white-hat over-reports theoretical findings the deployed
 system doesn't actually expose. Both, run by the same agent topology
@@ -877,7 +879,7 @@ adversary-simulation black-hat track.
     `plausible` → `confirmed` automatically when a chain to the
     live API can be constructed)
 
-The threat model's 38 open verification items (W3_THREAT_MODEL §2.x
+The threat model's 38 open verification items ([`THREAT_MODEL.md`](./THREAT_MODEL.md) §2.x
 "Open verification items") are themselves the **first batch of
 white-hat hypotheses.** Each one is "look at the code and tell me
 if defense X exists" — exactly the white-hat specialist's job.
@@ -930,8 +932,7 @@ touches is narrow:
 
 ## 5c. Threat-landscape research (May 2026) — complete
 
-Full report: **[`W3_THREAT_RESEARCH.md`](./W3_THREAT_RESEARCH.md)**
-(parent dir, sibling to this doc).
+Full report: **[`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md)**.
 
 ### Load-bearing findings that shape the architecture
 
