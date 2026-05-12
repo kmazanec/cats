@@ -33,12 +33,23 @@ default:
 # `deploy` job's `docker compose` and the OpenEMR pipeline's test containers).
 # So the top-level `image:` key would be ignored — instead we run lint/test
 # inside `docker run` against the uv image, mirroring how the OpenEMR
-# project's CI runs PHP/Node test jobs on this same runner. A named volume
-# (`cats-ci-uv-cache`) gives us uv's package cache across pipelines; the
-# bind-mounted checkout is read by uv but `.venv/` is steered onto a second
-# named volume to keep root-owned files off the gitlab-runner bind mount
-# (same isolation reason OpenEMR mounts `vendor/` and `node_modules/` on
-# named volumes).
+# project's CI runs PHP/Node test jobs on this same runner.
+#
+# File-ownership isolation: the uv container runs as root, and a naked bind
+# mount would let it drop root-owned files into the gitlab-runner-owned
+# checkout — which the next pipeline's `git clean` (run as gitlab-runner)
+# cannot remove. So every path the container writes to gets a named Docker
+# volume mounted on top:
+#   cats-ci-uv-cache    -> /root/.cache/uv      (uv's package cache, reused)
+#   cats-ci-venv        -> /work/.venv          (the project venv uv builds)
+#   cats-ci-ruff-cache  -> /work/.ruff_cache    (ruff's per-file cache)
+#   cats-ci-mypy-cache  -> /work/.mypy_cache    (mypy's incremental cache)
+#   cats-ci-pytest-cache-> /work/.pytest_cache  (pytest's lastfailed cache)
+# Volumes persist between pipelines on the same daemon, giving us cache
+# reuse for free. The runner's checkout only ever sees empty mount-point
+# dirs that gitlab-runner *can* rmdir because it owns the parent. The
+# `cache-prune` job at the bottom of this file is the manual nuke if one
+# of these ever gets into a weird state.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -53,6 +64,8 @@ lint:
         -v "$CI_PROJECT_DIR:/work" \
         -v cats-ci-uv-cache:/root/.cache/uv \
         -v cats-ci-venv:/work/.venv \
+        -v cats-ci-ruff-cache:/work/.ruff_cache \
+        -v cats-ci-mypy-cache:/work/.mypy_cache \
         -w /work \
         -e UV_LINK_MODE=copy \
         ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
@@ -78,6 +91,7 @@ test-unit:
         -v "$CI_PROJECT_DIR:/work" \
         -v cats-ci-uv-cache:/root/.cache/uv \
         -v cats-ci-venv:/work/.venv \
+        -v cats-ci-pytest-cache:/work/.pytest_cache \
         -w /work \
         -e UV_LINK_MODE=copy \
         ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
@@ -133,3 +147,20 @@ rollback:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual
+
+# ---------------------------------------------------------------------------
+# Manual nuke for the named CI volumes. Run from the GitLab UI (CI/CD →
+# Pipelines → "Run pipeline" on main, then click "Play" on this job) if a
+# lockfile-vs-installed mismatch — or any other inconsistency — leaves a
+# volume in a weird state. The next test pipeline reinstalls from scratch.
+# Same idiom as the OpenEMR project's `cache-prune` job.
+# ---------------------------------------------------------------------------
+cache-prune:
+  stage: lint
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: true
+  script:
+    - docker volume rm -f cats-ci-uv-cache cats-ci-venv cats-ci-ruff-cache cats-ci-mypy-cache cats-ci-pytest-cache
+    - docker volume ls --filter name=cats-ci-
