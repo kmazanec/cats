@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}CATS{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/tokens.css" />
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/sse.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<div class="page" id="page">
+
+  <header class="chrome-top">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <span>CATS · Adversarial Eval Platform</span>
+    </div>
+    <nav>
+      <a href="/" class="{% if active == 'home' %}active{% endif %}">Overview</a>
+      <a href="/campaigns" class="{% if active == 'campaigns' %}active{% endif %}">Campaigns</a>
+      <a href="/findings" class="{% if active == 'findings' %}active{% endif %}">Findings</a>
+      <a href="/projects" class="{% if active == 'projects' %}active{% endif %}">Projects</a>
+      <a href="/docs">API</a>
+    </nav>
+    <div class="sysline">
+      <span><span class="k">env</span> {{ env_tag }}</span>
+      <span><span class="k">build</span> {{ build_tag }}</span>
+      <span><span class="k">ts</span> {{ now_utc }}</span>
+    </div>
+  </header>
+
+  {% block main %}{% endblock %}
+
+</div>
+
+<footer class="chrome-bottom" id="chrome-bottom">
+  <div class="left">
+    <span class="crumb">CATS</span>
+    <span class="sep">/</span>
+    <span class="crumb">{% block crumb %}Overview{% endblock %}</span>
+  </div>
+  <div class="right">
+    <span><span class="k">db</span> <span class="v">{{ db_status }}</span></span>
+    <span><span class="k">redis</span> <span class="v">{{ redis_status }}</span></span>
+    <span><span class="k">openrouter</span> <span class="v">{{ openrouter_status }}</span></span>
+  </div>
+</footer>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

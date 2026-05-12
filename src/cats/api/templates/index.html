@@ -1,0 +1,318 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Overview{% endblock %}
+{% block crumb %}Overview{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+
+  {# =========================== HEADER + ACTION ============================ #}
+  <section>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Operator Overview · {{ now_iso }}</span>
+        <h1 class="title">Adversarial posture for the OpenEMR Clinical Co-Pilot.</h1>
+        <p class="subtitle">
+          {{ overview.attacks_24h }} attacks fired in the last 24h across
+          {{ overview.active_campaigns }} active campaign{{ overview.active_campaigns|pluralize }}.
+          {{ overview.open_critical }} critical finding{{ overview.open_critical|pluralize }} awaiting human approval.
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        <a class="btn ghost" href="/findings"><span class="ch">[</span>triage<span class="ch">]</span></a>
+        <a class="btn" href="#fire"><span class="ch">▸</span>fire campaign</a>
+      </div>
+    </div>
+  </section>
+
+  {# =========================== STAT STRIP ================================= #}
+  <section class="stat-strip">
+    <div class="stat">
+      <div class="label">Active campaigns</div>
+      <div class="num cyan">{{ overview.active_campaigns }} <span class="unit">running</span></div>
+      <div class="delta">{{ overview.queued_campaigns }} queued · last fire {{ overview.last_fire_relative }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Attacks · 24h</div>
+      <div class="num amber">{{ overview.attacks_24h }}</div>
+      <div class="delta {{ 'up' if overview.attacks_delta_pct > 0 else 'down' }}">
+        {{ '+' if overview.attacks_delta_pct >= 0 else '' }}{{ overview.attacks_delta_pct }}% vs prior 24h
+      </div>
+    </div>
+    <div class="stat">
+      <div class="label">Exploit rate · ASR</div>
+      <div class="num red">{{ overview.asr_pct }}<span class="unit">%</span></div>
+      <div class="delta">{{ overview.asr_window_label }} · {{ overview.asr_n }} judged</div>
+    </div>
+    <div class="stat">
+      <div class="label">Cost · 24h</div>
+      <div class="num">${{ overview.cost_24h_usd }}</div>
+      <div class="delta">{{ overview.tokens_24h }} tok · ${{ overview.cost_30d_usd }}/30d</div>
+    </div>
+  </section>
+
+  {# ============================= COLUMN GRID ============================== #}
+  <section class="grid cols-12-7-5">
+
+    {# ---- LEFT: Coverage + Findings table ---- #}
+    <div class="stack">
+
+      {# --- Coverage matrix --- #}
+      <div class="panel mix">
+        <header>
+          <div class="title">Coverage matrix · category × severity</div>
+          <div class="meta">{{ overview.coverage_window_label }} · click any cell to filter</div>
+        </header>
+        <div class="body flush">
+          <div class="coverage" role="table" aria-label="Coverage matrix">
+            <div class="rowlabel">Category</div>
+            <div class="colhead">Info</div>
+            <div class="colhead">Low</div>
+            <div class="colhead">Medium</div>
+            <div class="colhead">High</div>
+            <div class="colhead">Critical</div>
+            <div class="colhead">Total</div>
+
+            {% for row in coverage %}
+              <div class="rowlabel">{{ row.category }}</div>
+              {% for sev in ['info','low','medium','high','critical'] %}
+                <div class="cell t-{{ row.tiers[sev] }}">{{ row.counts[sev] or '·' }}</div>
+              {% endfor %}
+              <div class="cell t-{{ row.total_tier }}">{{ row.total }}</div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      {# --- Open findings table --- #}
+      <div class="panel">
+        <header>
+          <div class="title">Open findings · top 8 by severity</div>
+          <div class="meta"><a class="nav-link" href="/findings">all findings</a></div>
+        </header>
+        <div class="body flush">
+          {% if findings %}
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th style="width: 90px;">Sev</th>
+                  <th>Title</th>
+                  <th style="width: 110px;">Category</th>
+                  <th class="mono" style="width: 110px;">ATLAS</th>
+                  <th class="mono" style="width: 96px;">Run</th>
+                  <th class="num" style="width: 90px;">Seen</th>
+                  <th style="width: 90px;">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for f in findings %}
+                <tr>
+                  <td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td>
+                  <td>{{ f.title }}</td>
+                  <td class="muted mono">{{ f.category }}</td>
+                  <td class="mono muted">{{ f.atlas_technique_id or '—' }}</td>
+                  <td class="mono"><a class="nav-link" href="/findings/{{ f.id }}">{{ f.run_short }}</a></td>
+                  <td class="num muted">{{ f.seen_relative }}</td>
+                  <td>
+                    {% if f.status == 'open' %}<span class="dot amber"></span>open
+                    {% elif f.status == 'triaged' %}<span class="dot cyan"></span>triaged
+                    {% elif f.status == 'regressed' %}<span class="dot red"></span>regressed
+                    {% elif f.status == 'fixed' %}<span class="dot green"></span>fixed
+                    {% else %}<span class="dot"></span>{{ f.status }}{% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <div class="empty">
+              no open findings
+              <span class="hint">fire a campaign to start probing the target</span>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# ---- RIGHT: Live events + active runs + fire panel ---- #}
+    <div class="stack">
+
+      {# --- Active runs --- #}
+      <div class="panel cy">
+        <header>
+          <div class="title">Active runs</div>
+          <div class="meta">{{ active_runs|length }} running</div>
+        </header>
+        <div class="body flush">
+          {% if active_runs %}
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th class="mono" style="width: 90px;">Run</th>
+                  <th>Campaign</th>
+                  <th class="num" style="width: 80px;">Fired</th>
+                  <th class="num" style="width: 80px;">Cost</th>
+                  <th style="width: 88px;">State</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in active_runs %}
+                <tr>
+                  <td class="mono"><a class="nav-link" href="/campaigns/{{ r.campaign_id }}">{{ r.id_short }}</a></td>
+                  <td>{{ r.campaign_name }}</td>
+                  <td class="num">{{ r.attacks_fired }}</td>
+                  <td class="num mono">${{ r.budget_consumed_usd }}</td>
+                  <td><span class="dot amber pulse"></span>{{ r.status }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <div class="empty">
+              no active runs
+              <span class="hint">scheduled · {{ overview.next_nightly_label }}</span>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      {# --- Live event stream (SSE) --- #}
+      <div class="panel">
+        <header>
+          <div class="title">Live event stream</div>
+          <div class="meta"><span class="dot amber pulse"></span>SSE · /events</div>
+        </header>
+        <div class="body flush">
+          <div class="eventlog" id="eventlog"
+               hx-ext="sse"
+               sse-connect="/events/global"
+               sse-swap="message"
+               hx-swap="afterbegin">
+            {% for e in recent_events %}
+              <div class="row">
+                <div class="ts">{{ e.ts }}</div>
+                <div class="kind {{ e.kind_class }}">{{ e.kind_label }}</div>
+                <div class="body">{{ e.body }}</div>
+                <div class="id">{{ e.id_short }}</div>
+              </div>
+            {% endfor %}
+            {% if not recent_events %}
+              <div class="empty" style="border: 0; background: transparent;">
+                no events yet
+                <span class="hint">events stream here as agents act</span>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {# --- Fire-campaign quick action --- #}
+      <div class="panel" id="fire">
+        <header>
+          <div class="title">Fire campaign</div>
+          <div class="meta">budget shown before run</div>
+        </header>
+        <div class="body">
+          <form hx-post="/campaigns" hx-swap="outerHTML" class="stack" style="gap: 14px;">
+            <label class="field">
+              <span class="l">Project</span>
+              <select name="project_id" required>
+                {% for p in projects %}
+                  <option value="{{ p.id }}">{{ p.name }} · {{ p.env }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <div class="grid cols-2" style="gap: 12px;">
+              <label class="field">
+                <span class="l">Mode</span>
+                <select name="mode">
+                  <option value="blackhat">blackhat</option>
+                  <option value="whitehat" disabled>whitehat · post-MVP</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="l">Budget (USD)</span>
+                <input class="mono" type="text" name="budget_usd" value="5.00" />
+              </label>
+            </div>
+            <label class="field">
+              <span class="l">Categories</span>
+              <div class="row" style="gap: 18px;">
+                <label class="row" style="gap: 6px;"><input type="checkbox" name="cat" value="injection" checked /> <span class="mono" style="font-size:12px;">injection</span></label>
+                <label class="row" style="gap: 6px;"><input type="checkbox" name="cat" value="exfil" checked /> <span class="mono" style="font-size:12px;">exfil</span></label>
+                <label class="row" style="gap: 6px;"><input type="checkbox" name="cat" value="tool_abuse" checked /> <span class="mono" style="font-size:12px;">tool_abuse</span></label>
+              </div>
+            </label>
+            <div class="row between" style="margin-top: 4px;">
+              <div class="mono" style="font-size: 11px; color: var(--ink-3); letter-spacing: 0.12em;">
+                est · 150 attacks · $4.20 · 6m wall
+              </div>
+              <button class="btn" type="submit"><span class="ch">▸</span>fire</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  {# =========================== JUDGE INTEGRITY ============================ #}
+  <section class="grid cols-2">
+    <div class="panel cy">
+      <header>
+        <div class="title">Judge integrity · fixtures CI</div>
+        <div class="meta">last run {{ judge.last_run_relative }}</div>
+      </header>
+      <div class="body flush">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th class="mono">Rubric</th>
+              <th class="num">Fixtures</th>
+              <th class="num">Accuracy</th>
+              <th class="num">Threshold</th>
+              <th style="width: 80px;">State</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for j in judge.categories %}
+            <tr>
+              <td>{{ j.name }}</td>
+              <td class="mono muted">v{{ j.rubric_version }}</td>
+              <td class="num">{{ j.fixtures }}</td>
+              <td class="num mono">{{ j.accuracy_pct }}%</td>
+              <td class="num mono muted">{{ j.threshold_pct }}%</td>
+              <td>
+                {% if j.accuracy_pct >= j.threshold_pct %}
+                  <span class="dot green"></span>pass
+                {% else %}
+                  <span class="dot red"></span>drift
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <header>
+        <div class="title">Operator follow-ups</div>
+        <div class="meta">{{ followups|length }} open</div>
+      </header>
+      <div class="body">
+        <ul class="q-list">
+          {% for q in followups %}
+            <li>
+              <span class="q-num">{{ q.tag }}</span>
+              <strong>{{ q.title }}</strong> — {{ q.body }}
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </section>
+
+</main>
+{% endblock %}
