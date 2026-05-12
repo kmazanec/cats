@@ -71,6 +71,70 @@ def health() -> None:
     raise typer.Exit(code=code)
 
 
+@app.command("run-campaign")
+def run_campaign(
+    project_id: Annotated[
+        str,
+        typer.Option("--project-id", help="UUID of the registered Project to attack."),
+    ],
+    category: Annotated[
+        str,
+        typer.Option("--category", "-c", help="Attack category. R2 supports 'injection' only."),
+    ] = "injection",
+    budget_usd: Annotated[
+        float,
+        typer.Option("--budget-usd", "-b", help="Max spend for this run."),
+    ] = 5.0,
+) -> None:
+    """Fire a campaign from the command line. Idempotent; each invocation
+    creates a new Campaign + Run on the named Project."""
+    from uuid import UUID
+
+    from cats.db.engine import session_scope
+    from cats.db.repositories.campaign_repo import create_campaign_and_run
+    from cats.db.repositories.project_repo import get_project
+    from cats.workers.campaign_worker import run_one
+
+    if category != "injection":
+        typer.echo(f"R2 ships injection only (got {category!r})")
+        raise typer.Exit(code=2)
+
+    async def _go() -> int:
+        pid = UUID(project_id)
+        async with session_scope() as session:
+            project = await get_project(session, pid)
+            if project is None:
+                typer.echo(f"project {pid} not found")
+                return 1
+            if not project.get("allow_run_against"):
+                typer.echo("project.allow_run_against is False — flip it on first")
+                return 1
+            cid, rid, pvid = await create_campaign_and_run(
+                session,
+                project_id=pid,
+                name=f"cli · {category}",
+                category=category,
+                budget_usd=budget_usd,
+                trigger="on_demand",
+            )
+        typer.echo(f"dispatched campaign={cid} run={rid}")
+        state = await run_one(
+            campaign_id=cid,
+            run_id=rid,
+            project_version_id=pvid,
+            smoke_mode=False,
+            selected_category=category,
+        )
+        typer.echo(
+            f"verdict={state.last_verdict} attacks_fired={state.attacks_fired} "
+            f"usd={state.budget_consumed_usd:.4f} finding={state.finding_id}"
+        )
+        return 0
+
+    code = asyncio.run(_go())
+    raise typer.Exit(code=code)
+
+
 @user_app.command("create")
 def user_create(
     email: Annotated[str, typer.Argument(help="Email address — used as login.")],

@@ -557,34 +557,83 @@ budget.
 48 unit + integration tests passing; `ruff check` + `ruff format
 --check` + `mypy --strict` clean across 105 source files.
 
-**Phase B — Wire-up (next session, on the same branch):**
+**Phase B — Wire-up (committed in `feat(round-2-wire-up)`):**
 
-- [ ] Replace each stub graph node (`orchestrator`, `red_team_router`,
-      `mutator`, `output_filter`, `target_caller`, `judge`,
-      `documentation`) with the real implementation that calls the
-      specialist / TargetClient / judge LLM and persists rows.
-- [ ] `cats/target/client.py` — OpenEMR login flow
-      (`/interface/login/login.php`) → harvest `PHPSESSID` → POST
-      `agent.php?action=briefing` with the attack envelope → consume
-      SSE → assemble the assistant text. Handle session expiry
-      (re-login on 302/401).
-- [ ] LangGraph `AsyncPostgresSaver` checkpointer
-      (`langgraph-checkpoint-postgres` is already a dep). Resume-from-
-      checkpoint test.
-- [ ] `POST /campaigns` route + `cats run-campaign` CLI. Operator-only,
-      CSRF-protected (already wired). Background worker dispatches the
-      graph keyed by `thread_id = str(run_id)`.
-- [ ] `/campaigns/{id}` live page subscribing to the existing SSE
-      endpoint.
-- [ ] `/findings/{id}` detail page with attack/response/verdict/report
-      + LangSmith deep-link.
-- [ ] Per-agent cost breakdown panel (column already migrated; just
-      needs the dashboard surface).
-- [ ] `tests/integration/test_campaign_e2e.py` (full loop via FakeLLM
-      + fake target) and `test_resume.py` (checkpoint mid-run, resume).
-- [ ] `tests/README.md` — documents the per-test engine pattern, the
-      `settings` monkeypatch dance, the `csrf_post` helper, the
-      FakeLLM pattern (the R1 retrospective explicitly asks for this).
+- [x] Every graph node replaced with a real implementation:
+      `orchestrator` (records plan + event), `red_team_router` (calls
+      injection specialist, builds Attack with canary, emits cost
+      entry), `mutator` (passthrough + visible event), `output_filter`
+      (quarantines + emits halted event), `target_caller` (TargetClient
+      against `target_base_url`), `judge` (deterministic short-circuit
+      + LLM rubric fallback), `documentation` (writes
+      `Attack/AttackExecution/JudgeVerdict/Finding/VulnerabilityReport`
+      rows + Markdown report + finding-promoted audit row).
+- [x] Conditional edge `output_filter -> documentation` when verdict
+      is `dangerous`/`attack_payload` — the live target never sees a
+      quarantined payload. Integration test
+      `test_filter_quarantine_short_circuits_to_documentation`
+      demonstrates this end-to-end.
+- [x] `cats/target/client.py` — OpenEMR login flow against
+      `interface/login/login.php` → `interface/main/main_screen.php`,
+      harvests `PHPSESSID` + `csrf_token_form`, POSTs to
+      `agent.php?action=briefing` and walks the SSE stream into a
+      single assistant text. Two modes: `copilot_proxy` (prod path) +
+      `copilot_internal` (local-docker shortcut with a static bearer).
+- [x] `AsyncPostgresSaver` checkpointer wired via
+      `cats/graph/checkpointer.py::postgres_checkpointer` async context
+      manager. The worker runs the graph inside this context for real
+      runs; smoke path keeps the in-memory saver. `thread_id =
+      str(run_id)` so a worker restart resumes from the last completed
+      node.
+- [x] `POST /campaigns` route (operator+, CSRF-protected) + `cats
+      run-campaign --project-id <uuid>` CLI. Background dispatch via
+      `asyncio.create_task` with strong references on a module-level
+      set so the task isn't GC'd mid-run. Refuses to fire when
+      `Project.allow_run_against=False`.
+- [x] `/campaigns/{id}` live page: status table, cost-by-agent rollup,
+      findings list, live event log subscribed to `/events/{campaign_id}`
+      via HTMX SSE.
+- [x] `/findings` list + `/findings/{id}` detail page. Detail page
+      renders the Markdown vulnerability report, the judge summary,
+      the per-execution table with `agent_role` + tokens + USD + LangSmith
+      deep-link (when trace ID is real, not the synthetic `fake-…`
+      placeholder).
+- [x] `attack_executions.agent_role` column populated by every LLM-
+      using node; per-role rollup surfaces on the campaign detail
+      page.
+- [x] Project form (create + edit) surfaces `target_kind` /
+      `target_username` / `target_password`. Password is Fernet-encrypted
+      via `cats.security.crypto.encrypt` before storage; the form never
+      displays the stored value back to the user.
+- [x] Graph state extended (`CampaignState`) to carry target config,
+      per-attack canary, per-agent cost entries, last trace ID,
+      verdict rationale + evidence + rubric_version_id — so the
+      Documentation node persists everything atomically without a
+      second DB pass per node.
+- [x] LangGraph rubric registry: `cats/db/repositories/rubric_repo.py`
+      reads the locked rubric file off disk and idempotently records
+      it on first use; `judge_verdicts.rubric_version_id` references
+      the row so historical comparisons survive rubric evolution.
+- [x] Smoke CLI simplified — was double-writing Attack/Execution/
+      Verdict/Finding rows because the R1 path lived in the CLI and
+      R2 moved persistence into the graph. Now CLI just creates the
+      Project/Campaign/Run skeleton and invokes the worker.
+- [x] Integration tests: 5 e2e cases in `test_campaign_e2e.py`
+      including the full pass path, audit-log writes on promotion,
+      `allow_run_against=False` gating, unknown-category gating, and
+      filter-quarantine short-circuit. Uses `FakeLLMClient` +
+      `httpx.MockTransport` so tests stay offline and deterministic.
+- [x] Unit tests for the specialist (raw/fenced/prose-wrapped JSON,
+      canary substitute, canary splice-in defensive fallback), judge
+      (deterministic + LLM rubric branches), output filter quarantine
+      (SSN/MRN/powershell shapes), and the SSE assembly helper.
+- [x] `tests/README.md` — documents per-test engine pattern, CSRF
+      helper, `cats.config.settings` monkeypatch dance, FakeLLM
+      `install_override` pattern, the `live_target` marker. R1's
+      retrospective asked for this.
+
+**75 tests passing** (48 from Phase A + 27 new). `ruff check` + `ruff
+format --check` + `mypy --strict` clean across 110+ source files.
 
 **Decisions.** *(builder records as made — preserve rationale, not just outcome)*
 
@@ -617,11 +666,126 @@ budget.
   `rubric/v1.md` as the explicit short-circuit. Halves judge cost and
   removes one source of drift.
 
-**Retrospective.** *(builder fills in after R2 ships in full — Phase B)*
+Additional decisions made during Phase B:
 
-- What went well: _
-- What didn't: _
-- What to change for R3: _
+- **Target attack surface = the OpenEMR PHP proxy, not the internal
+  `/v1/agent/*`.** The internal port isn't reachable in prod and a
+  realistic attacker would come through the same browser session a
+  clinician uses. R2 ships `target_kind=copilot_proxy` as the default;
+  `copilot_internal` is a local-dev escape hatch documented in the
+  TargetClient.
+- **OpenEMR credentials encrypted at rest, never displayed back.**
+  Stored under `projects.target_password_encrypted`, Fernet-encrypted.
+  The project edit form treats an empty `target_password` field as
+  "keep existing"; only an explicit new password rotates the stored
+  value. Audit-log entries record the *fact* of a rotation, not the
+  password.
+- **Background dispatch via `asyncio.create_task` with a module-level
+  strong-reference set.** Picked over a real task queue (Celery/Arq)
+  because the round explicitly scopes to a single technique and one
+  attack per campaign; a task queue would add infrastructure that
+  doesn't pay back until Round 6+ multi-attack campaigns. The strong-
+  ref set (`_BG_TASKS`) is the documented fix for RUF006.
+- **Documentation node owns persistence.** Earlier (R1) scaffold had
+  the smoke CLI doing the writes after the graph returned, which
+  meant any new graph user had to remember to add the persistence
+  step. R2 centralizes Attack/Execution/Verdict/Finding/Report
+  inserts in the last node. Single source of truth; idempotent on
+  signature so checkpoint replay doesn't duplicate rows.
+- **Mutator stays a passthrough but emits a visible event.** Round
+  scope explicitly defers real variant generation to R3; the role is
+  present in the graph and visible in the live event log so the
+  dashboard shows the seven-role topology rather than skipping a step
+  silently.
+- **TargetClient assembles SSE text by concatenating every `content`
+  / `text` / `delta` / `message` field.** The Co-Pilot's
+  `briefingStream.encodeStreamEvent` emits typed events; R2 doesn't
+  honor section semantics yet because the Judge only needs *something*
+  to look at, and "everything the model said" beats "the first chunk"
+  every time. R4 (indirect injection) may need section-aware handling
+  for citations.
+
+**Retrospective.**
+
+- **What went well.**
+  - The R1 retrospective's call-out to ship a `tests/README.md`
+    paid off immediately: integration tests for R2 use the
+    `csrf_post` helper and the per-test engine pattern without
+    re-deriving them, and the README is the place I documented the
+    `install_override` + `MockTransport` patterns so R3 won't have
+    to either.
+  - Locking the rubric file (`rubric/v1.md`) at Phase A and
+    persisting `rubric_version_id` on every `judge_verdict` row paid
+    off when wiring the judge node — there was no "should I edit the
+    rubric to make this test pass" question, because editing was
+    already off the table.
+  - Splitting R2 into Phase A (foundations) + Phase B (wire-up) on
+    one branch let the first commit be a coherent unit of platform
+    plumbing reviewable on its own; the second commit is the
+    inner-loop wiring that consumes Phase A's abstractions. Two
+    smaller PRs would be even cleaner — the worktree leaves that
+    option open.
+  - Per-attack canary tokens (`CATS-CANARY-<hex>`) turned out to be
+    the single most-load-bearing decision: the integration test
+    works *because* the canary is fresh per attack and the mock
+    transport can sniff it out of the request and echo it back.
+    Category-wide canaries (R1 scaffold style) would have made the
+    e2e test untestable without coordinating canary state between
+    nodes.
+  - `FakeLLMClient` + `install_override` together with `httpx.MockTransport`
+    let the e2e test exercise the entire graph offline in under 4
+    seconds. No marker-gated "this needs OpenRouter" awkwardness.
+
+- **What didn't.**
+  - The first version of `upsert_attack` used `INSERT … ON CONFLICT
+    (category, signature)` against indexes that *weren't* unique
+    constraints — Postgres rejected the statement at run time, not
+    at definition time. Caught only by the e2e test. Either add a
+    unique constraint to the table or don't use `ON CONFLICT`. R2
+    took the second path; if R3 hits a real dedup-under-load scenario
+    we may revisit.
+  - Patching `httpx.AsyncClient` is fragile — the patch lives at
+    the import path `cats.target.client.httpx.AsyncClient`, but if
+    a future TargetClient method opens the client a different way
+    (e.g. via a session pool) the patch becomes a no-op silently.
+    Worth wrapping the client construction in a tiny factory
+    function that tests can monkey-patch by name.
+  - The smoke path's double-persistence-bug (R1 CLI + R2 graph both
+    wrote Attack/Execution rows) didn't surface in tests until I
+    actually ran `cats smoke` — there was no smoke test in the
+    suite. R3 should add `tests/integration/test_smoke.py` that
+    drives `run_smoke` end-to-end so this kind of regression bites
+    in CI, not in someone's local terminal.
+  - `cats.config.settings` is still a module-level import-time
+    singleton — R1's retro called it out, R2 worked around it again
+    with module-attribute monkeypatching, R3 should finally move it
+    behind a DI pattern.
+  - `langgraph.checkpoint.serde.jsonplus` emits a pending-deprecation
+    warning about `allowed_objects` defaulting in a future version.
+    R3 should pin an explicit value rather than ignore the warning.
+
+- **What to change for R3.**
+  - **Move `cats.config.settings` behind a DI factory.** Two rounds in
+    a row have wanted this; stop putting it off. `Depends(get_settings)`
+    for routes + a module-level `set_settings_for_test` for nodes.
+  - **Add a smoke-path integration test.** `make smoke` is the
+    documented onboarding command and isn't covered by the suite.
+    `tests/integration/test_smoke.py` taking ~3 seconds is the right
+    cost.
+  - **Refactor the TargetClient SSE walk into its own pure-function
+    module** before the briefing-action-specific quirks pile up. R4
+    will need section-aware handling for citations; R3's prep should
+    extract the parser cleanly first.
+  - **Wrap LLM-using node calls in a small `with_cost(state, role)`
+    helper.** R2's nodes each manually push a `AgentCostEntry`,
+    track tokens, and add to `state.budget_consumed_usd`. Three
+    copies of the same code; a helper closes the door on someone
+    forgetting one of them.
+  - **Real Mutator + multi-technique inner loop is R3's actual
+    work.** The conditional-edge plumbing is already there; R3 only
+    needs to wire the partial-success-feedback loop.
+  - **Pin `allowed_objects` on the langgraph serializer.** Silences a
+    deprecation; preempts a future breakage.
 
 ---
 

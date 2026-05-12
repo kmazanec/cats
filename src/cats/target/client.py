@@ -3,23 +3,91 @@
 This is the only path through which adversarial content reaches the live
 system. Every call is wrapped in a structured log line; downstream code
 writes the (request, response) pair into an AttackExecution row.
+
+Two target kinds are supported:
+
+- `copilot_proxy` (R2 default): the public surface — `agent.php?action=
+  briefing` behind the OpenEMR PHP session. The client logs in to
+  OpenEMR with the Project's stored credentials, harvests `PHPSESSID`
+  + the form CSRF token, then POSTs the briefing envelope and consumes
+  the SSE stream until the agent emits `complete` or `error`.
+
+- `copilot_internal` (local-dev shortcut): hits the agent's internal
+  `/v1/agent/briefing` directly with a static bearer token. Not used in
+  prod (the internal port isn't reachable) but useful for local docker
+  iteration before OpenEMR is wired up.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import time
+from typing import Any
 
 import httpx
 
-from cats.target.contracts import CopilotRequest, CopilotResponse
+from cats.logging import get_logger
+from cats.target.contracts import (
+    AttackEnvelope,
+    CopilotRequest,
+    CopilotResponse,
+    TargetCallResult,
+)
+
+log = get_logger(__name__)
+
+
+_CSRF_INPUT_RE = re.compile(
+    r'<input[^>]*name=["\']csrf_token_form["\'][^>]*value=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
 
 
 class TargetClient:
-    def __init__(self, base_url: str, *, default_timeout: float = 30.0) -> None:
+    """Fires attack envelopes at the target. Stateful — keeps a session
+    cookie jar between calls so the OpenEMR session survives the
+    expected sequence of `login -> attack -> attack -> ...`.
+
+    Construct one per Run; do not share across runs (different campaigns
+    may use different Project credentials)."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        target_kind: str = "copilot_proxy",
+        username: str = "",
+        password: str = "",
+        bearer_token: str = "",
+        default_timeout: float = 60.0,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._target_kind = target_kind
+        self._username = username
+        self._password = password
+        self._bearer_token = bearer_token
         self._timeout = default_timeout
+        self._cookies: httpx.Cookies = httpx.Cookies()
+        self._csrf_token: str = ""
+        self._logged_in = False
+
+    # ------------------------------------------------------------------
+    # Public surface
+    # ------------------------------------------------------------------
+
+    async def attack(self, envelope: AttackEnvelope) -> TargetCallResult:
+        """Send one attack. Returns a `TargetCallResult` with the assembled
+        assistant text and the raw response body. Errors are returned as
+        a non-200 status_code + populated `error`, never raised."""
+        if self._target_kind == "copilot_internal":
+            return await self._attack_internal(envelope)
+        return await self._attack_proxy(envelope)
 
     async def call(self, request: CopilotRequest) -> CopilotResponse:
+        """Legacy generic call. Kept so the smoke path keeps working
+        without rewrites; the graph's target_caller node uses
+        `attack()` instead."""
         url = f"{self._base_url}{request.endpoint}"
         started = time.perf_counter()
         try:
@@ -48,3 +116,192 @@ class TargetClient:
                 latency_ms=elapsed_ms,
                 error=str(e),
             )
+
+    # ------------------------------------------------------------------
+    # copilot_proxy — OpenEMR PHP session + agent.php proxy
+    # ------------------------------------------------------------------
+
+    async def _attack_proxy(self, envelope: AttackEnvelope) -> TargetCallResult:
+        started = time.perf_counter()
+        try:
+            if not self._logged_in:
+                await self._login_openemr()
+
+            pid = str(envelope.extra.get("pid", "1"))
+            url = (
+                f"{self._base_url}"
+                "/interface/modules/custom_modules/oe-module-clinical-copilot/"
+                f"public/agent.php?action=briefing&pid={pid}"
+            )
+
+            body = self._build_briefing_envelope(envelope)
+            headers: dict[str, str] = {
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+            }
+            if self._csrf_token:
+                headers["X-CSRF-Token"] = self._csrf_token
+
+            async with httpx.AsyncClient(
+                timeout=self._timeout, cookies=self._cookies, follow_redirects=False
+            ) as client:
+                resp = await client.post(url, content=json.dumps(body), headers=headers)
+                # Re-auth on session expiry, then retry once.
+                if resp.status_code in (302, 401, 403):
+                    self._logged_in = False
+                    await self._login_openemr()
+                    resp = await client.post(url, content=json.dumps(body), headers=headers)
+                text = _assemble_sse_text(resp.text)
+        except httpx.HTTPError as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log.warning("target.proxy_error", error=repr(e))
+            return TargetCallResult(
+                text="", status_code=0, latency_ms=elapsed_ms, error=str(e)
+            )
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return TargetCallResult(
+            text=text,
+            status_code=resp.status_code,
+            latency_ms=elapsed_ms,
+            raw_body=resp.text,
+        )
+
+    async def _login_openemr(self) -> None:
+        """OpenEMR login flow against the local PHP UI. POSTs to
+        `interface/main/main_screen.php` with `authUser`, `clearPass`,
+        `new_login_session_management`, and the form CSRF token harvested
+        from the login page."""
+        if not self._username or not self._password:
+            raise RuntimeError(
+                "target_kind=copilot_proxy requires Project.target_username + "
+                "target_password — set them in the dashboard before firing."
+            )
+        login_get = f"{self._base_url}/interface/login/login.php?site=default"
+        login_post = f"{self._base_url}/interface/main/main_screen.php?auth=login&site=default"
+
+        async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as client:
+            r1 = await client.get(login_get)
+            self._cookies.update(r1.cookies)
+            self._csrf_token = _extract_csrf_form_token(r1.text)
+            data = {
+                "authUser": self._username,
+                "clearPass": self._password,
+                "languageChoice": "1",
+                "new_login_session_management": "1",
+            }
+            if self._csrf_token:
+                data["csrf_token_form"] = self._csrf_token
+            r2 = await client.post(login_post, data=data, cookies=self._cookies)
+            self._cookies.update(r2.cookies)
+            if r2.status_code >= 400:
+                raise RuntimeError(
+                    f"OpenEMR login failed: HTTP {r2.status_code} (user={self._username!r})"
+                )
+        self._logged_in = True
+        log.info("target.openemr_login_ok", user=self._username)
+
+    def _build_briefing_envelope(self, envelope: AttackEnvelope) -> dict[str, Any]:
+        """Build the JSON body the agent.php proxy forwards to
+        /v1/agent/briefing. The Co-Pilot's briefingRequestSchema is strict
+        about its envelope shape; this is the minimal version that lets
+        the chat-style attack land.
+
+        The exact schema is in the openemr/agent/src/server/index.ts
+        `briefingRequestSchema` — we send a request envelope + a single
+        user message. The site/conversation/request IDs are random UUID
+        strings; the target stores them but doesn't gate on prior history."""
+        import uuid as _uuid
+
+        return {
+            "requestId": str(_uuid.uuid4()),
+            "conversationId": str(_uuid.uuid4()),
+            "siteId": "default",
+            "patient": {"pid": str(envelope.extra.get("pid", "1"))},
+            "request": {
+                "type": "chat",
+                "messages": [{"role": "user", "content": envelope.user_message}],
+            },
+            **envelope.extra,
+        }
+
+    # ------------------------------------------------------------------
+    # copilot_internal — local-dev shortcut
+    # ------------------------------------------------------------------
+
+    async def _attack_internal(self, envelope: AttackEnvelope) -> TargetCallResult:
+        """Hit the agent's /v1/agent/briefing directly. Requires a bearer
+        token; only useful when the operator runs cats against a local
+        docker stack where the agent port is reachable."""
+        started = time.perf_counter()
+        url = f"{self._base_url}/v1/agent/briefing"
+        body = self._build_briefing_envelope(envelope)
+        headers = {
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        if self._bearer_token:
+            headers["Authorization"] = f"Bearer {self._bearer_token}"
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(url, content=json.dumps(body), headers=headers)
+            text = _assemble_sse_text(resp.text)
+        except httpx.HTTPError as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return TargetCallResult(
+                text="", status_code=0, latency_ms=elapsed_ms, error=str(e)
+            )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return TargetCallResult(
+            text=text,
+            status_code=resp.status_code,
+            latency_ms=elapsed_ms,
+            raw_body=resp.text,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_csrf_form_token(login_html: str) -> str:
+    m = _CSRF_INPUT_RE.search(login_html)
+    return m.group(1) if m else ""
+
+
+def _assemble_sse_text(raw: str) -> str:
+    """Walk an SSE stream and join every `data:` line's text content.
+    Tolerant of arbitrary `event:` types; concatenates anything that
+    looks like assistant content.
+
+    The Co-Pilot's `briefingStream.encodeStreamEvent` emits events like
+    `data: {"type":"section","content":"..."}` per chunk plus a final
+    `data: {"type":"complete"}`. For R2 we don't need to honor section
+    semantics — concatenating all string fields is enough to give the
+    Judge something to evaluate.
+    """
+    out: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            out.append(payload)
+            continue
+        if isinstance(obj, dict):
+            for key in ("content", "text", "delta", "message"):
+                v = obj.get(key)
+                if isinstance(v, str) and v:
+                    out.append(v)
+        elif isinstance(obj, str):
+            out.append(obj)
+    if out:
+        return "\n".join(out)
+    # If there are no SSE-shaped lines, treat the body as plain text.
+    return raw

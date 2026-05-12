@@ -1,13 +1,26 @@
-"""Orchestrator node. Picks the next category for the inner loop using the
-deterministic epsilon-greedy bandit in `cats.agents.orchestrator.policy`.
-Stub: hardcodes injection for the smoke path."""
+"""Orchestrator node.
+
+R2 scope: the user names the category; the Orchestrator records the
+plan and emits a `campaign_started` event. Real bandit-based selection
+across multiple categories is Round 6 work.
+"""
 
 from __future__ import annotations
 
+from cats.graph.events import publish
 from cats.graph.state import CampaignState
 
 
 async def run(state: CampaignState) -> CampaignState:
-    if state.selected_category is None:
+    if not state.selected_category:
         state.selected_category = "injection"
+    await publish(
+        kind="campaign_started",
+        campaign_id=state.campaign_id,
+        run_id=state.run_id,
+        payload={
+            "selected_category": state.selected_category,
+            "target_kind": state.target_kind,
+        },
+    )
     return state

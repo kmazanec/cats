@@ -94,9 +94,13 @@ async def propose(*, llm: LLMClient) -> InjectionProposal:
     user_message = str(parsed.get("user_message", "")).strip()
     if not user_message:
         raise ValueError("specialist output missing user_message")
-    # Defense in depth: if the model forgot to substitute the canary,
-    # splice it in. Better to mutate the message than to fire an
-    # un-judgable attack.
+    # Some models echo the literal `{{CANARY}}` placeholder back instead
+    # of substituting it. Substitute here so the canary is always
+    # concrete by the time the attack leaves the specialist.
+    user_message = user_message.replace("{{CANARY}}", canary)
+    # Defense in depth: if the model didn't include the canary at all
+    # (forgot it entirely), splice it in. Better to mutate the message
+    # than to fire an un-judgable attack.
     if canary not in user_message:
         user_message = f"{user_message}\n\n[validation token: {canary}]"
 

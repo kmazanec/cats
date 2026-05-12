@@ -1,0 +1,60 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Findings{% endblock %}
+{% block crumb %}Findings{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px;">
+  <section>
+    <span class="eyebrow">— Findings · {{ findings|length }} total</span>
+    <h1 class="title">Confirmed adversarial findings.</h1>
+    <p class="subtitle">
+      Each row is a Judge-confirmed <code class="mono">pass</code> verdict — the
+      defense failed. Click in for the attack, response, judge rationale, and
+      structured report.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">All findings</div>
+      <div class="meta">newest first</div>
+    </header>
+    <div class="body flush">
+      {% if findings %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th style="width: 90px;">Sev</th>
+              <th>Title</th>
+              <th style="width: 110px;">Category</th>
+              <th style="width: 100px;">Status</th>
+              <th class="num" style="width: 130px;">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for f in findings %}
+              <tr>
+                <td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td>
+                <td><a class="nav-link" href="/findings/{{ f.id }}">{{ f.title }}</a></td>
+                <td class="mono muted">{{ f.category }}</td>
+                <td>
+                  {% if f.status == 'open' %}<span class="dot amber"></span>open
+                  {% elif f.status == 'triaged' %}<span class="dot cyan"></span>triaged
+                  {% elif f.status == 'fixed' %}<span class="dot green"></span>fixed
+                  {% else %}<span class="dot"></span>{{ f.status }}{% endif %}
+                </td>
+                <td class="num muted">{{ f.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">
+          no findings yet
+          <span class="hint">fire a campaign to start producing them</span>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</main>
+{% endblock %}

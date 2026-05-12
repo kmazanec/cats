@@ -1,0 +1,147 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Campaign {{ campaign.name }}{% endblock %}
+{% block crumb %}Campaign · {{ campaign.name }}{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+  <section>
+    <span class="eyebrow">— Campaign · {{ campaign.id }}</span>
+    <h1 class="title">{{ campaign.name }}</h1>
+    <p class="subtitle">
+      Target <strong>{{ campaign.project_name }}</strong> · env
+      <code class="mono">{{ campaign.project_env }}</code> · trigger
+      <code class="mono">{{ campaign.trigger }}</code> · fired
+      {{ campaign.created_at.strftime('%Y-%m-%d %H:%M') }}
+    </p>
+  </section>
+
+  <section class="grid cols-2" style="gap: 18px;">
+    <div class="panel">
+      <header>
+        <div class="title">Run status</div>
+        <div class="meta">{{ runs|length }} run{{ runs|pluralize }}</div>
+      </header>
+      <div class="body flush">
+        {% if runs %}
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th class="mono">Run</th>
+                <th>Status</th>
+                <th class="num">Attacks</th>
+                <th class="num">Spend (USD)</th>
+                <th class="num">Started</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in runs %}
+                <tr>
+                  <td class="mono muted">{{ (r.id|string)[:8] }}</td>
+                  <td>
+                    {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% else %}<span class="dot"></span>{% endif %}
+                    {{ r.status }}
+                  </td>
+                  <td class="num">{{ r.attacks_fired }}</td>
+                  <td class="num mono">${{ '%.4f'|format(r.budget_consumed_usd) }}</td>
+                  <td class="num muted">{{ r.started_at.strftime('%H:%M:%S') if r.started_at else '—' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">no runs yet</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <header>
+        <div class="title">Cost by agent</div>
+        <div class="meta">per-role rollup of attack_executions</div>
+      </header>
+      <div class="body flush">
+        {% if cost_by_agent %}
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th class="num">Tokens in</th>
+                <th class="num">Tokens out</th>
+                <th class="num">USD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c in cost_by_agent %}
+                <tr>
+                  <td><span class="mono">{{ c.role }}</span></td>
+                  <td class="num">{{ c.tokens_in }}</td>
+                  <td class="num">{{ c.tokens_out }}</td>
+                  <td class="num mono">${{ '%.4f'|format(c.usd) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">no executions yet</div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Findings</div>
+      <div class="meta">{{ findings|length }} promoted</div>
+    </header>
+    <div class="body flush">
+      {% if findings %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Title</th>
+              <th>Category</th>
+              <th class="num">Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for f in findings %}
+              <tr>
+                <td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td>
+                <td>{{ f.title }}</td>
+                <td class="mono muted">{{ f.category }}</td>
+                <td class="num muted">{{ f.created_at.strftime('%H:%M:%S') }}</td>
+                <td><a class="nav-link" href="/findings/{{ f.id }}">open →</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">
+          no findings yet
+          <span class="hint">if the campaign is still running, this will populate live</span>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Live event stream</div>
+      <div class="meta"><span class="dot amber pulse"></span>SSE · /events/{{ campaign.id }}</div>
+    </header>
+    <div class="body flush">
+      <div class="eventlog" id="eventlog"
+           hx-ext="sse"
+           sse-connect="/events/{{ campaign.id }}"
+           sse-swap="message"
+           hx-swap="afterbegin">
+        <div class="empty" style="border:0; background:transparent;">
+          waiting for events from the running campaign…
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}
