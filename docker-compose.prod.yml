@@ -1,0 +1,30 @@
+# Prod-only compose overlay for the droplet deploy. Applied with
+# `docker compose -f docker-compose.yml -f docker-compose.prod.yml up`
+# (the deploy job wires this via COMPOSE_FILE). Two things that have
+# to differ on the droplet versus a Mac dev box:
+#
+# 1. The cats-api container joins the existing openemr_default network
+#    so the OpenEMR caddy container can reach it as `cats-api:8400`
+#    without exposing a host port to the public internet.
+# 2. The host port mapping is dropped — caddy is the only thing that
+#    needs to reach the api, and it does so over the docker network.
+#    Removing the port also closes off direct public access on :8400
+#    (right now the droplet's firewall is the only thing keeping
+#    bots away from /healthz).
+
+services:
+  api:
+    networks:
+      - default
+      - openemr_default
+    # Override the parent compose's port mapping with an empty list to
+    # un-publish :8400. (compose merges the lists, so `[]` here wins
+    # over the parent's `["8400:8400"]`.)
+    ports: []
+
+networks:
+  # `external: true` means compose won't try to create the network —
+  # it has to already exist on the host (the OpenEMR project's compose
+  # stack creates it). If it's missing, `compose up` will fail loudly.
+  openemr_default:
+    external: true

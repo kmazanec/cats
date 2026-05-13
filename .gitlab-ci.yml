@@ -141,12 +141,27 @@ deploy:
     - git checkout main
     - git reset --hard "$CI_COMMIT_SHA"
     - test -f .env || (echo ".env not found in $CATS_DEPLOY_DIR — place it once with the production secrets (see .env.example)" && exit 2)
+    # Ship the caddy snippet for cats.biograph.dev. OpenEMR's Caddyfile
+    # globs /etc/caddy/conf.d/*.caddyfile; dropping ours there + reloading
+    # caddy is all that's needed to make the new domain route. `caddy
+    # reload` is graceful (no connection drops). /etc/caddy/conf.d is
+    # owned by gitlab-runner on the droplet — one-time bootstrap, see
+    # docs/DEPLOY.md (or grep for `chown gitlab-runner:gitlab-runner /etc/caddy/conf.d`).
+    - install -m 0644 infra/caddy/cats.caddyfile /etc/caddy/conf.d/cats.caddyfile
     - export CATS_BUILD_SHA="$CI_COMMIT_SHORT_SHA"
     - export CATS_GITLAB_PIPELINE_URL="$CI_PIPELINE_URL"
+    # Use the prod overlay so cats-api joins openemr_default (where caddy
+    # lives) and stops publishing :8400 to the public host.
+    - export COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
     - docker compose up -d --build
-    # Smoke the deployed instance from inside the host network. Cold-start
-    # can take 10-15s (migrations + admin seed + uvicorn boot) on a fresh
-    # build, so retry rather than a single shot after a fixed sleep.
+    # Reload caddy in the OpenEMR stack so it picks up the new snippet.
+    # Done after `compose up` so the cats-api endpoint is reachable
+    # before caddy starts routing to it.
+    - docker exec openemr-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+    # Smoke the deployed instance. Cold-start can take 10-15s
+    # (migrations + admin seed + uvicorn boot) on a fresh build, so
+    # retry rather than a single shot after a fixed sleep. Hits the
+    # container directly via `docker compose exec` (no host port now).
     - |
       for i in $(seq 1 30); do
         if docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8400/healthz').read()" 2>/dev/null; then

@@ -1,0 +1,18 @@
+# Caddy route for CATS, deployed onto the OpenEMR project's caddy
+# container via /etc/caddy/conf.d/ on the host (mounted into caddy at
+# the same path; included via `import /etc/caddy/conf.d/*.caddyfile`
+# at the bottom of OpenEMR's Caddyfile).
+#
+# `cats-api` resolves over the shared docker network — cats's
+# docker-compose.yml joins the `openemr_default` network for this
+# specifically. Caddy auto-fetches the LE cert for cats.biograph.dev
+# on first request; the domain's A record must point at this droplet.
+#
+# `import security_headers` reuses the snippet defined in OpenEMR's
+# Caddyfile so HSTS / X-Frame-Options etc. stay consistent across
+# sibling apps on the droplet.
+
+cats.biograph.dev {
+    import security_headers
+    reverse_proxy cats-api:8400
+}
