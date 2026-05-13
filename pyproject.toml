@@ -53,6 +53,10 @@ dev = [
     "types-redis>=4.6",
     "types-Markdown>=3.7",
     "anyio>=4.6",
+    # R5 docx-validity test bench — gold-standard reader to confirm each
+    # generated .docx parses cleanly. Test-only dep; cats.docx_attacks has
+    # zero runtime deps and builds OOXML from scratch.
+    "python-docx>=1.1",
 ]
 
 [project.scripts]
@@ -93,6 +97,11 @@ ignore = ["E501"]    # line length handled by formatter
 # FastAPI's Depends() idiom requires function calls in defaults — that's the
 # whole point of the dependency injection pattern.
 "src/cats/api/**" = ["B008"]
+# Docx attack synthesis (W3 §5.4 homoglyph technique) and its tests
+# deliberately use Cyrillic codepoints that look like Latin letters —
+# that *is* the technique. Suppressing RUF001 here is intentional.
+"src/cats/docx_attacks/builder.py" = ["RUF001"]
+"tests/unit/test_docx_attacks.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"
