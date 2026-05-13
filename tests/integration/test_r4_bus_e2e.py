@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 import httpx
 import pytest
@@ -54,13 +54,16 @@ def _fake_openemr_transport(canary: str) -> httpx.MockTransport:
 
 
 @pytest.fixture
-def patch_target_transport() -> Callable[[str], None]:
+def patch_target_transport() -> Iterator[Callable[[str], None]]:
     """Patch :mod:`cats.target.client`'s httpx.AsyncClient to return our
-    canned responses without hitting the network."""
+    canned responses without hitting the network. Restores the original
+    on teardown so unit tests that later patch ``httpx.AsyncClient.__init__``
+    aren't shadowed by a leftover subclass."""
+    from cats.target import client as target_client
+
+    original = target_client.httpx.AsyncClient
 
     def _install(canary: str) -> None:
-        from cats.target import client as target_client
-
         transport = _fake_openemr_transport(canary)
 
         class _PatchedAsyncClient(httpx.AsyncClient):
@@ -70,7 +73,10 @@ def patch_target_transport() -> Callable[[str], None]:
 
         target_client.httpx.AsyncClient = _PatchedAsyncClient  # type: ignore[attr-defined,misc]
 
-    return _install
+    try:
+        yield _install
+    finally:
+        target_client.httpx.AsyncClient = original  # type: ignore[attr-defined,misc]
 
 
 @pytest.fixture(autouse=True)
