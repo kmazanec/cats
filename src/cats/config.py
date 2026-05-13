@@ -82,11 +82,14 @@ class Settings(BaseSettings):
     data_secret: str = Field(default="dev-data-secret-change-me", alias="CATS_DATA_SECRET")
 
     # R4 — when True, the Orchestrator auto-approves its own plan and
-    # the Red Team fires immediately (preserves R3 / Commit-A behavior
-    # for tests + smoke). When False, the operator approves via the
-    # /campaigns/<id>/plan page before any attack fires.
+    # the Red Team fires immediately (skips the human-in-the-loop
+    # gate the brief explicitly calls for). Default False so the
+    # production posture is "stop and ask a human before any attack
+    # fires." Tests + smoke flip it back to True via
+    # ``set_settings_for_test(orchestrator_auto_approve=True)`` or the
+    # ``CATS_ORCHESTRATOR_AUTO_APPROVE`` env var.
     orchestrator_auto_approve: bool = Field(
-        default=True,
+        default=False,
         alias="CATS_ORCHESTRATOR_AUTO_APPROVE",
     )
     # R4 — when True, the Orchestrator uses the real LLM planner over

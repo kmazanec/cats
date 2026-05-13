@@ -75,9 +75,15 @@ def patch_target_transport() -> Callable[[str], None]:
 
 @pytest.fixture(autouse=True)
 def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace OpenRouter with a scripted FakeLLMClient for the duration
-    of each test in this module."""
+    """Replace OpenRouter with a scripted FakeLLMClient and flip the
+    Orchestrator's auto-approve flag back on for the duration of each
+    test in this module — production defaults to gated approval, but
+    these tests exercise the bus pipeline end-to-end and skipping the
+    UI hop keeps the test scope to what the bus contract guarantees."""
+    from cats.config import set_settings_for_test
     from cats.llm.client import FakeLLMClient, install_override
+
+    set_settings_for_test(orchestrator_auto_approve=True)
 
     fake = FakeLLMClient()
     fake.register(
@@ -102,6 +108,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     install_override(fake)
     yield
     install_override(None)
+    set_settings_for_test(orchestrator_auto_approve=False)
 
 
 # ---------------------------------------------------------------------------

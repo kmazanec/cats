@@ -26,6 +26,62 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+async def _resolve_project_version(session: AsyncSession, project_id: UUID) -> UUID:
+    """Return the most-recent ProjectVersion for the Project, creating
+    one labeled ``auto`` if none exists."""
+    row = (
+        await session.execute(
+            select(project_versions.c.id)
+            .where(project_versions.c.project_id == project_id)
+            .order_by(desc(project_versions.c.deployed_at))
+            .limit(1)
+        )
+    ).first()
+    if row is not None:
+        return UUID(str(row.id))
+    new_pv = uuid4()
+    await session.execute(
+        insert(project_versions).values(
+            id=new_pv,
+            project_id=project_id,
+            label="auto",
+            deployed_at=_utcnow(),
+        )
+    )
+    return new_pv
+
+
+async def create_campaign(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    name: str,
+    budget_usd: float = 5.0,
+    trigger: str = "on_demand",
+) -> tuple[UUID, UUID]:
+    """Create a Campaign + (re)use a ProjectVersion. Returns
+    ``(campaign_id, project_version_id)``.
+
+    No Run is materialized — the R4 Red Team worker creates runs
+    per-attempt as it walks the approved plan. The trigger surface
+    (API + CLI) calls this; the smoke path uses
+    :func:`create_campaign_and_run` because it drives ``run_one``
+    directly without going through the bus."""
+    project_version_id = await _resolve_project_version(session, project_id)
+    campaign_id = uuid4()
+    await session.execute(
+        insert(campaigns).values(
+            id=campaign_id,
+            name=name[:200],
+            project_id=project_id,
+            mode="blackhat",
+            trigger=trigger,
+            budget={"usd": budget_usd},
+        )
+    )
+    return campaign_id, project_version_id
+
+
 async def create_campaign_and_run(
     session: AsyncSession,
     *,
@@ -35,31 +91,11 @@ async def create_campaign_and_run(
     budget_usd: float = 5.0,
     trigger: str = "on_demand",
 ) -> tuple[UUID, UUID, UUID]:
-    """Returns (campaign_id, run_id, project_version_id). Reuses the most
-    recent ProjectVersion for the Project, creating one on demand if none
-    exists. The smoke path creates project_versions explicitly; the
-    dashboard pathway falls back to an auto-version."""
-    version_row = (
-        await session.execute(
-            select(project_versions.c.id)
-            .where(project_versions.c.project_id == project_id)
-            .order_by(desc(project_versions.c.deployed_at))
-            .limit(1)
-        )
-    ).first()
-    if version_row is None:
-        new_pv = uuid4()
-        await session.execute(
-            insert(project_versions).values(
-                id=new_pv,
-                project_id=project_id,
-                label="auto",
-                deployed_at=_utcnow(),
-            )
-        )
-        project_version_id = new_pv
-    else:
-        project_version_id = version_row.id
+    """Returns ``(campaign_id, run_id, project_version_id)``. Used only
+    by the R3 smoke path which drives ``run_one`` directly and needs a
+    pre-materialized Run. The R4 bus trigger surface calls
+    :func:`create_campaign` instead."""
+    project_version_id = await _resolve_project_version(session, project_id)
 
     campaign_id = uuid4()
     await session.execute(

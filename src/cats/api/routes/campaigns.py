@@ -17,7 +17,7 @@ from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
 from cats.db.repositories.campaign_repo import (
-    create_campaign_and_run,
+    create_campaign,
     get_campaign_with_project,
     get_execution_full,
     get_run_with_campaign,
@@ -152,15 +152,14 @@ async def fire_campaign(
         # (and a throwaway campaign + run). The Orchestrator worker's
         # stub planner will create its own campaign row when it
         # processes the envelope; we just need a valid
-        # project_version_id reference for the envelope. The Red Team
-        # worker creates its own per-attempt runs against this campaign;
-        # the row created here is the canonical campaign the Orchestrator
-        # plans against (NOT a duplicate-creating throwaway).
-        campaign_id, _stub_run_id, project_version_id = await create_campaign_and_run(
+        # Create the campaign row only — the Red Team worker
+        # materializes its own per-attempt runs as it walks the
+        # approved plan. Creating a stub run here used to leave a
+        # permanently-pending row in the run list.
+        campaign_id, project_version_id = await create_campaign(
             session,
             project_id=project_id,
             name=f"trigger · {project['name']}",
-            category="injection",
             budget_usd=budget_usd,
         )
         await write_audit(

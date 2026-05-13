@@ -91,7 +91,7 @@ def run_campaign(
     from uuid import UUID
 
     from cats.db.engine import session_scope
-    from cats.db.repositories.campaign_repo import create_campaign_and_run
+    from cats.db.repositories.campaign_repo import create_campaign
     from cats.db.repositories.project_repo import get_project
     from cats.messaging import (
         CampaignRequestedPayload,
@@ -112,11 +112,10 @@ def run_campaign(
             if not project.get("allow_run_against"):
                 typer.echo("project.allow_run_against is False — flip it on first")
                 return 1
-            cid, rid, pvid = await create_campaign_and_run(
+            cid, pvid = await create_campaign(
                 session,
                 project_id=pid,
                 name=f"cli · {project['name']}",
-                category="injection",
                 budget_usd=budget_usd,
                 trigger="on_demand",
             )
@@ -142,7 +141,7 @@ def run_campaign(
             await bus.emit(session, envelope)
             await session.commit()
         typer.echo(
-            f"requested campaign={cid} stub_run={rid} — Orchestrator worker "
+            f"requested campaign={cid} — Orchestrator worker "
             "will plan next; ensure workers are running."
         )
         return 0
