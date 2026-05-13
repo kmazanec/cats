@@ -162,6 +162,7 @@ class TargetClient:
                     await self._login_openemr()
                     resp = await client.post(url, content=json.dumps(body), headers=headers)
                 text = _assemble_sse_text(resp.text)
+                assigned_conv_id = _extract_assigned_conversation_id(resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             log.warning("target.proxy_error", error=repr(e))
@@ -173,6 +174,7 @@ class TargetClient:
             status_code=resp.status_code,
             latency_ms=elapsed_ms,
             raw_body=resp.text,
+            assigned_conversation_id=assigned_conv_id,
         )
 
     async def _login_openemr(self) -> None:
@@ -208,6 +210,35 @@ class TargetClient:
                 )
         self._logged_in = True
         log.info("target.openemr_login_ok", user=self._username)
+
+    async def _pin_session_patient(self, pid: str) -> None:
+        """Pin ``$_SESSION['pid']`` to ``pid`` by GETting panel.php with
+        a ``?pid=`` query — panel.php calls ``setpid()`` exactly the way
+        the dashboard SPA does. Used before document_upload.php (whose
+        route ignores query params and reads pid from the session).
+        Best-effort: a non-2xx response is logged but not raised — the
+        caller will surface a clearer error from the failing route."""
+        if not pid or pid == "0":
+            return
+        url = (
+            f"{self._base_url}"
+            "/interface/modules/custom_modules/oe-module-clinical-copilot/"
+            f"public/panel.php?pid={pid}"
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, cookies=self._cookies, follow_redirects=False
+            ) as client:
+                resp = await client.get(url)
+                self._cookies.update(resp.cookies)
+                if resp.status_code >= 400:
+                    log.warning(
+                        "target.set_pid_failed",
+                        status_code=resp.status_code,
+                        pid=pid,
+                    )
+        except httpx.HTTPError as e:
+            log.warning("target.set_pid_error", error=repr(e), pid=pid)
 
     def _build_briefing_envelope(self, envelope: AttackEnvelope) -> dict[str, Any]:
         """Build the JSON body the agent.php proxy forwards to
@@ -310,6 +341,13 @@ class TargetClient:
                 await self._login_openemr()
 
             pid = str(envelope.extra.get("pid", "1"))
+            # document_upload.php reads patient context from
+            # ``$_SESSION['pid']`` and 400s with ``missing_pid`` when it's
+            # zero. Unlike agent.php, the upload route has no in-line
+            # setpid sync from a ``?pid=`` query param. Hitting panel.php
+            # with the pid pins the session-side pid via setpid() before
+            # the upload fires.
+            await self._pin_session_patient(pid)
             upload_url = (
                 f"{self._base_url}"
                 "/interface/modules/custom_modules/oe-module-clinical-copilot/"
@@ -432,6 +470,7 @@ class TargetClient:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(url, content=json.dumps(body), headers=headers)
             text = _assemble_sse_text(resp.text)
+            assigned_conv_id = _extract_assigned_conversation_id(resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             return TargetCallResult(text="", status_code=0, latency_ms=elapsed_ms, error=str(e))
@@ -441,6 +480,7 @@ class TargetClient:
             status_code=resp.status_code,
             latency_ms=elapsed_ms,
             raw_body=resp.text,
+            assigned_conversation_id=assigned_conv_id,
         )
 
 
@@ -452,6 +492,34 @@ class TargetClient:
 def _extract_csrf_form_token(login_html: str) -> str:
     m = _CSRF_INPUT_RE.search(login_html)
     return m.group(1) if m else ""
+
+
+def _extract_assigned_conversation_id(raw: str) -> str | None:
+    """Pluck the agent-assigned ``conversationId`` from a briefing SSE
+    stream's ``meta`` event. The agent ignores any client-supplied
+    conversationId on ``default_briefing`` and mints its own server-side
+    (``briefingRunner.ts:219``), then advertises it in the first SSE
+    frame: ``event: meta\\ndata: {"type":"meta","conversationId":"..."}``.
+    Follow-up seeds must reference *that* id or `findOwnedById` returns
+    null and the agent emits ``invalid_envelope``. Returns ``None`` when
+    no meta frame carrying a string conversationId is present."""
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if not payload:
+            continue
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "meta":
+            continue
+        conv_id = obj.get("conversationId")
+        if isinstance(conv_id, str) and conv_id:
+            return conv_id
+    return None
 
 
 def _assemble_sse_text(raw: str) -> str:

@@ -78,6 +78,11 @@ class AttemptResult:
     iteration: int
     trace_id: str
     per_agent_costs: list[dict[str, Any]]
+    # The agent-assigned conversationId from a default_briefing kickoff
+    # — agent ignores client-supplied ids and mints its own server-side.
+    # Worker threads this into follow-up seeds in the same plan attempt.
+    # ``None`` when no meta event was seen (errors, follow-ups, non-proxy).
+    assigned_conversation_id: str | None = None
 
 
 async def _hydrate_target(session: AsyncSession, project_version_id: UUID) -> CampaignState:
@@ -419,6 +424,7 @@ async def execute_attempt(
     target_latency_ms = 0
     target_response_dict: dict[str, Any] = {}
     error: str | None = None
+    assigned_conv_id: str | None = None
     if output_filter_verdict == "safe":
         client = TargetClient(
             base_url=state.target_base_url,
@@ -432,11 +438,18 @@ async def execute_attempt(
             target_text = result.text
             target_status_code = result.status_code
             target_latency_ms = result.latency_ms
+            assigned_conv_id = result.assigned_conversation_id
             target_response_dict = {
                 "status_code": result.status_code,
                 "latency_ms": result.latency_ms,
                 "text": result.text[:5000],
                 "error": result.error,
+                # The agent-assigned conversationId from a default_briefing
+                # kickoff. Stored on the execution row so the partial-loop
+                # variant handler can recover it for the same-conversation
+                # follow-up (the prior attack's payload only holds the
+                # client-side placeholder, which the agent discarded).
+                "assigned_conversation_id": assigned_conv_id,
             }
             error = result.error
         except Exception as exc:
@@ -487,4 +500,5 @@ async def execute_attempt(
         iteration=iteration,
         trace_id=state.last_trace_id,
         per_agent_costs=[c.model_dump() for c in state.per_agent_costs],
+        assigned_conversation_id=assigned_conv_id,
     )

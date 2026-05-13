@@ -70,10 +70,19 @@ class AttackEnvelope(BaseModel):
 class TargetCallResult(BaseModel):
     """Return value of `TargetClient.attack`. `text` is what the Judge
     inspects; `raw_body` is preserved for the AttackExecution row and
-    forensic replay."""
+    forensic replay.
+
+    ``assigned_conversation_id`` is the agent-assigned conversationId
+    parsed from the SSE ``meta`` event on a ``default_briefing`` kickoff.
+    The agent ignores any client-supplied conversationId on kickoff and
+    mints its own server-side, so the Red Team worker must use *that*
+    id (not the one CATS minted) when firing follow-up seeds into the
+    same conversation. ``None`` when no ``meta`` event was seen
+    (errors, non-proxy paths, malformed streams)."""
 
     text: str
     status_code: int
     latency_ms: int
     raw_body: dict[str, Any] | str | None = None
     error: str | None = None
+    assigned_conversation_id: str | None = None

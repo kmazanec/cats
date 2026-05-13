@@ -4,7 +4,10 @@ per chunk; we walk the lines and concatenate them."""
 
 from __future__ import annotations
 
-from cats.target.client import _assemble_sse_text
+from cats.target.client import (
+    _assemble_sse_text,
+    _extract_assigned_conversation_id,
+)
 
 
 def test_assembles_content_lines() -> None:
@@ -42,3 +45,28 @@ def test_tolerates_non_json_data_payloads() -> None:
     raw = "data: not-json-but-still-content\n\n"
     out = _assemble_sse_text(raw)
     assert "not-json-but-still-content" in out
+
+
+def test_extract_conv_id_from_meta_event() -> None:
+    raw = (
+        "event: meta\n"
+        'data: {"type":"meta","conversationId":"abc-123","requestId":"r-9"}\n\n'
+        "event: progress\n"
+        'data: {"type":"progress","stage":"retrieve"}\n\n'
+    )
+    assert _extract_assigned_conversation_id(raw) == "abc-123"
+
+
+def test_extract_conv_id_returns_none_when_no_meta_event() -> None:
+    raw = 'data: {"type":"section","content":"hi"}\n\ndata: {"type":"complete"}\n\n'
+    assert _extract_assigned_conversation_id(raw) is None
+
+
+def test_extract_conv_id_returns_none_when_meta_lacks_conv_id() -> None:
+    raw = 'data: {"type":"meta","requestId":"r-9"}\n\n'
+    assert _extract_assigned_conversation_id(raw) is None
+
+
+def test_extract_conv_id_ignores_non_meta_events_with_conv_id_field() -> None:
+    raw = 'data: {"type":"progress","conversationId":"should-not-match"}\n\n'
+    assert _extract_assigned_conversation_id(raw) is None

@@ -95,16 +95,17 @@ class RedTeamWorker(Worker):
         conversationId so the model sees them as turns in one chat.
         Each seed sees the prior seeds' user_messages so the specialist
         produces materially different angles."""
-        import uuid as _uuid
-
         plan = payload.plan
         consecutive_fails = 0
         for idx, attempt in enumerate(plan.attempts):
             prior_user_messages: list[str] = []
-            # One conversation per plan attempt; minted here so all K
-            # seeds + any partial-loop variants stay in the same chat
-            # turn-sequence.
-            conv_id = str(_uuid.uuid4())
+            # The agent ignores any client-supplied conversationId on a
+            # default_briefing and mints its own server-side. So seed 0
+            # fires WITHOUT pre-minting a conv_id (task=default_briefing,
+            # no extra), parses the meta event from the response to learn
+            # the agent's id, and seeds 1..K-1 fire that id as follow_ups.
+            # ``conv_id`` is None until seed 0's response comes back.
+            conv_id: str | None = None
             for seed_idx in range(attempt.seeds_per_attempt):
                 run_id = await create_run_in_campaign(
                     session,
@@ -112,6 +113,12 @@ class RedTeamWorker(Worker):
                     project_version_id=payload.project_version_id,
                 )
                 await mark_run_running(session, run_id=run_id)
+                # follow_up requires an agent-owned conversationId. If we
+                # don't have one yet (seed 0, or seed 0's kickoff didn't
+                # surface a meta frame) fire as default_briefing instead
+                # so the seed still hits the model — it just won't share
+                # a chat with its siblings.
+                seed_task = "follow_up" if conv_id else "default_briefing"
                 try:
                     result = await execute_attempt(
                         session,
@@ -124,7 +131,7 @@ class RedTeamWorker(Worker):
                         seed_idx=seed_idx,
                         prior_user_messages=list(prior_user_messages),
                         conversation_id=conv_id,
-                        task="default_briefing" if seed_idx == 0 else "follow_up",
+                        task=seed_task,
                     )
                 except Exception as exc:
                     self._log.exception(
@@ -151,6 +158,13 @@ class RedTeamWorker(Worker):
                     max_iterations=attempt.max_consecutive_partials,
                 )
                 prior_user_messages.append(result.payload_user_message)
+                # Seed 0 kicks off the OpenEMR conversation; subsequent
+                # seeds re-use the agent-assigned id. If the kickoff
+                # didn't surface a conv_id (error / non-proxy / malformed
+                # meta), seeds 1..K-1 fall back to default_briefing each
+                # (set below) instead of follow_up'ing a phantom id.
+                if conv_id is None and result.assigned_conversation_id:
+                    conv_id = result.assigned_conversation_id
                 # Live UI: a new run + attack just fired.
                 await publish(
                     kind="attack_executed",
@@ -259,18 +273,22 @@ class RedTeamWorker(Worker):
             return
         prior_payload: dict[str, Any] = dict(prior.payload)
         prior_response_text = ""
+        prior_assigned_conv_id: str | None = None
         if isinstance(prior.target_response, dict):
             prior_response_text = str(prior.target_response.get("text", ""))
+            raw_assigned = prior.target_response.get("assigned_conversation_id")
+            if isinstance(raw_assigned, str) and raw_assigned:
+                prior_assigned_conv_id = raw_assigned
         next_iter = row.iteration + 1
         # Variant continues in the same OpenEMR conversation as the
         # seed it came from — that's the whole point of "iterate on a
-        # partial success". When prior's conversation_id is missing
-        # (older rows before this field landed), fall back to a fresh
-        # default_briefing so we don't hang on a stale conversation.
-        prior_conv_id = prior_payload.get("conversation_id")
-        variant_conv_id: str | None = (
-            str(prior_conv_id) if isinstance(prior_conv_id, str) and prior_conv_id else None
-        )
+        # partial success". The agent-assigned id (parsed from the
+        # kickoff's meta SSE frame and stored on the execution row's
+        # target_response) is authoritative; the payload's
+        # ``conversation_id`` is only the client-side placeholder the
+        # agent discarded. Older rows without the assigned id fall back
+        # to a fresh default_briefing so we don't hang on a phantom id.
+        variant_conv_id: str | None = prior_assigned_conv_id
         variant_task = "follow_up" if variant_conv_id else "default_briefing"
         try:
             result = await execute_attempt(
