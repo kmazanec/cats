@@ -2501,17 +2501,208 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R8 builder_
+**R8 — landed on `feat/round-8-regression-verification`, 2026-05-13:**
+
+- [x] Schema + alembic migration `20260513_0007_regression_runs.py` —
+      adds `regression_sweeps` (parent-of-sweep rollup) and
+      `regression_runs` (per-case verdict + per-gate booleans + reason
+      + response excerpt + trace_id). Also adds
+      `uq_regression_cases_source_finding` so the auto-promotion hook
+      is idempotent. Schema mirror in `src/cats/db/schema.py`. Tables
+      added to the integration-test truncate list in CASCADE-safe order.
+- [x] `regression_repo.py` — `ensure_regression_case` (idempotent
+      Finding → RegressionCase promotion with appended canonical
+      attacks), `update_exemplar`, `create_sweep`/`finalize_sweep`,
+      `record_run`, `latest_run_for_case`,
+      `update_finding_status_from_run` (writes back `findings.status`
+      = fixed | regressed). `get_locked_rubric_text` resolves the
+      pinned `rubric_versions` row so gate 2 judges against the
+      original bar even if v1.md is bumped on disk.
+- [x] Auto-promotion hook in both Documentation paths — the R4
+      bus-driven `cats.workers.documentation::DocumentationWorker`
+      and the legacy `cats.graph.nodes.documentation::run` both call
+      `ensure_regression_case` immediately after `upsert_finding`,
+      pinning `payload.attack_id` + `payload.rubric_version_id`. The
+      audit-log entry now carries `regression_case_id`.
+- [x] `cats.regression.fingerprint` — cosine similarity + threshold
+      comparison helpers. `fingerprint_matches` returns ``None`` when
+      it can't score (missing exemplar) so the runner can route to
+      `needs_review` rather than auto-pass. 14 unit tests
+      (`test_regression_fingerprint.py`).
+- [x] `cats.llm.embeddings` — OpenRouter `/embeddings` wrapper
+      (`RealEmbeddingClient`) + `FakeEmbeddingClient` test seam
+      (SHA-256 → 32-dim unit vector, alias map for "same-class"
+      simulation). Process-global `install_override` mirroring
+      `cats.llm.client`. Settings: `regression_embedding_model`
+      (default `openai/text-embedding-3-small`) and
+      `regression_fingerprint_threshold` (default 0.75).
+- [x] Triple-gate runner `cats.regression.runner.run_regression_case` —
+      loads canonical attack + project credentials, fires via
+      TargetClient, runs the three gates, decides `fixed_held` |
+      `regressed` | `needs_review` | `error`, persists a
+      `regression_runs` row + updates parent Finding status. Gate 2
+      uses a sibling judge function that takes the locked rubric text
+      directly instead of reading `v1.md` off disk. 9 unit tests on
+      the decision matrix (`test_regression_runner_decide.py`).
+- [x] Sweep worker `cats.workers.regression_sweep` — orchestrates
+      `run_regression_case` across every RegressionCase tied to a
+      project, rolls counts into the `regression_sweeps` row, emits
+      Redis pub/sub events (`regression_sweep_started`,
+      `regression_case_finished`, `regression_sweep_finished`) for
+      the live UI, audit-logged at start + finish. Per-case
+      exceptions become `status='error'` rows so one bad case can't
+      fail a sweep. Fire-and-forget background scheduling for the
+      webhook with a strong-ref task set (RUF006-clean).
+- [x] Deploy webhook `POST /webhooks/deploy` — HMAC-SHA256 over the
+      raw body via `X-CATS-Signature: sha256=<hex>` header,
+      `hmac.compare_digest`, missing/wrong → 401, missing secret →
+      503 (refuse to accept anything without a configured secret —
+      attacker-driven sweep amplification guard). Every state
+      audit-logged. Schedules the sweep in the background after the
+      authenticated request returns 200. 5 integration tests
+      (`test_deploy_webhook.py`).
+- [x] `/regressions` list + detail pages — chrome nav link, per-case
+      row with status pill + gate icons + last-run timestamp, detail
+      page with the gate-by-gate explanation + response excerpt +
+      locked-rubric / exemplar inventory. New `regression_sweep_*`
+      EventKinds in `cats.events.types`. 2 integration tests
+      (`test_regressions_route.py`).
+- [x] Finding-detail "Regression status" panel — `/findings/{id}`
+      surfaces the latest sweep verdict per finding with the same
+      pill + gate-icon shape, plus a deep-link to
+      `/regressions/{case_id}`. Visible only on findings that have
+      been promoted.
+- [x] `cats regression` Typer subcommand group — `capture-exemplar
+      <finding-id>` (run the canonical attack, store response +
+      embedding), `run-case <case-id>` (re-run one case),
+      `sweep <project-id>` (the manual fallback for the webhook).
+- [x] End-to-end regression sweep test
+      (`test_regression_sweep_e2e.py`) — seeds a finding +
+      RegressionCase, patches the target HTTP transport to echo the
+      canary, runs `run_sweep`, asserts `num_regressed=1` and the
+      per-case `gate_deterministic=False`.
 
 **Decisions.** *(builder records as made)*
 
-- _to be filled by R8 builder_
+- **2026-05-13 — auto-promote on Finding creation, not via a manual
+  button.** Documentation Agent calls `ensure_regression_case`
+  immediately after `upsert_finding`. The auto-promotion is
+  idempotent on `source_finding_id` so bus redelivery cannot
+  fan-out cases. Rationale: no UI to bolt a "promote" button onto
+  for R8, and the RegressionCase columns already existed — the cost
+  of always-promoting is one row per confirmed finding, which is
+  cheap; the cost of *not* promoting is that the deploy webhook
+  has nothing to re-test.
+- **2026-05-13 — refusal exemplar is operator-driven via CLI, not
+  auto-captured on fix-land.** ARCHITECTURE §6.4 says
+  "Documentation produces a refusal exemplar when a fix lands" —
+  but CATS has no way to detect "a fix landed" except via the
+  deploy webhook (which is what R8 wires). The
+  `cats regression capture-exemplar` command lets an operator
+  capture the exemplar after fix verification; missing exemplar
+  short-circuits gate 3 to "unclear" → `needs_review` (not
+  auto-pass).
+- **2026-05-13 — embedding model is `openai/text-embedding-3-small`
+  via OpenRouter; cosine threshold 0.75.** Sub-cent per call at
+  typical response sizes; one embedding per RegressionCase per
+  sweep. Threshold tunable via `settings.regression_fingerprint_threshold`.
+  Embedding-as-list-of-floats in JSON, not pgvector — keeps the
+  schema portable and the dependency surface unchanged for R8;
+  add pgvector when the case volume justifies index lookups.
+- **2026-05-13 — webhook authentication is HMAC-SHA256 over the
+  raw body, `X-CATS-Signature: sha256=<hex>`.** Matches GitHub /
+  GitLab semantics so existing CI signing infrastructure works.
+  Missing secret → 503 (refuse to operate), not 200 (don't make
+  the platform a sweep amplifier for unauthenticated callers).
+  Constant-time compare via `hmac.compare_digest`.
+- **2026-05-13 — webhook fire-and-forgets the sweep via an asyncio
+  task in the API process, NOT a separate worker.** Good enough
+  for R8 because the API process keeps long-lived tasks alive and
+  the sweep is bounded by the project's RegressionCase count.
+  When CATS grows a horizontal sweep worker pool the webhook will
+  switch to emitting an `AgentMessage` instead; the public
+  contract (`POST /webhooks/deploy` → 200 with sweep_id) stays.
+- **2026-05-13 — overall verdict precedence: `regressed` beats
+  `needs_review`.** If gate 1 explicitly fired or gate 2's Judge
+  returned `pass`, we don't suppress the regressed signal because
+  the fingerprint exemplar is missing or far. The brief's
+  "model just refuses differently" case is the inverse — gates 1+2
+  pass, gate 3 disagrees → `needs_review`. Encoded in
+  `_decide_status` with a 9-row truth-table parametrize.
+- **2026-05-13 — locked rubric resolved from `rubric_versions.prompt_text`,
+  not from disk.** Gate 2 calls a sibling judge function
+  (`_judge_with_locked_rubric`) that takes the rubric text
+  directly. If `v1.md` is bumped to `v2.md` between the original
+  finding's promotion and the regression sweep, the sweep still
+  judges against the version that produced the original verdict —
+  the bar doesn't drift under us.
 
 **Retrospective.** *(builder fills in after R8 ships)*
 
-- What went well: _
-- What didn't: _
-- What to change for R9: _
+- What went well:
+  - **The triple-gate decision logic landed in one file with a
+    9-row parametrize.** `_decide_status` (runner.py) is pure
+    booleans-in/string-out, so the truth table is exhaustively
+    pinned in unit tests without spinning up Postgres or the LLM
+    seam. The brief's "model just refuses differently" case —
+    gates 1+2 pass but fingerprint disagrees → `needs_review` —
+    is the load-bearing assertion and it's covered explicitly.
+  - **Locked-rubric Judge worked out cleanly.** Building a
+    sibling of `judge_llm` that takes rubric text directly
+    (instead of patching the on-disk reader) means a v1→v2
+    rubric bump can never quietly shift the bar under a sweep.
+    The pinned `rubric_versions.prompt_text` is the
+    contemporaneous record; the disk file is reference material.
+  - **Pre-allocated `sweep_id` plumbed cleanly through three
+    layers.** Self-review caught that the webhook returned a
+    fresh uuid that didn't match the row id. Fix was 6 lines
+    across `regression_repo.create_sweep`, `regression_sweep.run_sweep`,
+    and `schedule_sweep_in_background`, plus a poll-and-resolve
+    assertion in the webhook test. The whole edit took ten
+    minutes; pre-merge review saved a real bug.
+- What didn't:
+  - **Test-DB drift bit again.** Same shape as R7's complaint —
+    the integration suite assumes `alembic upgrade head` against
+    the shared test DB matches the worktree's migrations. This
+    time the constraint already existed in the DB at the right
+    schema state, but `alembic_version` had been rolled back to
+    `20260513_0006` by another branch. Worked around with a
+    one-shot `UPDATE alembic_version SET version_num = '0007'`
+    in a Python shim; the `make test-db-reset` target R7's retro
+    asked for would have prevented the recurrence entirely. R9
+    should prioritize landing it.
+  - **No replay protection on the deploy webhook.** Signature
+    verification is constant-time and correct, missing-secret
+    returns 503 (no amplification possible without config), and
+    every webhook firing audit-logs. But a captured-and-replayed
+    valid signed body can fire the sweep again indefinitely.
+    Mitigation today: CI-only secret, low blast radius (sweeps
+    are bounded by RegressionCase count, not by attacker input),
+    audit trail. Worth a proper follow-up: store recent
+    `(timestamp, body-digest)` tuples and reject replays.
+  - **Settings-singleton drift bug surfaced.** The module-level
+    `from cats.config import settings` binding becomes stale
+    after `reset_settings_cache()` in conftest, so
+    `set_settings_for_test` doesn't reach modules that already
+    imported the singleton. Switched the new R8 modules to
+    `get_settings()` per the CLAUDE.md guidance. The legacy
+    `settings`-binding sites are still vulnerable; they just
+    haven't been bitten yet because nobody changes the values
+    they read. Worth a cleanup pass.
+- What to change for R9:
+  - **Land `make test-db-reset`.** Two rounds in a row have lost
+    time to test-DB schema drift from concurrent branches.
+    A `drop database cats_test; create database cats_test;
+    alembic upgrade head` target would close it.
+  - **Webhook replay protection on the same branch as R9's
+    approval-gate work.** R9 touches the approval flow for
+    critical findings; that's a natural moment to introduce the
+    audit-log-backed nonce table that replay protection needs.
+    Don't ship as a separate round — bundle it.
+  - **Default to `get_settings()` in new code; flag any new
+    module-level `settings` import as a review smell.** The R8
+    debug was forty minutes; a single review-rule prevents
+    the recurrence.
 
 ---
 

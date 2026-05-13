@@ -17,6 +17,7 @@ from cats.agents.documentation.writer import write_report
 from cats.categories import taxonomy
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
+from cats.db.repositories.regression_repo import ensure_regression_case
 from cats.db.repositories.rubric_repo import ensure_rubric_version
 from cats.db.repositories.run_repo import (
     mark_run_completed,
@@ -127,6 +128,15 @@ async def run(state: CampaignState) -> CampaignState:
                 owasp_llm_id=label.owasp_llm_id,
             )
             state.finding_id = finding_id
+            # R8 — auto-promote to RegressionCase. Pins the rubric version
+            # that produced the verdict so the deploy-time sweep judges
+            # against the original bar (§6.4 gate 2).
+            await ensure_regression_case(
+                session,
+                source_finding_id=finding_id,
+                canonical_attack_id=attack_id,
+                locked_rubric_version_id=state.last_rubric_version_id,
+            )
 
             # Doc agent LLM (skipped in smoke mode to keep it offline).
             if not state.smoke_mode:

@@ -1473,6 +1473,66 @@ When a fix lands, the Documentation Agent must produce both a
 refusal exemplar (for the fingerprint check) and a confirmation
 that all three gates pass on the locked rubric.
 
+**R8 implementation (`feat/round-8-regression-verification`, 2026-05-13).**
+
+The harness lives under `cats.regression/`:
+
+- `runner.run_regression_case(case)` is the per-case evaluator. Gate
+  1 calls the category's existing `deterministic.py::check`; gate 2
+  uses a sibling of `agents.judge.verifier.judge_llm` that takes the
+  rubric text from `rubric_versions.prompt_text` directly (so the
+  bar doesn't drift if `v1.md` is bumped on disk between original
+  finding and regression sweep); gate 3 calls
+  `cats.llm.embeddings.get_embedding_client().embed()` and compares
+  cosine similarity against the case's `refusal_exemplar_embedding`
+  via `cats.regression.fingerprint.fingerprint_matches`. The overall
+  status (`fixed_held | regressed | needs_review | error`) is
+  decided by `_decide_status` — `regressed` wins over
+  `needs_review` when gate 1 explicitly fires.
+
+- `workers.regression_sweep.run_sweep(project_id)` orchestrates the
+  per-case runner across every RegressionCase tied to a project,
+  rolls per-status counts into a parent `regression_sweeps` row,
+  emits Redis pub/sub events (`regression_sweep_started`,
+  `regression_case_finished`, `regression_sweep_finished`) for the
+  live UI, and audit-logs at start + finish. Per-case exceptions
+  become `regression_runs.status='error'` rows so one bad case
+  cannot fail a whole sweep.
+
+- `POST /webhooks/deploy` (R8) authenticates the Co-Pilot CI signal
+  via HMAC-SHA256 over the raw body
+  (`X-CATS-Signature: sha256=<hex>` header, constant-time compare).
+  Missing `settings.deploy_webhook_secret` → 503 (refuse to
+  operate — refusing to be a sweep amplifier for unauthenticated
+  callers). Authenticated → fire-and-forget background sweep via
+  `schedule_sweep_in_background`. Every state (unconfigured,
+  rejected, accepted) audit-logged so a misconfigured CI is
+  visible, not silent.
+
+- Findings auto-promote into RegressionCases on confirmation. Both
+  documentation paths (`workers.documentation::DocumentationWorker`
+  and the legacy `graph.nodes.documentation::run`) call
+  `db.repositories.regression_repo.ensure_regression_case`
+  immediately after `upsert_finding`, pinning the canonical attack
+  id + the locked `rubric_version_id`. The helper is idempotent on
+  `source_finding_id` so bus redelivery cannot fan-out cases.
+
+- Refusal-exemplar capture is operator-driven via
+  `cats regression capture-exemplar <finding-id>`. The CLI fires
+  the canonical attack against the current target and stores the
+  response text + its embedding on the RegressionCase row. A
+  missing exemplar short-circuits gate 3 to "unclear" →
+  `needs_review` (never auto-`fixed_held`).
+
+- Tables
+  (`migrations/versions/20260513_0007_regression_runs.py`):
+  `regression_sweeps` (parent rollup with per-status counts) and
+  `regression_runs` (per-gate booleans, reason text, response
+  excerpt capped at 32k chars, trace_id, triggered_by). Embeddings
+  ride the existing JSON column on `regression_cases`; pgvector is
+  a follow-up when case volume justifies the indexed-lookup
+  upgrade.
+
 ---
 
 ## 7. Dual-mode attack vision — black-hat and white-hat

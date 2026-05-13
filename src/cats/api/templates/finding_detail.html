@@ -64,6 +64,54 @@
     </div>
   </div>
 
+  {% if regression_case_id %}
+    <div class="panel">
+      <header>
+        <div class="title">Regression status</div>
+        <div class="meta">
+          <a class="nav-link" href="/regressions/{{ regression_case_id }}">case {{ (regression_case_id|string)[:8] }}</a>
+        </div>
+      </header>
+      <div class="body">
+        {% if regression_run is none %}
+          <div class="empty">
+            this case has never been swept
+            <span class="hint">it will be re-run on the next authenticated deploy webhook, or via ``cats regression run-case``</span>
+          </div>
+        {% else %}
+          <div class="row" style="gap: 16px; align-items: center;">
+            <div>
+              {% if regression_run.status == 'fixed_held' %}
+                <span class="dot green"></span><strong>FIXED (held)</strong>
+              {% elif regression_run.status == 'regressed' %}
+                <span class="dot red"></span><strong>REGRESSED</strong>
+              {% elif regression_run.status == 'needs_review' %}
+                <span class="dot amber"></span><strong>NEEDS REVIEW</strong>
+              {% else %}
+                <span class="dot"></span><strong>{{ regression_run.status|upper }}</strong>
+              {% endif %}
+            </div>
+            <div class="muted">
+              G1 det:
+              {% if regression_run.gate_deterministic is none %}?
+              {% elif regression_run.gate_deterministic %}<span class="mono">pass</span>
+              {% else %}<span class="mono">FAIL</span>{% endif %}
+              · G2 judge (locked):
+              {% if regression_run.gate_judge is none %}?
+              {% elif regression_run.gate_judge %}<span class="mono">pass</span>
+              {% else %}<span class="mono">FAIL</span>{% endif %}
+              · G3 fingerprint:
+              {% if regression_run.gate_fingerprint is none %}?
+              {% elif regression_run.gate_fingerprint %}<span class="mono">pass</span>
+              {% else %}<span class="mono">FAIL</span>{% endif %}
+              · last run {{ regression_run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
   <div class="panel">
     <header>
       <div class="title">Execution trace</div>

@@ -29,6 +29,7 @@ from cats.api.routes import (
     health,
     plans,
     projects,
+    regressions,
     sse,
     traces,
     user_admin,
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
     # R4 Commit B: HITL plan-approval routes live under /campaigns/{id}/plan.
     app.include_router(plans.router, prefix="/campaigns", tags=["plans"])
     app.include_router(findings.router, prefix="/findings", tags=["findings"])
+    app.include_router(regressions.router, prefix="/regressions", tags=["regressions"])
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
     app.include_router(sse.router, prefix="/events", tags=["events"])
     app.include_router(traces.router, prefix="/traces", tags=["traces"])

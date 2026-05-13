@@ -78,6 +78,11 @@ _TABLES_TO_TRUNCATE = [
     "red_team_attempts",
     "worker_heartbeats",
     "finding_executions",
+    # R8 — regression tables fanned off findings + rubric_versions. CASCADE
+    # carries through from findings → regression_cases → regression_runs.
+    "regression_runs",
+    "regression_sweeps",
+    "regression_cases",
     "findings",
     "attack_executions",
     "judge_verdicts",

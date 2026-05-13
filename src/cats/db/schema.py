@@ -375,6 +375,90 @@ regression_cases = Table(
         nullable=True,
     ),
     _ts(),
+    UniqueConstraint("source_finding_id", name="uq_regression_cases_source_finding"),
+)
+
+# R8 — regression sweep + per-case runs. One sweep per webhook firing
+# (or manual CLI invocation); one regression_runs row per case it touches.
+regression_sweeps = Table(
+    "regression_sweeps",
+    metadata,
+    _uuid_pk(),
+    Column("project_id", UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False),
+    # Free-form identifier of the Co-Pilot version that triggered the sweep
+    # (commit SHA, image tag, "manual"). Surfaces in the UI so an operator
+    # can correlate a regression to a specific deploy.
+    Column("version_tag", String(120), nullable=False, server_default=""),
+    # 'deploy_webhook' | 'manual_cli' | 'scheduled'. Audit-trail signal,
+    # not load-bearing in the runner.
+    Column("triggered_by", String(32), nullable=False, server_default="manual_cli"),
+    Column("status", String(20), nullable=False, server_default="running"),
+    Column("num_cases", Integer, nullable=False, server_default=text("0")),
+    Column("num_fixed", Integer, nullable=False, server_default=text("0")),
+    Column("num_regressed", Integer, nullable=False, server_default=text("0")),
+    Column("num_needs_review", Integer, nullable=False, server_default=text("0")),
+    Column("num_errored", Integer, nullable=False, server_default=text("0")),
+    Column(
+        "started_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    Column("finished_at", DateTime(timezone=True), nullable=True),
+    _ts(),
+    CheckConstraint(
+        "status IN ('running','completed','failed')",
+        name="ck_regression_sweeps_status",
+    ),
+)
+
+regression_runs = Table(
+    "regression_runs",
+    metadata,
+    _uuid_pk(),
+    Column(
+        "regression_case_id",
+        UUID(as_uuid=True),
+        ForeignKey("regression_cases.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "sweep_id",
+        UUID(as_uuid=True),
+        ForeignKey("regression_sweeps.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    # Overall verdict: fixed_held | regressed | needs_review | error.
+    Column("status", String(20), nullable=False),
+    # Per-gate result. NULL means the gate didn't run (e.g. earlier gate
+    # produced 'error', or fingerprint exemplar was empty so the gate is
+    # explicitly 'unclear' — encoded as null + status=needs_review).
+    Column("gate_deterministic", Boolean, nullable=True),
+    Column("gate_judge", Boolean, nullable=True),
+    Column("gate_fingerprint", Boolean, nullable=True),
+    Column("reason", Text, nullable=False, server_default=""),
+    # The Co-Pilot response we evaluated, trimmed at ingest for storage
+    # sanity. Full SSE payloads can run to megabytes; we keep a 32k-char
+    # head so the UI can show the response and the Judge can be re-run.
+    Column("response_text", Text, nullable=False, server_default=""),
+    Column("trace_id", String(120), nullable=False, server_default=""),
+    Column(
+        "started_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    Column("finished_at", DateTime(timezone=True), nullable=True),
+    Column("triggered_by", String(32), nullable=False, server_default="manual_cli"),
+    _ts(),
+    CheckConstraint(
+        "status IN ('fixed_held','regressed','needs_review','error')",
+        name="ck_regression_runs_status",
+    ),
+    Index("ix_regression_runs_case_id", "regression_case_id"),
+    Index("ix_regression_runs_sweep_id", "sweep_id"),
 )
 
 
@@ -661,6 +745,8 @@ __all__ = [
     "projects",
     "red_team_attempts",
     "regression_cases",
+    "regression_runs",
+    "regression_sweeps",
     "rubric_versions",
     "runs",
     "source_access_log",

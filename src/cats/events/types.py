@@ -30,6 +30,12 @@ EventKind = Literal[
     # campaign-detail page subscribes to flip the "Report: pending"
     # pill to a deep-link as soon as the writer finishes.
     "campaign_report_generated",
+    # R8 — regression-verification sweep lifecycle. The /regressions
+    # page listens for these to flip per-case rows from "running" to
+    # the gate-by-gate verdict without a manual refresh.
+    "regression_sweep_started",
+    "regression_case_finished",
+    "regression_sweep_finished",
 ]
 
 

@@ -47,6 +47,7 @@ from cats.db.repositories.campaign_report_repo import (
     mark_report_failed,
     upsert_pending_report,
 )
+from cats.db.repositories.regression_repo import ensure_regression_case
 from cats.db.repositories.run_repo import (
     mark_run_completed,
     record_report,
@@ -175,6 +176,16 @@ class DocumentationWorker(Worker):
             atlas_technique_id=label.atlas_technique_id,
             owasp_llm_id=label.owasp_llm_id,
         )
+        # R8 — auto-promote confirmed findings into RegressionCases so the
+        # deploy-time sweep has something to re-run. Pins the rubric
+        # version that produced the verdict so the bar doesn't drift if
+        # the rubric is later bumped.
+        regression_case_id = await ensure_regression_case(
+            session,
+            source_finding_id=finding_id,
+            canonical_attack_id=payload.attack_id,
+            locked_rubric_version_id=payload.rubric_version_id,
+        )
         body, _llm = await write_report(
             llm=get_llm(),
             category=category,
@@ -217,6 +228,7 @@ class DocumentationWorker(Worker):
             payload={
                 "category": category,
                 "technique": technique,
+                "regression_case_id": str(regression_case_id),
                 "verdict": payload.verdict,
                 "execution_id": str(payload.attack_execution_id),
                 "report_id": str(report_id),

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
 
 from cats.api.auth import Principal, require_user
 from cats.api.templating import templates
@@ -18,6 +19,8 @@ from cats.db.repositories.campaign_repo import (
 from cats.db.repositories.campaign_repo import (
     list_findings as repo_list_findings,
 )
+from cats.db.repositories.regression_repo import latest_run_for_case
+from cats.db.schema import regression_cases as _regression_cases_t
 
 router = APIRouter()
 
@@ -68,6 +71,24 @@ async def finding_detail(
         if finding is None:
             raise HTTPException(status_code=404, detail="finding not found")
         executions = await list_executions_for_run(session, run_id=finding["run_id"])
+        # R8 — surface the regression status on the finding detail page.
+        regression_case_id = (
+            await session.execute(
+                select(_regression_cases_t.c.id).where(
+                    _regression_cases_t.c.source_finding_id == finding_id
+                )
+            )
+        ).scalar_one_or_none()
+        regression_run = None
+        if regression_case_id is not None:
+            regression_run = await latest_run_for_case(session, case_id=regression_case_id)
     ctx = _chrome_ctx(principal)
-    ctx.update({"finding": finding, "executions": executions})
+    ctx.update(
+        {
+            "finding": finding,
+            "executions": executions,
+            "regression_case_id": regression_case_id,
+            "regression_run": regression_run,
+        }
+    )
     return templates.TemplateResponse(request, "finding_detail.html", ctx)
