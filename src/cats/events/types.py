@@ -10,6 +10,10 @@ EventKind = Literal[
     "campaign_started",
     "run_started",
     "attack_proposed",
+    # Transient: emitted just before the Red Team fires the target so
+    # the UI can show "attacking…" instead of a 30s blank stretch.
+    # Not persisted; the campaign timeline only replays attack_executed.
+    "attack_starting",
     "attack_executed",
     "judge_verdict_rendered",
     "finding_promoted",

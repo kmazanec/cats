@@ -231,10 +231,53 @@ async def campaign_detail(
             "executions": executions,
             "cost_by_agent": _cost_by_agent(executions),
             "latest_plan_status": latest_plan_status,
+            "stage": _initial_stage(
+                plan_status=latest_plan_status,
+                runs=runs,
+                findings=findings,
+            ),
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         }
     )
     return templates.TemplateResponse(request, "campaign_detail.html", ctx)
+
+
+_STAGE_META: dict[str, dict[str, str]] = {
+    "orchestrator": {"label": "Orchestrator planning", "img": "/static/img/orchestrator.png"},
+    "red_team": {"label": "Red Team attacking", "img": "/static/img/red-team.png"},
+    "judge": {"label": "Judge evaluating", "img": "/static/img/judge.png"},
+    "documentor": {"label": "Documentor writing", "img": "/static/img/documentor.png"},
+    "complete": {"label": "Campaign complete", "img": "/static/img/judge.png"},
+    "failed": {"label": "Campaign failed", "img": "/static/img/orchestrator.png"},
+    "idle": {"label": "Awaiting trigger", "img": "/static/img/orchestrator.png"},
+}
+
+
+def _initial_stage(
+    *,
+    plan_status: str | None,
+    runs: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Pick the avatar to show on page load. The SSE handler updates
+    this in the browser as events arrive — this is the cold-start
+    fallback so the page never paints with no avatar."""
+    if plan_status in (None, "proposed"):
+        key = "orchestrator"
+    elif plan_status in ("failed", "rejected"):
+        key = "failed"
+    else:
+        latest = runs[0] if runs else None
+        if latest is None:
+            key = "red_team"
+        elif latest["status"] == "completed":
+            key = "documentor" if findings else "complete"
+        elif latest["status"] == "failed":
+            key = "failed"
+        else:
+            key = "red_team"
+    meta = _STAGE_META[key]
+    return {"key": key, "label": meta["label"], "img": meta["img"]}
 
 
 @router.get("/{campaign_id}/timeline")

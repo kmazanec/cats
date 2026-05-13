@@ -665,10 +665,10 @@ a.nav-link::after { content: ' →'; color: var(--ink-3); }
 }
 .eventlog .row {
   display: grid;
-  grid-template-columns: 88px 100px 1fr 90px;
-  align-items: center;
-  gap: 16px;
-  padding: 9px 22px;
+  grid-template-columns: 88px 200px 1fr 100px;
+  align-items: start;
+  gap: 20px;
+  padding: 11px 22px;
   border-bottom: 1px solid var(--line);
   color: var(--ink-2);
 }
@@ -681,13 +681,86 @@ a.nav-link::after { content: ' →'; color: var(--ink-3); }
 @keyframes fadefresh {
   to { background: transparent; border-bottom-color: var(--line); }
 }
-.eventlog .ts { color: var(--ink-4); }
-.eventlog .kind { color: var(--cyan); text-transform: uppercase; letter-spacing: 0.14em; font-size: 10.5px; }
+.eventlog .ts { color: var(--ink-4); padding-top: 1px; }
+.eventlog .kind {
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 10.5px;
+  padding-top: 2px;
+  white-space: nowrap;
+}
 .eventlog .kind.attack { color: var(--amber); }
+.eventlog .kind.agent-orch { color: var(--cyan); }
+.eventlog .kind.agent-red { color: var(--amber); }
+.eventlog .kind.agent-judge { color: var(--green); }
+.eventlog .kind.agent-doc { color: var(--ink); }
 .eventlog .kind.verdict.pass { color: var(--red); }      /* attack passed = defense failed */
 .eventlog .kind.verdict.fail { color: var(--green); }    /* attack failed = defense held */
-.eventlog .body { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.eventlog .id { color: var(--ink-3); text-align: right; }
+.eventlog .body-wrap { min-width: 0; }
+.eventlog .body {
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.eventlog .row-meta {
+  color: var(--ink-3);
+  font-size: 11px;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.eventlog .id { color: var(--ink-3); text-align: right; padding-top: 1px; }
+
+/* ============================================================================
+   Stage banner — single avatar showing which agent is active.
+   ============================================================================ */
+
+.stage-banner {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 18px 24px;
+  background: var(--bg-2, var(--bg-3));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.stage-avatar {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  transition: opacity 150ms ease-out;
+  box-shadow: 0 0 0 2px var(--line), 0 0 20px rgba(0, 0, 0, 0.4);
+}
+.stage-avatar.swapping { opacity: 0; }
+.stage-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.stage-eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+}
+.stage-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Per-stage tint on the avatar's halo so the active agent reads at a glance. */
+.stage-banner[data-stage-key="orchestrator"] .stage-avatar { box-shadow: 0 0 0 2px var(--cyan), 0 0 24px color-mix(in srgb, var(--cyan) 35%, transparent); }
+.stage-banner[data-stage-key="red_team"] .stage-avatar { box-shadow: 0 0 0 2px var(--amber), 0 0 24px color-mix(in srgb, var(--amber) 35%, transparent); }
+.stage-banner[data-stage-key="judge"] .stage-avatar { box-shadow: 0 0 0 2px var(--green), 0 0 24px color-mix(in srgb, var(--green) 35%, transparent); }
+.stage-banner[data-stage-key="documentor"] .stage-avatar { box-shadow: 0 0 0 2px var(--ink-2), 0 0 24px color-mix(in srgb, var(--ink-2) 35%, transparent); }
+.stage-banner[data-stage-key="failed"] .stage-avatar { box-shadow: 0 0 0 2px var(--red), 0 0 24px color-mix(in srgb, var(--red) 35%, transparent); }
+.stage-banner[data-stage-key="complete"] .stage-avatar { box-shadow: 0 0 0 2px var(--green), 0 0 24px color-mix(in srgb, var(--green) 35%, transparent); }
 
 /* ============================================================================
    Inputs

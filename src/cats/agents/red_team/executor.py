@@ -39,6 +39,7 @@ from cats.agents.red_team.injection.dispatcher import (
 )
 from cats.db.repositories.run_repo import record_execution, upsert_attack
 from cats.db.schema import project_versions, projects
+from cats.graph.events import publish
 from cats.graph.state import CampaignState
 from cats.llm.client import LLMResult, get_llm
 from cats.llm.models import AgentRole
@@ -432,6 +433,22 @@ async def execute_attempt(
             username=state.target_username,
             password=state.target_password,
             bearer_token=state.target_bearer_token,
+        )
+        # Live UI: target call is about to start. This is the "30s of
+        # nothing" window — the target round-trips through the OpenEMR
+        # co-pilot which itself calls an LLM, so users want to see
+        # "attacking…" instead of staring at a still page.
+        await publish(
+            kind="attack_starting",
+            campaign_id=campaign_id,
+            run_id=run_id,
+            payload={
+                "category": category,
+                "technique": technique,
+                "attack_id": str(attack_id),
+                "iteration": iteration,
+                "seed_idx": seed_idx,
+            },
         )
         try:
             result = await client.attack(envelope)

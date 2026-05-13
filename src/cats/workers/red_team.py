@@ -113,6 +113,19 @@ class RedTeamWorker(Worker):
                     project_version_id=payload.project_version_id,
                 )
                 await mark_run_running(session, run_id=run_id)
+                # Live UI: a new run row exists. The campaign-detail
+                # page picks this up and appends a row to the run-status
+                # table without waiting for a page reload.
+                await publish(
+                    kind="run_started",
+                    campaign_id=payload.campaign_id,
+                    run_id=run_id,
+                    payload={
+                        "category": attempt.category,
+                        "technique": attempt.technique,
+                        "seed_idx": seed_idx,
+                    },
+                )
                 # follow_up requires an agent-owned conversationId. If we
                 # don't have one yet (seed 0, or seed 0's kickoff didn't
                 # surface a meta frame) fire as default_briefing instead
