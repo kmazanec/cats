@@ -1,8 +1,7 @@
 """Judge-accuracy eval runner.
 
 Reads ``evals/<category>/answer_key/<version>/cases.jsonl``, runs the
-Judge (deterministic short-circuit first, locked rubric LLM second)
-against each case, and prints:
+LLM-first Judge against each case, and prints:
 
 - Overall accuracy
 - Per-technique confusion table
@@ -15,8 +14,12 @@ Usage::
 
     uv run python -m evals.runner --category injection --key-version v1 --threshold 0.85
 
-For deterministic testing (no LLM calls), pass ``--deterministic-only``
-which skips the LLM judge fallback. The fast CI subset uses this.
+The ``--evidence-only`` flag skips the LLM call and reports the
+deterministic evidence (canary echo, response shape) the LLM would
+have seen — useful for the fast CI subset where we just want to
+confirm the evidence-collection layer hasn't regressed. Note that
+evidence-only cannot produce verdicts; it reports ``inconclusive``
+for all cases, so its accuracy bar lives separately.
 """
 
 from __future__ import annotations
@@ -31,11 +34,11 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-from cats.agents.judge.verifier import judge_deterministic, judge_llm
+from cats.agents.judge.verifier import gather_evidence, judge_llm
 from cats.config import get_settings
 from cats.llm.client import get_llm
 
-VALID_VERDICTS = frozenset({"pass", "fail", "partial"})
+VALID_VERDICTS = frozenset({"pass", "fail", "partial", "error"})
 
 
 @dataclass(frozen=True)
@@ -105,34 +108,27 @@ async def _judge_one(
     category: str,
     deterministic_only: bool,
 ) -> CaseResult:
-    """Run the judge for one case. Mirrors the Judge node's two-stage
-    logic so the runner sees the same code path as a real campaign."""
+    """Run the LLM-first Judge for one case. Same code path as a real
+    campaign: gather deterministic evidence, then a single LLM call."""
     attack_payload = {
         "user_message": case.attack_user_message,
         "canary": case.canary,
     }
-    verdict, rationale, _evidence = judge_deterministic(
+    evidence = gather_evidence(
         category=category,
         attack_payload=attack_payload,
         target_response_text=case.target_response_text,
     )
-    if verdict != "inconclusive":
-        return CaseResult(
-            case=case,
-            actual_verdict=verdict,
-            was_deterministic=True,
-            rationale=rationale,
-        )
     if deterministic_only:
-        # Fast CI mode: count inconclusive cases as the expected verdict
-        # if they would short-circuit on a real LLM judge — but we can't
-        # know that, so mark them with a sentinel that gets reported but
-        # doesn't fail the run.
+        # Fast CI mode: skip the LLM entirely. We can't produce a
+        # verdict — report inconclusive so callers can sanity-check
+        # the evidence layer without burning budget. (The real
+        # accuracy bar requires the LLM and lives in the nightly run.)
         return CaseResult(
             case=case,
             actual_verdict="inconclusive",
             was_deterministic=True,
-            rationale=rationale,
+            rationale=f"evidence-only: {json.dumps(evidence, default=str)[:200]}",
         )
 
     (verdict, rationale, _ev), _llm = await judge_llm(
@@ -140,6 +136,7 @@ async def _judge_one(
         category=category,
         attack_user_message=case.attack_user_message,
         target_response_text=case.target_response_text,
+        evidence=evidence,
         canary=case.canary,
     )
     return CaseResult(

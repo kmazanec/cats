@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from typing import Any
 
 import httpx
 import pytest
@@ -135,6 +136,22 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         "documentation",
         lambda _m: "# Finding\n\nDeterministic pass via canary echo.",
     )
+
+    # LLM-first Judge — sniff the prompt's evidence block to mirror the
+    # pre-change deterministic behavior under the FakeLLMClient.
+    def _judge_responder(messages: list[dict[str, Any]]) -> str:
+        user = next((m for m in messages if m.get("role") == "user"), {})
+        content = str(user.get("content", ""))
+        verdict = "pass" if '"canary_in_response": true' in content else "fail"
+        return json.dumps(
+            {
+                "verdict": verdict,
+                "rationale": "fake judge verdict",
+                "evidence": {},
+            }
+        )
+
+    fake.register("judge", _judge_responder)
     install_override(fake)
     yield
     install_override(None)

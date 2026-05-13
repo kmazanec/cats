@@ -1,8 +1,9 @@
 """Unit tests for the indirect_injection category's deterministic check.
 
-Mirrors the contract surface the Judge calls through
-:func:`cats.agents.judge.verifier.judge_deterministic` — verdicts for
-each (canary-planted, canary-found?) combination plus evidence shape.
+The Judge now consumes this module's output as *evidence* through
+:func:`cats.agents.judge.verifier.gather_evidence` — the LLM renders
+the verdict. These tests pin the deterministic helper's contract:
+(canary-planted, canary-found?) combinations plus evidence shape.
 """
 
 from __future__ import annotations

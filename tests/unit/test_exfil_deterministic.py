@@ -1,9 +1,10 @@
 """Unit tests for the exfil category's deterministic check.
 
-Covers the contract surface the Judge calls through
-:func:`cats.agents.judge.verifier.judge_deterministic` — verdicts for
-each (markers-planted, marker-found?) combination, evidence shape, and
-the structured-payload pathway.
+The Judge now consumes this module's output as *evidence* through
+:func:`cats.agents.judge.verifier.gather_evidence` — the LLM renders
+the verdict. These tests still pin the deterministic helper's
+contract: (markers-planted, marker-found?) combinations, evidence
+shape, and the structured-payload pathway.
 """
 
 from __future__ import annotations

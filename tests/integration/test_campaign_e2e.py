@@ -87,6 +87,24 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
             "## Reproduction\n\n```\n<attack here>\n```\n"
         ),
     )
+
+    # The Judge is now LLM-first — every attack runs through judge_llm.
+    # The fake judge sniffs the user prompt: if the evidence block
+    # claims the canary was in the response, return `pass`; otherwise
+    # `fail`. Matches the pre-LLM-first deterministic behavior.
+    def _judge_responder(messages: list[dict[str, Any]]) -> str:
+        user = next((m for m in messages if m.get("role") == "user"), {})
+        content = str(user.get("content", ""))
+        verdict = "pass" if '"canary_in_response": true' in content else "fail"
+        return json.dumps(
+            {
+                "verdict": verdict,
+                "rationale": "fake judge verdict",
+                "evidence": {},
+            }
+        )
+
+    fake.register("judge", _judge_responder)
     install_override(fake)
     yield fake
     install_override(None)

@@ -1,16 +1,15 @@
-"""Judge node.
+"""Judge node (legacy single-process graph path).
 
-Two stages:
-1. Deterministic post-condition (canary echo for injection).
-2. If `inconclusive`, fall back to the locked rubric v1 LLM call.
-
-Records cost on the per-agent breakdown when the LLM stage runs.
+LLM-first. Gathers deterministic evidence (no verdict) and runs a
+single judge LLM call per attempt. Records cost on the per-agent
+breakdown. See ``cats.agents.judge.verifier`` for the verdict
+contract.
 """
 
 from __future__ import annotations
 
 from cats.agents.common import with_cost
-from cats.agents.judge.verifier import judge_deterministic, judge_llm
+from cats.agents.judge.verifier import gather_evidence, judge_llm
 from cats.graph.events import publish
 from cats.graph.state import CampaignState
 from cats.llm.client import get_llm
@@ -30,31 +29,27 @@ async def run(state: CampaignState) -> CampaignState:
         elif isinstance(body, str):
             body_text = body
 
-    verdict, rationale, evidence = judge_deterministic(
+    evidence = gather_evidence(
         category=category,
         attack_payload=state.pending_attack_payload,
         target_response_text=body_text,
     )
-    state.last_verdict_is_deterministic = True
-    state.last_verdict_model = "deterministic"
-
-    if verdict == "inconclusive":
-        # Fall back to the LLM rubric.
-        (verdict, rationale, evidence), llm_result = await judge_llm(
-            llm=get_llm(),
-            category=category,
-            attack_user_message=str(state.pending_attack_payload.get("user_message", "")),
-            target_response_text=body_text,
-            canary=state.pending_canary,
-        )
-        state.last_verdict_is_deterministic = False
-        state.last_verdict_model = llm_result.model
-        with_cost(state, role="judge", llm_result=llm_result)
+    (verdict, rationale, judge_evidence), llm_result = await judge_llm(
+        llm=get_llm(),
+        category=category,
+        attack_user_message=str(state.pending_attack_payload.get("user_message", "")),
+        target_response_text=body_text,
+        evidence=evidence,
+        canary=state.pending_canary,
+    )
+    state.last_verdict_is_deterministic = False
+    state.last_verdict_model = llm_result.model
+    with_cost(state, role="judge", llm_result=llm_result)
 
     state.last_verdict = verdict
     state.last_verdict_rationale = rationale
-    state.last_verdict_evidence = evidence
-    state.last_target_response.setdefault("judge_evidence", evidence)
+    state.last_verdict_evidence = judge_evidence
+    state.last_target_response.setdefault("judge_evidence", judge_evidence)
     state.last_target_response.setdefault("judge_rationale", rationale)
 
     await publish(
@@ -63,7 +58,7 @@ async def run(state: CampaignState) -> CampaignState:
         run_id=state.run_id,
         payload={
             "verdict": verdict,
-            "is_deterministic": state.last_verdict_is_deterministic,
+            "is_deterministic": False,
             "rationale": rationale[:300],
         },
     )
