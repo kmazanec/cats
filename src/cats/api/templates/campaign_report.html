@@ -1,0 +1,94 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Campaign report · {{ campaign.name }}{% endblock %}
+{% block crumb %}Campaign report · {{ campaign.name }}{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+
+  <section>
+    <div class="row" style="gap: 12px; margin-bottom: 6px;">
+      <a class="nav-link" href="/campaigns/{{ campaign.id }}">back to campaign</a>
+      <a class="nav-link" href="/findings">all findings</a>
+    </div>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Campaign rollup report</span>
+        <h1 class="title">{{ campaign.name }}</h1>
+        <p class="subtitle">
+          Target <strong>{{ campaign.project_name }}</strong>
+          · mode <code class="mono">{{ campaign.mode }}</code>
+          · trigger <code class="mono">{{ campaign.trigger }}</code>
+          {% if report %} · status
+            {% if report.status == 'completed' %}<span class="pill green">{{ report.status }}</span>
+            {% elif report.status == 'generating' %}<span class="pill amber">{{ report.status }}</span>
+            {% elif report.status == 'failed' %}<span class="pill red">{{ report.status }}</span>
+            {% else %}<span class="pill">{{ report.status }}</span>{% endif %}
+          {% endif %}
+          {% if report and report.generated_at %} · generated {{ report.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+        </p>
+      </div>
+      <form method="post" action="/campaigns/{{ campaign.id }}/report" style="margin: 0;">
+        {{ csrf_input(request) | safe }}
+        <button type="submit" class="btn">{% if report %}Regenerate{% else %}Generate{% endif %} report</button>
+      </form>
+    </div>
+  </section>
+
+  {% if not report %}
+    <div class="panel">
+      <header><div class="title">No report yet</div></header>
+      <div class="body">
+        <p>This campaign has not been rolled up into a report. Click <em>Generate report</em> above; the writer runs synchronously and typically takes 10–30 seconds.</p>
+        <p class="subtitle">A report is also generated automatically the first time every run in the campaign reaches a terminal state.</p>
+      </div>
+    </div>
+  {% elif report.status == 'failed' %}
+    <div class="panel">
+      <header><div class="title" style="color: var(--red);">Report generation failed</div></header>
+      <div class="body">
+        <div class="markdown">{{ body_markdown | markdown }}</div>
+        <p class="subtitle" style="margin-top: 12px;">Click <em>Regenerate</em> above to retry.</p>
+      </div>
+    </div>
+  {% else %}
+    {% if report.status == 'generating' %}
+      <div class="panel amber">
+        <header><div class="title" style="color: var(--amber);">Report is currently generating…</div></header>
+        <div class="body"><p class="subtitle">Refresh in a few seconds. If this state sticks for over a minute the writer likely failed; regenerate it.</p></div>
+      </div>
+    {% endif %}
+
+    <div class="panel">
+      <header>
+        <div class="title">Rollup narrative</div>
+        <div class="meta">
+          {% if report.model %}{{ report.model }}{% endif %}
+          {% if report.tokens_in or report.tokens_out %} · {{ '{:,}'.format(report.tokens_in + report.tokens_out) }} tokens{% endif %}
+          {% if report.usd_estimate %} · ${{ '%.4f' | format(report.usd_estimate) }}{% endif %}
+          {% if report.artifacts %} · {{ report.artifacts | length }} artifact{{ report.artifacts | length | pluralize }}{% endif %}
+        </div>
+      </header>
+      <div class="body">
+        <div class="markdown">{{ body_markdown | markdown }}</div>
+      </div>
+    </div>
+
+    {% if report.artifacts %}
+      <div class="panel">
+        <header><div class="title">Artifacts</div></header>
+        <div class="body">
+          <ul class="muted" style="list-style: none; padding: 0;">
+            {% for a in report.artifacts %}
+              <li>
+                <code class="mono">{{ a.path }}</code>
+                — <a href="/campaigns/{{ campaign.id }}/report/artifacts/{{ a.path }}" target="_blank">{{ a.title or a.alt or a.name }}</a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+    {% endif %}
+  {% endif %}
+
+</main>
+{% endblock %}

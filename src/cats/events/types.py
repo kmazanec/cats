@@ -26,6 +26,10 @@ EventKind = Literal[
     "plan_proposed",
     "plan_approved",
     "plan_failed",
+    # End-of-campaign rollup report from the Documentation Agent. The
+    # campaign-detail page subscribes to flip the "Report: pending"
+    # pill to a deep-link as soon as the writer finishes.
+    "campaign_report_generated",
 ]
 
 

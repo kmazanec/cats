@@ -143,6 +143,21 @@
 
   <div class="panel">
     <header>
+      <div class="title">Campaign report</div>
+      <div class="meta">end-of-campaign rollup written by the Documentation Agent</div>
+    </header>
+    <div class="body">
+      <p class="subtitle">
+        A single rollup report summarizing what was tested, the verdict mix, open findings,
+        any inconclusive (verdict=error) runs the operator needs to investigate, and cost.
+        Auto-generated when every run reaches a terminal state.
+      </p>
+      <a class="btn" href="/campaigns/{{ campaign.id }}/report">View campaign report →</a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
       <div class="title">Findings</div>
       <div class="meta">{{ findings|length }} promoted</div>
     </header>

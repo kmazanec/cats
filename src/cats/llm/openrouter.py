@@ -48,9 +48,14 @@ class OpenRouterClient:
         response_format: dict[str, Any] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> dict[str, Any]:
         """Issue one chat completion. Returns a dict with `text`, `model`,
-        `tokens_in`, `tokens_out`, `usd_estimate`."""
+        `tokens_in`, `tokens_out`, `usd_estimate`, and `tool_calls` (the
+        OpenAI-shape list of function calls the model asked the caller
+        to run; empty when no tools were advertised or the model emitted
+        only text)."""
         primary, fallback = self.model_for(role)
         models = [primary] + ([fallback] if fallback else [])
 
@@ -62,6 +67,10 @@ class OpenRouterClient:
         }
         if response_format is not None:
             body["response_format"] = response_format
+        if tools:
+            body["tools"] = tools
+            if tool_choice is not None:
+                body["tool_choice"] = tool_choice
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -73,13 +82,15 @@ class OpenRouterClient:
             data = resp.json()
 
         choice = data["choices"][0]
+        message = choice.get("message") or {}
         usage = data.get("usage", {}) or {}
         tokens_in = int(usage.get("prompt_tokens", 0))
         tokens_out = int(usage.get("completion_tokens", 0))
         model_used = data.get("model", primary)
 
         return {
-            "text": choice["message"]["content"],
+            "text": message.get("content") or "",
+            "tool_calls": message.get("tool_calls") or [],
             "model": model_used,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,

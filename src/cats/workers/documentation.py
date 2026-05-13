@@ -1,10 +1,18 @@
 """Documentation worker process.
 
-Consumes ``VerdictRendered(pass | fail)`` from the Judge. On ``pass``,
-writes a ``Finding`` + ``VulnerabilityReport`` and emits
-``FindingPromoted``. On ``fail``, nothing to promote — just acks the
-message and moves on; the platform's audit trail still has the
-AttackExecution + JudgeVerdict rows from the prior workers.
+Consumes ``VerdictRendered(pass | fail | error)`` from the Judge. On
+``pass``, writes a ``Finding`` + ``VulnerabilityReport`` and emits
+``FindingPromoted``. On ``fail``/``error``, nothing to promote — just
+marks the run completed and acks the message; the platform's audit
+trail still has the AttackExecution + JudgeVerdict rows.
+
+After handling any verdict, the worker checks whether the campaign is
+now in a terminal state (all runs reached completed/failed/halted).
+If yes, it triggers the campaign-report writer once (idempotent via
+the unique constraint on ``campaign_reports.campaign_id``). The
+writer runs the Documentation LLM in a tool loop to gather facts +
+render visual artifacts, then persists the markdown + artifact
+metadata.
 
 Critical-severity findings carry ``awaiting_approval=True`` (R9 wires
 the actual gate; R4 just records the row in ``documentation_drafts``).
@@ -16,18 +24,24 @@ import asyncio
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cats.agents.documentation.campaign_writer import write_campaign_report
 from cats.agents.documentation.writer import write_report
 from cats.categories import taxonomy
 from cats.db.repositories.audit_repo import write_audit
+from cats.db.repositories.campaign_report_repo import (
+    mark_report_completed,
+    mark_report_failed,
+    upsert_pending_report,
+)
 from cats.db.repositories.run_repo import (
     mark_run_completed,
     record_report,
     upsert_finding,
 )
-from cats.db.schema import attack_executions, attacks
+from cats.db.schema import attack_executions, attacks, runs
 from cats.graph.events import publish
 from cats.llm.client import get_llm
 from cats.messaging import (
@@ -64,6 +78,16 @@ class DocumentationWorker(Worker):
             )
             return
         await self._handle_verdict(session, payload, trace_id=message.trace_id)
+        # After the per-run bookkeeping for this verdict, check whether
+        # the campaign as a whole is now terminal. If yes, fire the
+        # rollup report. Skipped on partial (routes back to red_team)
+        # because the campaign hasn't actually finished yet — the
+        # variant loop is still in flight.
+        await self._maybe_generate_campaign_report(
+            session,
+            campaign_id=payload.campaign_id,
+            trace_id=message.trace_id,
+        )
 
     async def _handle_verdict(
         self,
@@ -219,6 +243,116 @@ class DocumentationWorker(Worker):
             campaign_id=payload.campaign_id,
             run_id=payload.run_id,
             payload={"verdict": "pass", "finding_id": str(finding_id)},
+        )
+
+    async def _maybe_generate_campaign_report(
+        self,
+        session: AsyncSession,
+        *,
+        campaign_id: UUID,
+        trace_id: str,
+    ) -> None:
+        """If every run in the campaign is in a terminal state, fire
+        the campaign-report writer. Idempotent on ``campaign_id`` via
+        ``campaign_reports.campaign_id`` UNIQUE: a re-arriving verdict
+        for an already-reported campaign just re-stamps the row
+        (UPSERT in ``upsert_pending_report``). Run inside the message
+        handler's session so the LLM tool loop sees the same write
+        scope; the bus's per-message visibility timeout (60s) bounds
+        the worst-case stall."""
+        row = (
+            await session.execute(
+                select(
+                    func.count(runs.c.id).label("total"),
+                    func.count(runs.c.id)
+                    .filter(runs.c.status.in_(("completed", "failed", "halted")))
+                    .label("terminal"),
+                ).where(runs.c.campaign_id == campaign_id)
+            )
+        ).first()
+        if row is None:
+            return
+        total = int(row.total or 0)
+        terminal = int(row.terminal or 0)
+        if total == 0 or terminal < total:
+            self._log.debug(
+                "campaign_report.not_yet_terminal",
+                campaign_id=str(campaign_id),
+                terminal=terminal,
+                total=total,
+            )
+            return
+        # Reserve / re-stamp the row. If another worker raced us to this
+        # point the UPSERT is harmless — the writer just regenerates.
+        await upsert_pending_report(session, campaign_id=campaign_id)
+        await session.commit()
+
+        self._log.info(
+            "campaign_report.generating",
+            campaign_id=str(campaign_id),
+            runs=total,
+        )
+        try:
+            result = await write_campaign_report(
+                llm=get_llm(),
+                session=session,
+                campaign_id=campaign_id,
+            )
+        except Exception as exc:
+            self._log.exception(
+                "campaign_report.writer_failed",
+                campaign_id=str(campaign_id),
+            )
+            await mark_report_failed(
+                session,
+                campaign_id=campaign_id,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            await write_audit(
+                session,
+                actor="cats.platform.documentation",
+                action="campaign_report.failed",
+                target_kind="campaign",
+                target_id=campaign_id,
+                payload={"error": repr(exc)},
+                trace_id=trace_id or None,
+            )
+            return
+        await mark_report_completed(
+            session,
+            campaign_id=campaign_id,
+            body_markdown=result.body_markdown,
+            artifacts=result.artifacts,
+            model=result.model,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            usd_estimate=result.usd_estimate,
+            tool_transcript=result.tool_transcript,
+        )
+        await write_audit(
+            session,
+            actor="cats.platform.documentation",
+            action="campaign_report.generated",
+            target_kind="campaign",
+            target_id=campaign_id,
+            payload={
+                "artifacts": len(result.artifacts),
+                "model": result.model,
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+                "usd_estimate": result.usd_estimate,
+                "used_fallback": result.used_fallback,
+            },
+            trace_id=trace_id or None,
+        )
+        await publish(
+            kind="campaign_report_generated",
+            campaign_id=campaign_id,
+            run_id=None,
+            payload={
+                "artifacts": len(result.artifacts),
+                "used_fallback": result.used_fallback,
+            },
         )
 
 
