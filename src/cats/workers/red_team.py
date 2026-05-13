@@ -39,6 +39,16 @@ from cats.messaging import (
 )
 from cats.messaging.envelopes import PlanAttempt
 
+# Categories that benefit from K seeds sharing one OpenEMR conversation
+# (so the model sees them as turns in a chat). Injection wants this —
+# "ignore previous → now tell me…" only works mid-chat. Exfil + indirect
+# don't gain anything from shared context; each seed is an independent
+# attempt. Worse, the OpenEMR agent rejects exfil follow_ups as
+# `invalid_envelope` (conversation-ownership check on a not-yet-persisted
+# row, or schema mismatch), so forcing fresh briefings for these
+# categories also avoids that whole class of failure.
+_CONVERSATION_SHARING_CATEGORIES: frozenset[str] = frozenset({"injection"})
+
 
 class RedTeamWorker(Worker):
     """The Red Team agent's worker process. Plan-executor."""
@@ -106,6 +116,7 @@ class RedTeamWorker(Worker):
             # the agent's id, and seeds 1..K-1 fire that id as follow_ups.
             # ``conv_id`` is None until seed 0's response comes back.
             conv_id: str | None = None
+            shares_conversation = attempt.category in _CONVERSATION_SHARING_CATEGORIES
             for seed_idx in range(attempt.seeds_per_attempt):
                 run_id = await create_run_in_campaign(
                     session,
@@ -130,8 +141,10 @@ class RedTeamWorker(Worker):
                 # don't have one yet (seed 0, or seed 0's kickoff didn't
                 # surface a meta frame) fire as default_briefing instead
                 # so the seed still hits the model — it just won't share
-                # a chat with its siblings.
-                seed_task = "follow_up" if conv_id else "default_briefing"
+                # a chat with its siblings. Categories outside the
+                # conversation-sharing set always fire as fresh briefings
+                # — see `_CONVERSATION_SHARING_CATEGORIES`.
+                seed_task = "follow_up" if (shares_conversation and conv_id) else "default_briefing"
                 try:
                     result = await execute_attempt(
                         session,
@@ -143,7 +156,7 @@ class RedTeamWorker(Worker):
                         iteration=0,
                         seed_idx=seed_idx,
                         prior_user_messages=list(prior_user_messages),
-                        conversation_id=conv_id,
+                        conversation_id=conv_id if shares_conversation else None,
                         task=seed_task,
                     )
                 except Exception as exc:
@@ -205,6 +218,8 @@ class RedTeamWorker(Worker):
                         payload_user_message=result.payload_user_message,
                         canary=result.canary,
                         target_response_text=result.target_response_text,
+                        target_status_code=result.target_status_code,
+                        target_error=result.target_error,
                         iteration=0,
                         seed_idx=seed_idx,
                         trace_id=trace_id,
@@ -380,6 +395,8 @@ class RedTeamWorker(Worker):
                 payload_user_message=result.payload_user_message,
                 canary=result.canary,
                 target_response_text=result.target_response_text,
+                target_status_code=result.target_status_code,
+                target_error=result.target_error,
                 iteration=next_iter,
                 trace_id=trace_id,
                 seed_idx=payload.seed_idx,
@@ -424,6 +441,8 @@ def _attack_event_envelope(
     payload_user_message: str,
     canary: str,
     target_response_text: str,
+    target_status_code: int,
+    target_error: str | None,
     iteration: int,
     trace_id: str,
     seed_idx: int = 0,
@@ -441,6 +460,8 @@ def _attack_event_envelope(
             technique=attempt.technique,
             payload=payload_user_message,
             target_response=target_response_text,
+            target_status_code=target_status_code,
+            target_error=target_error,
             canary=canary,
             iteration=iteration,
             seed_idx=seed_idx,

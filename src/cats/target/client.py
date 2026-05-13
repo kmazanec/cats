@@ -161,6 +161,20 @@ class TargetClient:
                     self._logged_in = False
                     await self._login_openemr()
                     resp = await client.post(url, content=json.dumps(body), headers=headers)
+                # agent.php sometimes returns error SSEs on 4xx (e.g.
+                # `event: error\ndata: {"type":"error","code":"invalid_envelope"}`).
+                # _assemble_sse_text on that body returns the raw SSE
+                # text — which the Judge can't tell apart from a real
+                # assistant reply. Mark it as an error explicitly.
+                if resp.status_code >= 400:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=resp.text,
+                        error=(f"agent.php failed: HTTP {resp.status_code} — {resp.text[:200]}"),
+                    )
                 text = _assemble_sse_text(resp.text)
                 assigned_conv_id = _extract_assigned_conversation_id(resp.text)
         except httpx.HTTPError as e:
@@ -421,7 +435,12 @@ class TargetClient:
                     "pid": pid,
                     "document_uuid": document_uuid,
                     "doc_type": doc_type_guess,
-                    "trigger_source": "cats_attack",
+                    # Must be one of the values OpenEMR's ExtractController
+                    # allows: ['panel', 'autosweep', 'cli']. We're a
+                    # scripted automated tester; 'cli' is the honest
+                    # match. Anything else (e.g. the old 'cats_attack')
+                    # gets a 400 invalid_trigger_source from the server.
+                    "trigger_source": "cli",
                 }
                 extract_headers = {
                     "Accept": "text/event-stream",
@@ -435,6 +454,24 @@ class TargetClient:
                     content=json.dumps(extract_body),
                     headers=extract_headers,
                 )
+                # extract.php returns JSON errors (e.g. invalid_trigger_source,
+                # missing_pid) on the same channel as SSE pipeline events, so
+                # _assemble_sse_text on a JSON body returns the raw JSON —
+                # confusing the Judge with what looks like a real response.
+                # Mirror the upload-error path: empty text, raw body
+                # preserved, error string set.
+                if extract_resp.status_code >= 400:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=extract_resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=extract_resp.text,
+                        error=(
+                            f"extract failed: HTTP {extract_resp.status_code}"
+                            f" — {extract_resp.text[:200]}"
+                        ),
+                    )
                 text = _assemble_sse_text(extract_resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)

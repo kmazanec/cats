@@ -73,6 +73,7 @@ class AttemptResult:
     target_response_text: str
     target_status_code: int
     target_latency_ms: int
+    target_error: str | None
     output_filter_verdict: str
     output_filter_reason: str
     technique: str
@@ -511,6 +512,7 @@ async def execute_attempt(
         target_response_text=target_text,
         target_status_code=target_status_code,
         target_latency_ms=target_latency_ms,
+        target_error=error,
         output_filter_verdict=output_filter_verdict,
         output_filter_reason=output_filter_reason,
         technique=technique,

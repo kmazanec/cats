@@ -160,6 +160,14 @@ class AttackEventPayload(BaseModel):
     iteration: int = 0
     seed_idx: int = 0
     rubric_version_id: UUID | None = None
+    # Target call outcome — lets the Judge short-circuit when the
+    # target refused (HTTP 4xx/5xx, transport error). Without these the
+    # Judge LLM sees an empty/error body and produces a generic `error`
+    # verdict that the operator can't distinguish from a real "can't
+    # decide" case. Both fields default so older queued envelopes still
+    # decode after a worker upgrade.
+    target_status_code: int = 0
+    target_error: str | None = None
 
 
 VerdictKind = Literal["pass", "fail", "partial", "error"]
