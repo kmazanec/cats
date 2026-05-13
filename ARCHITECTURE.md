@@ -170,7 +170,7 @@ Each role is independently testable and replaceable.
 
 | Agent | Trust level | Model assignment | Job |
 |-------|-------------|------------------|-----|
-| **Orchestrator** | Platform-trusted | Claude Sonnet 4.6 | Plans each campaign — which target, which categories, what budget, when to halt. Reads observability state; writes a campaign plan. |
+| **Orchestrator** | Platform-trusted | Claude Sonnet 4.6 (LLM planner) | Reads the project's coverage / severity / recency state via a tool surface and authors a campaign plan — which categories, which techniques, what budget, when to halt — that a human operator approves before dispatch fires. See §2.4. |
 | **Red Team — Injection** | Adversarial | Hermes 4 405B → Dolphin-Mistral-Venice | Specialist in direct and indirect prompt injection, including docx payloads. |
 | **Red Team — Exfil** | Adversarial | Hermes 4 405B → Claude Sonnet 4.6 (authorized-pentest framing) | Specialist in PHI / cross-patient data exfiltration. Owns canary-token planting protocol. |
 | **Red Team — ToolAbuse** | Adversarial | DeepSeek V3.2 → Hermes 4 | Specialist in tool misuse and authorization bypass. |
@@ -400,31 +400,95 @@ The system-level view of *where these agents live* is in §3.
 
 ### 2.4 Orchestrator policy
 
-**Inner loop (per-step attack selection).** A deterministic
-**epsilon-greedy bandit** weighted by:
+The Orchestrator is an **LLM-driven planner**, not a hand-written
+selection rule. The brief is explicit that "without this layer,
+your platform is just running attacks randomly. With it, your
+platform is learning." Building the right *agent* — its prompt,
+its tools, its evaluation criteria — is part of the engineering
+challenge, not something to substitute with a heuristic.
 
-- coverage gap — categories with fewer test runs get a boost
-- severity — open high-severity findings in a category boost it
-- recency — categories with recent regressions boost; categories
-  exhaustively explored in the last 24 hours decay
+**Inputs — the tool surface.** The Orchestrator agent reads the
+platform's state through a small, typed set of tools it can call
+during planning, not through ad-hoc DB queries. The tools answer
+questions like:
 
-Epsilon (~10%) goes to random exploration so the bandit never
-starves a category. The selection logic is pure Python, fully
-unit-testable, and incurs no LLM cost.
+- `list_coverage(project_id)` — per-category, per-technique
+  counts of attacks fired, last-tested timestamp, current
+  pass / fail / partial mix.
+- `list_open_findings(project_id, min_severity)` — outstanding
+  vulnerabilities the platform has not yet validated as fixed.
+- `list_recent_regressions(project_id, since)` — failed
+  regression-suite cases since the most recent deploy.
+- `list_attack_categories()` — the catalogued attack-surface map
+  from `THREAT_MODEL.md`, with each category's known defenses
+  and their current confidence ratings.
+- `budget_remaining(project_id)` — wall-clock / dollar / token
+  budget the operator allocated.
 
-**Meta-loop (weight tuning).** A scheduled LLM-driven review
-reads aggregate observability data and proposes weight changes.
-A human approves before the changes apply. This keeps the system
-"learning" without putting an LLM in the inner loop.
+The tool surface is the contract between the strategic
+LLM-driven layer and the observability substrate. Adding a new
+signal the Orchestrator can reason over means adding a tool,
+not editing prompts.
 
-**Halt conditions.**
+**Output — a campaign plan.** The Orchestrator emits a structured
+`CampaignPlan` containing:
 
-- budget exhausted — token, wall-clock, or dollar cap
+- the ordered list of `(category, technique)` attempts it
+  intends to run, with per-attempt budget caps,
+- a one-paragraph rationale grounded in the tool outputs
+  (e.g. "system_prompt_leak has not been tested against this
+  project in 30 days; an open `policy_puppetry` finding from
+  last week suggests the system-prompt isolation is weak;
+  prioritize SPE-LLM"),
+- explicit halt conditions for the campaign (see below),
+- a confidence statement on the plan's coverage of the
+  highest-risk surfaces.
+
+**Human-in-the-loop approval gate.** No campaign plan dispatches
+without operator approval. The plan is rendered in the dashboard
+with the rationale and the tool calls that produced it; the
+operator approves, edits, or rejects before the Red Team fires.
+
+This is the brief's "where does your system stop and ask a human"
+boundary for the *strategic* layer. (The other approval gate is
+on critical-severity finding promotion — see §2.5.) The system
+runs autonomously *within* an approved plan; it does not
+autonomously decide what to run.
+
+**Why an LLM planner instead of a fixed rule.** A hand-written
+bandit can balance coverage and severity, but it cannot reason
+about *which combination of signals matters for this project
+right now* — that a recent regression in injection makes
+`system_prompt_leak` more urgent even though its raw coverage
+count is high, or that an open `tool_abuse` finding deserves
+re-probing before a green-field category. The brief calls for an
+agent that "hunts, evaluates, escalates, and documents
+vulnerabilities continuously, adapting as attackers adapt"; that
+is reasoning over the state, not weighted summation of it.
+
+The cost discipline ARCHITECTURE.md previously claimed (no LLM
+in the inner loop) is preserved by **bounding the planning
+frequency**: one Orchestrator call per campaign, not per attack.
+A campaign that fires 30 attacks costs one Orchestrator
+invocation, not 30.
+
+**Halt conditions.** The plan emits its own halt thresholds; the
+worker enforces them:
+
+- budget exhausted — token, wall-clock, or dollar cap.
 - no signal — N consecutive Judge verdicts of `fail` across
-  diverse attempts → de-prioritize the category and return to
-  Orchestrator
+  diverse attempts → halt and return the partial result to the
+  Orchestrator for the *next* campaign's planning context.
 - emergency stop — Judge produces N consecutive errors → halt
-  the campaign and alert
+  the campaign and alert. The Orchestrator does not get to
+  re-plan around a broken Judge.
+
+**Meta-loop (Orchestrator self-improvement).** A scheduled
+review reads the platform's history (which plans produced
+findings, which plans burned budget without signal) and proposes
+prompt or tool changes to the Orchestrator. A human approves
+those changes before they ship. This keeps the Orchestrator's
+reasoning improving without a runtime training feedback loop.
 
 ### 2.5 Judge integrity
 

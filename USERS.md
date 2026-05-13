@@ -18,8 +18,10 @@ CATS serves three users with distinct workflows but a shared
 underlying need: **continuously knowing whether the OpenEMR
 Clinical Co-Pilot is improving or regressing under adversarial
 pressure.** The **AI / Security Engineer** is the daily driver —
-they fire campaigns, triage findings, validate fixes, and curate
-the rubrics and fixtures that govern what counts as an exploit.
+they fire campaigns, approve the Orchestrator's per-campaign
+plans before dispatch, triage findings, validate fixes, and
+curate the rubrics and fixtures that govern what counts as an
+exploit.
 **Engineering Leadership / CISO** consumes coverage dashboards,
 approves critical-severity findings, and owns the platform's
 authority to run against production. **External Red-Team
@@ -119,46 +121,83 @@ where they meet.**
 and working familiarity with the Clinical Co-Pilot's internals.
 Owns the day-to-day operation of CATS: when to run campaigns,
 which findings warrant a fix, which fixtures to add, which
-specialist prompts to revise. Reads Postgres tables directly when
-the dashboard isn't enough. Pages the on-call dashboard at the
-start of every clinical-AI release window.
+specialist prompts to revise. **Sits at the plan-approval gate
+before every campaign** — reads the Orchestrator's proposed plan
+and rationale, edits or rejects when it disagrees, approves when
+the plan makes sense. Reads Postgres tables directly when the
+dashboard isn't enough. Pages the on-call dashboard at the start
+of every clinical-AI release window.
 
 **Tools they reach for.** CLI for ad-hoc campaigns; web dashboard
-for triage; LangSmith for drill-down on inter-agent traces;
-Postgres directly for queries the dashboard doesn't surface yet.
+for plan approval and triage; LangSmith for drill-down on
+inter-agent traces; Postgres directly for queries the dashboard
+doesn't surface yet.
 
 **What they care about.** Low false-positive rate (their time is
-finite); fast feedback when a fix lands; replayability of every
-finding from the trace alone; the ability to add a new category
-without touching shared dispatch code.
+finite); plans that read as informed by real coverage state, not
+boilerplate; fast feedback when a fix lands; replayability of
+every finding from the trace alone; the ability to add a new
+category without touching shared dispatch code.
 
 ### Use case 1.1 — *Run a campaign against the live target*
 
 The engineer wants to know what CATS finds today. They open the
-CLI, register or select the relevant Project (the deployed
-co-pilot URL), and fire a campaign with explicit scope: which
-attack categories, which budget cap, which target. The
-[`Orchestrator`](./ARCHITECTURE.md#21-agent-roster) builds a
-campaign plan using the deterministic bandit over coverage gaps
-and open-severity weights. The [`Red Team
-Router`](./ARCHITECTURE.md#21-agent-roster) dispatches to the
-right specialist; the specialist generates attacks; the
+CLI or dashboard, select the relevant Project (the deployed
+co-pilot URL), and fire a campaign with just two inputs: the
+target and a budget cap. They do **not** name a category or a
+technique — that is the
+[`Orchestrator`](./ARCHITECTURE.md#21-agent-roster)'s job.
+
+The Orchestrator reads the project's current state through its
+tool surface (per
+[`ARCHITECTURE.md` §2.4](./ARCHITECTURE.md#24-orchestrator-policy):
+`list_coverage`, `list_open_findings`,
+`list_recent_regressions`, `list_attack_categories`,
+`budget_remaining`) and authors a structured `CampaignPlan` — an
+ordered list of `(category, technique)` attempts with
+per-attempt budgets, halt conditions, and a paragraph of
+rationale grounded in those tool outputs. The plan lands in the
+dashboard awaiting the engineer's review.
+
+**This is where the engineer's judgment lives.** They read the
+rationale ("`system_prompt_leak` hasn't been tested in 30 days;
+the recent `policy_puppetry` finding suggests the system-prompt
+isolation is weak; prioritize SPE-LLM"), agree or disagree, and
+either approve the plan, edit it (drop a technique, add one,
+reorder, change a budget), or reject it back to the
+Orchestrator. The diff between the proposed plan and the
+approved plan is recorded against the engineer in the audit log.
+
+Once approved, the campaign dispatches. The [`Red Team
+Router`](./ARCHITECTURE.md#21-agent-roster) executes the plan's
+attempts — it is the *executor*, not the *picker* — invoking
+each specialist named in the plan; the specialist generates
+attacks; the
 [`Mutator`](./ARCHITECTURE.md#21-agent-roster) iterates on
 partial successes; the
-[`Judge`](./ARCHITECTURE.md#24-judge-integrity) verifies; the
+[`Judge`](./ARCHITECTURE.md#25-judge-integrity) verifies; the
 [`Documentation
 Agent`](./ARCHITECTURE.md#21-agent-roster) writes findings to
 Postgres. The engineer watches the live dashboard, sees the
-current attack and verdict, sees the running cost, and stops the
-campaign early if the signal is clear before the budget exhausts.
+current attempt and verdict, sees the running cost, and stops
+the campaign early if the signal is clear before the budget
+exhausts.
 
-**Why automation here.** Generating thousands of attack variants
-across categories, evaluating each against a per-category rubric,
-and persisting structured Findings to a queryable store is purely
-mechanical work that a human would either do badly (skip steps,
-forget verdicts, lose evidence) or do slowly (one attack every
-few minutes, no parallelism). The engineer's judgment is needed at
-*campaign design time* and *triage time*, not at *each attack*.
+**Why automation here, and why the human gate.** Generating
+thousands of attack variants across categories, evaluating each
+against a per-category rubric, and persisting structured
+Findings to a queryable store is purely mechanical work that a
+human would do either badly (skip steps, forget verdicts, lose
+evidence) or slowly (one attack every few minutes, no
+parallelism). What is *not* mechanical is **deciding what to
+test next** — that decision benefits from reasoning over the
+project's state, which is the Orchestrator's job, but it also
+benefits from a sanity check by someone who knows the project,
+which is the engineer's. The plan-approval gate is the brief's
+"where does your system stop and ask a human" boundary for the
+strategic layer; the critical-finding gate (Use case 2.2) is the
+other one. The system runs autonomously *within* an approved
+plan; it does not autonomously decide what to run.
 
 ### Use case 1.2 — *Triage a high-severity finding*
 
@@ -188,7 +227,7 @@ The co-pilot team ships a patch claiming to address a previously
 confirmed finding. The engineer opens the finding in the
 dashboard, clicks "re-run regression," and CATS executes the
 attack against the now-redeployed target. The
-[`Judge`](./ARCHITECTURE.md#24-judge-integrity) runs the **triple
+[`Judge`](./ARCHITECTURE.md#25-judge-integrity) runs the **triple
 gate**: deterministic post-condition does not fire, the
 locked-version rubric still returns `fail`, and the behavioral
 fingerprint matches the captured refusal exemplar. If all three
@@ -217,8 +256,10 @@ audit-log check, etc.). They register the category in the
 category index. The
 [`Red Team Router`](./ARCHITECTURE.md#21-agent-roster) picks it
 up automatically; the next campaign can target it; the
-Orchestrator's bandit will explore it via the epsilon-greedy
-floor until enough coverage exists to weight it.
+Orchestrator's `list_attack_categories` tool now surfaces the
+new category to the planner, which sees it as zero-coverage and
+typically prioritizes it for the next campaign's plan — visible
+to the engineer in the plan's rationale before it dispatches.
 
 **Why automation here.** The plugin contract is what makes the
 new category usable across thousands of attack iterations
@@ -316,7 +357,9 @@ a PR. The OpenEMR engineer (Persona 1) reviews the category
 against the existing rubrics and the May-2026 research, runs the
 category in a sandbox Project to verify the fixtures produce the
 expected Judge verdicts, and merges. The contributor's category
-is now in production rotation under the Orchestrator's bandit.
+becomes visible to the Orchestrator's `list_attack_categories`
+tool on the next campaign; Persona 1 sees it surface in the
+proposed plan and approves the first live run.
 
 **Why automation here.** The contract is the contract precisely
 because it lets contributors extend CATS without needing global
@@ -387,7 +430,7 @@ scope and structurally discouraged by the platform.
 
 | Persona | Frequency | Primary surface | What CATS does for them that they cannot do by hand |
 |---------|-----------|------------------|-------------------------------------------------------|
-| AI / Security Engineer | Daily | CLI + dashboard | Generate attack variants at scale; persist structured findings; run triple-gate regression replays after every release |
+| AI / Security Engineer | Daily | CLI + dashboard | Read the Orchestrator's per-campaign plan + rationale and approve, edit, or reject before dispatch; generate attack variants at scale once dispatched; persist structured findings; run triple-gate regression replays after every release |
 | Engineering Leadership / CISO | Weekly + release windows | Dashboard only | Show coverage trend release-over-release; pause critical findings for explicit approval; expose the audit trail |
 | External Red-Team Contributor | Periodic | Git PRs + sandbox | Onboard new attack categories through a clean plugin contract; test in isolation before production use |
 
@@ -399,5 +442,5 @@ calls without a human review gate — is where CATS' design has
 gone wrong. The
 [architecture's trust boundaries](./ARCHITECTURE.md#31-trust-boundaries--run-authorization)
 and the
-[Judge's verification policy](./ARCHITECTURE.md#24-judge-integrity)
+[Judge's verification policy](./ARCHITECTURE.md#25-judge-integrity)
 are the load-bearing answers to that question.

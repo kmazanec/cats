@@ -22,17 +22,22 @@ are larger by necessity: Round 1 stands up the platform's
 foundations (users, targets, audit, reachability), and Round 2
 lands the first end-to-end attack against the live target —
 after Round 2, CATS *does* the thing it exists to do, even if
-only one technique is covered. From Round 3 onward, each round
-is **tightly scoped to a single attack category or technique
+only one technique is covered. Round 3 deepens the first attack
+category into a family. Round 4 brings the platform's strategic
+decision-maker online — the LLM-driven Orchestrator
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4 describes, with a
+human-in-the-loop plan approval gate. From Round 5 onward, each
+round is **tightly scoped to a single attack category or technique
 from the threat model**, deepening coverage rather than adding
-internal machinery.
+internal machinery — but every campaign in those rounds flows
+through the Orchestrator the platform learned to use in R4.
 
 This shape exists to avoid the classic agile failure mode of "we
 built lots of infrastructure but nothing demoable." After Round 2,
-CATS is the platform; everything that follows is the platform
-getting better at its job. Each round is meant to be small
-enough to ship cleanly and self-contained enough that the user
-can see the value before the next round starts.
+CATS *does* the thing; after Round 4, it *learns* to direct itself
+under operator approval. Each round is meant to be small enough
+to ship cleanly and self-contained enough that the user can see
+the value before the next round starts.
 
 ### Definition of done — applies to every round
 
@@ -459,7 +464,11 @@ Out:
 - Multiple attack techniques (later rounds expand category by
   category)
 - Real adaptive planning — the orchestrator just runs the
-  technique the user named, end of story
+  technique the user named, end of story.
+  **(Note: R4 corrects this. R2 ships an orchestrator-shaped
+  placeholder; the LLM-planner-with-tools that
+  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4 describes lands
+  in R4.)**
 - Real variant generation
 - Smart safety filtering of the agents' output (a basic
   pattern-based safety net is enough this round)
@@ -1068,6 +1077,21 @@ retro-paydown + plumbing, then the techniques + mutator + evals + report.
     asked for this; doing it minimally was the right call.
 
 - **What didn't.**
+  - **The Orchestrator's strategic role got punted, and that is the
+    load-bearing miss of R3.** [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+    §2.1 / §2.4 designates the Orchestrator as the platform's
+    strategic decision-maker — an LLM-driven planner that reads
+    coverage / severity / recency through a tool surface and
+    authors a campaign plan a human approves before dispatch
+    fires. R3 instead shipped a deterministic dispatcher walking
+    a hardcoded `ROTATION` tuple in order, with the "Orchestrator"
+    graph node still a no-op stub from R2. That is precisely the
+    "platform is just running attacks randomly" failure mode the
+    project brief calls out. R4 corrects this: the next round
+    brings the real Orchestrator online, including the human-in-
+    the-loop plan approval gate the brief explicitly requires.
+    The R3 dispatcher becomes the *executor* of an
+    Orchestrator-emitted plan rather than the *picker*.
   - **The integration test's deterministic-judge short-circuit caught
     me off guard.** I wrote the multi-technique e2e expecting partials
     to flow naturally, but the deterministic check returns
@@ -1112,6 +1136,14 @@ retro-paydown + plumbing, then the techniques + mutator + evals + report.
     the fake LLM) would be more robust.
 
 - **What to change for R4.**
+  - **R4 is now the Orchestrator round.** The original R4
+    (.docx indirect injection) moved to R5; `docs/ROADMAP.md`
+    reordered after the R3 retro identified the strategic-layer
+    gap. R4's builder owns: real LLM-driven Orchestrator with a
+    tool surface ([`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4),
+    HITL plan approval gate, coverage view in the dashboard.
+    R3's dispatcher gets re-shaped into the executor of an
+    Orchestrator-emitted plan.
   - **Fire one nightly judge-accuracy run before R4 starts.** Capture
     the real accuracy number, the per-technique confusion table, and
     the spend. Either confirm 0.85 is hit or adjust the threshold in
@@ -1123,18 +1155,19 @@ retro-paydown + plumbing, then the techniques + mutator + evals + report.
     un-suffixed twin with a real LangSmith trace ID, or delete it
     because the live model defends correctly.
   - **Refactor `TargetClient`'s SSE walk into a pure-function module.**
-    R2's retro asked for this; R3 punted again. R4's indirect-injection
+    R2's retro asked for this; R3 punted again. R5's indirect-injection
     via `.docx` needs section-aware citation handling and will trip
     over the inline parser. Extract `walk_sse_to_text(events) -> str`
     before any docx work starts.
   - **Add a `bypass_deterministic_judge: bool` test seam on
     `CampaignState`.** R3's e2e test monkey-patches the function; that
     works once but doesn't scale. A flag the test can set means
-    R4/R5 can drive LLM-judge paths without import-time gymnastics.
-  - **Bump answer-key v2 once R4 produces .docx attacks.** v1 is
+    R4 and beyond can drive LLM-judge paths without import-time
+    gymnastics.
+  - **Bump answer-key v2 once R5 produces .docx attacks.** v1 is
     direct-injection only. v2 should add another 30 rows covering the
-    indirect-injection technique families R4 introduces. Ship `v2/`
-    alongside R4's runner; keep `v1/` intact.
+    indirect-injection technique families R5 introduces. Ship `v2/`
+    alongside R5's runner; keep `v1/` intact.
   - **Use a `<technique-marker>` HTML comment in specialist prompts
     instead of frontmatter sniffing.** A dedicated marker is harder
     to lose accidentally than a YAML field that prompt-engineers
@@ -1147,7 +1180,179 @@ retro-paydown + plumbing, then the techniques + mutator + evals + report.
 
 ---
 
-## Round 4 — Indirect injection via `.docx`
+## Round 4 — The Orchestrator decides — and the operator approves
+
+**Goal.** Bring the platform's strategic decision-maker online.
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1 / §2.4 designates
+the Orchestrator as an LLM-driven planner that reads the
+project's coverage / severity / recency state through a tool
+surface and authors a campaign plan a human operator approves
+before any attack fires. R1–R3 shipped without it; R3's
+dispatcher walks a hardcoded rotation and the "Orchestrator"
+graph node is a no-op stub. This round closes that gap.
+
+This is *the* load-bearing round for the brief's central claim:
+"without this layer, your platform is just running attacks
+randomly. With it, your platform is learning."
+
+**Outcome.** A user can:
+
+1. Start a campaign with just a target and a budget — no
+   category, no technique list. The Orchestrator reads the
+   project's current state and proposes the plan.
+2. See the proposed plan in the dashboard before anything fires:
+   which categories and techniques the Orchestrator chose, in
+   what order, with what per-attempt budget, and a paragraph of
+   rationale grounded in coverage / severity / recency.
+3. Approve, edit, or reject the plan. Edits stay legible — the
+   dashboard shows the diff between the proposed plan and the
+   operator's final plan, and that diff is recorded on the
+   audit log against the operator who made it.
+4. Open a coverage view in the dashboard that shows, for every
+   attack category and technique, how many attempts have run,
+   when the most recent one was, the current pass / fail /
+   partial mix, and which open findings the category carries.
+   This is both the substrate the Orchestrator's tools read and
+   the operator's view into why the plan looks the way it does.
+5. Watch the platform's choices shift across a sequence of
+   campaigns as findings land and coverage fills in — the
+   under-tested categories rise, the saturated ones fall — and
+   read out the Orchestrator's stated reasoning at each step.
+
+**Scope.**
+
+In:
+- A real Orchestrator agent (LLM-driven, Claude Sonnet 4.6 per
+  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1) that authors a
+  structured `CampaignPlan` per campaign.
+- A typed tool surface the Orchestrator calls during planning —
+  at minimum `list_coverage`, `list_open_findings`,
+  `list_recent_regressions`, `list_attack_categories`,
+  `budget_remaining` per
+  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4. Tools are
+  pure-DB queries with declared schemas; they are how the
+  Orchestrator reads the world.
+- A human-in-the-loop approval gate on every emitted plan.
+  Dispatch fires only after operator approval. Edits and
+  rejections are first-class outcomes, not corner cases.
+- A coverage view in the dashboard at `/coverage/<project>`
+  showing the per-category, per-technique state the
+  Orchestrator's tools surface — same substrate, human-readable.
+- R3's dispatcher re-shaped from *picker* to *executor*: the
+  graph runs the plan the Orchestrator emitted, not a hardcoded
+  rotation. `selected_technique` is supplied by the plan.
+- Halt conditions emitted by the plan and enforced by the worker:
+  budget exhausted, N consecutive `fail` verdicts, judge errors.
+- An eval set for the Orchestrator's planning quality —
+  hand-labeled `(observability state, expected plan shape)`
+  cases the meta-loop can be measured against. A few dozen at
+  R4; bigger as the platform accumulates real history.
+
+Out:
+- The meta-loop that proposes Orchestrator prompt or tool
+  changes ([`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4 names
+  it; it ships as its own later round once R4's planner has
+  produced enough history to evaluate against).
+- Automatic regression-run triggering when the target redeploys
+  (R8 territory).
+- Fully autonomous, no-human campaigns. The brief explicitly
+  asks "where does your system stop and ask a human"; this
+  round's answer is: at every plan emission.
+- Multi-project orchestration (one Orchestrator instance
+  planning across a fleet of Projects). Out of MVP scope.
+
+**Definition of done (in addition to global DoD).**
+
+- [ ] A campaign launched with only a target + budget produces
+      a coherent plan grounded in the project's actual coverage
+      state — not a constant prior, not the R3 rotation tuple.
+- [ ] The plan dispatches only after operator approval; an
+      operator can edit the plan (drop a technique, add one,
+      change order, change per-attempt budget) and the dispatch
+      runs the edited plan, not the proposed one.
+- [ ] The dashboard's coverage view answers the brief's
+      observability questions: "which attack categories have
+      been tested and how many cases per category" and "is the
+      target system becoming more or less resilient over time."
+- [ ] Across at least ten consecutive campaigns against the
+      same project, the Orchestrator's plan visibly evolves —
+      categories the platform has saturated drop in priority,
+      categories with open findings rise — and a reader can
+      open the plan's rationale and see the Orchestrator name
+      the signals that drove the change.
+- [ ] The Orchestrator's plans are evaluated against a hand-
+      labeled set: a versioned `evals/orchestrator/` answer key
+      with a stated accuracy bar (planning is fuzzier than the
+      Judge's binary verdict; the bar will read like
+      "plan covers ≥N of the top-K expected categories" rather
+      than a single accuracy number, and the rationale fields
+      go through a separate quality rubric).
+- [ ] The audit log records every plan emission, the operator
+      who approved or edited it, and the diff if there was one.
+      No plan reaches dispatch without an audit row.
+- [ ] The R3 dispatcher's `ROTATION` tuple is gone — replaced
+      with plan-driven dispatch. A grep for the symbol confirms
+      no orphaned references remain.
+
+**Risks & blockers.**
+
+- **Prompt and tool surface design.** This round is fundamentally
+  a prompt-engineering and tool-design exercise. A bad
+  Orchestrator prompt produces "plan everything every time" or
+  "plan whatever's first in the schema." Budget real time for
+  iterating on the prompt against the eval set; it is the most
+  load-bearing piece of text in the platform.
+- **Cold start.** With no history, the Orchestrator has to do
+  something reasonable. The tool surface returns empty lists or
+  uniform priors; the prompt has to acknowledge that explicitly
+  rather than hallucinate signal. The cold-start plan is itself
+  a fixture in the eval set.
+- **Plan-approval friction.** A HITL gate on every campaign is
+  the brief's requirement, but it slows the platform down. The
+  approval surface has to be one click for the "plan looks
+  good" path and a structured editor for the "needs tweaks"
+  path — anything heavier and operators will stop reading the
+  rationale.
+- **LLM cost in the inner loop.** R1–R3's discipline was "no
+  LLM in the inner loop." This round inverts that for the
+  Orchestrator specifically.
+  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4 bounds the
+  cost: one Orchestrator call per campaign, not per attack. A
+  campaign that fires 30 attacks costs one Orchestrator
+  invocation. The budget cap on a campaign has to account for
+  this; the AI-cost-analysis deliverable updates.
+- **Evaluating planning quality.** Judging whether a plan is
+  *good* is harder than judging whether an attack succeeded. R3
+  set the precedent with hand-labeled `(attack, response,
+  verdict)` triples; R4 extends with `(state-snapshot, expected
+  plan shape)` cases plus a rationale-quality rubric. The eval
+  has to be honest about being fuzzier than R3's was.
+- **The Orchestrator becoming a single point of failure.** If
+  the planner is wrong, the whole campaign is wrong. The HITL
+  gate is the load-bearing mitigation here. The worker also
+  refuses to dispatch a plan that fails structural validation
+  (unknown technique key, budget cap above the campaign cap,
+  contradictory halt conditions); the operator sees the
+  validation failure rather than the platform silently choosing
+  something else.
+
+**Tasks.** *(builder fills in as completed)*
+
+- [ ] _to be filled by R4 builder_
+
+**Decisions.** *(builder records as made)*
+
+- _to be filled by R4 builder_
+
+**Retrospective.** *(builder fills in after R4 ships)*
+
+- What went well: _
+- What didn't: _
+- What to change for R5: _
+
+---
+
+## Round 5 — Indirect injection via `.docx`
 
 **Goal.** Reach the highest-impact attack surface identified in
 [`../THREAT_MODEL.md`](../THREAT_MODEL.md): indirect injection via
@@ -1216,21 +1421,21 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R4 builder_
+- [ ] _to be filled by R5 builder_
 
 **Decisions.** *(builder records as made)*
 
-- _to be filled by R4 builder_
+- _to be filled by R5 builder_
 
-**Retrospective.** *(builder fills in after R4 ships)*
+**Retrospective.** *(builder fills in after R5 ships)*
 
 - What went well: _
 - What didn't: _
-- What to change for R5: _
+- What to change for R6: _
 
 ---
 
-## Round 5 — PHI / Cross-Patient Exfiltration
+## Round 6 — PHI / Cross-Patient Exfiltration
 
 **Goal.** Find out whether the Co-Pilot can be tricked into
 leaking patient data — across the channels the threat-landscape
@@ -1300,85 +1505,6 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R5 builder_
-
-**Decisions.** *(builder records as made)*
-
-- _to be filled by R5 builder_
-
-**Retrospective.** *(builder fills in after R5 ships)*
-
-- What went well: _
-- What didn't: _
-- What to change for R6: _
-
----
-
-## Round 6 — The platform decides what to test next
-
-**Goal.** Stop making the user pick which attack category to run.
-CATS becomes a platform that *learns*: it reads its own history,
-notices what's been under-tested, what has open findings of what
-severity, what's been quiet for too long, and chooses where to
-spend the next attack on its own.
-
-**Outcome.** A user can:
-
-1. Start a campaign with just a target and a budget — no
-   category — and the platform picks where to attack.
-2. See a coverage view in the dashboard that shows, for every
-   attack category, how much testing has happened, how recently,
-   and what's currently open.
-3. Watch the platform's category choices shift over a series of
-   campaigns as findings land and coverage fills in — the
-   under-tested categories rise, the saturated ones fall.
-4. Set the platform's spending budget for a campaign and trust
-   it to stop when the budget is exhausted, when nothing
-   useful is being found, or when something is going badly
-   wrong.
-
-**Scope.**
-
-In:
-- Automatic category selection driven by the platform's
-  observable state (coverage, severity of open findings,
-  recency, plus a small dose of random exploration so nothing
-  gets starved).
-- A coverage view in the dashboard.
-- Stop conditions: budget exhausted, no useful signal after a
-  reasonable number of attempts, emergency halt when the judge
-  is misbehaving.
-- The platform's choice logic is deterministic and inspectable
-  — a user can ask "why did it pick X next?" and get a
-  legible answer.
-
-Out:
-- Using a separate LLM to re-tune the choice logic over time.
-  This round proves the inspectable logic works; a smarter
-  meta-layer can come later.
-
-**Definition of done (in addition to global DoD).**
-
-- [ ] Campaigns can be launched without specifying a category;
-      the platform picks.
-- [ ] Over a sequence of at least ten consecutive campaigns,
-      the dashboard visibly shows priority shifting — and a
-      user can read out why.
-- [ ] Every stop condition triggers correctly when its
-      condition holds; in particular, an obviously misbehaving
-      judge halts the campaign rather than corrupting findings.
-
-**Risks & blockers.**
-
-- **Cold start.** With no history, the choice logic has to do
-  something reasonable. Document the defaults; they will get
-  pushed on.
-- **Tuning by feel.** It will be tempting to tune the weights
-  until the demo looks compelling. The discipline is to tune
-  from real data, not from what makes the chart pretty.
-
-**Tasks.** *(builder fills in as completed)*
-
 - [ ] _to be filled by R6 builder_
 
 **Decisions.** *(builder records as made)*
@@ -1390,6 +1516,17 @@ Out:
 - What went well: _
 - What didn't: _
 - What to change for R7: _
+
+---
+
+> **Note.** Earlier drafts of this roadmap reserved a separate
+> round here titled "The platform decides what to test next" —
+> a deterministic bandit-based category-selection layer. That
+> goal is now Round 4's job, executed as an LLM-driven planner
+> per [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.4 rather
+> than a heuristic, with a human-in-the-loop approval gate on
+> every emitted plan. The roadmap drops the dedicated round
+> rather than ship two passes at the same capability.
 
 ---
 
