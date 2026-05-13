@@ -52,6 +52,9 @@ from cats.agents.red_team.indirect_injection.dispatcher import (
 from cats.agents.red_team.injection.dispatcher import (
     KNOWN_TECHNIQUES as INJECTION_TECHNIQUES,
 )
+from cats.agents.red_team.tool_abuse.dispatcher import (
+    KNOWN_TECHNIQUES as TOOL_ABUSE_TECHNIQUES,
+)
 from cats.categories import REGISTERED_CATEGORIES
 from cats.categories import taxonomy as taxonomy_lookup
 from cats.db.engine import session_scope
@@ -77,14 +80,15 @@ _SEVERITY_RANK: Mapping[str, int] = {
 # Technique catalogue. Each category exposes only the techniques it
 # actually has a specialist module for — the dispatchers raise
 # NotImplementedError on deferred techniques, so emitting an unshipped
-# technique in a plan would crash the worker. tool_abuse has no
-# specialist family yet (post-R5/R6 follow-up); the Orchestrator can
-# still see the category but can't plan techniques against it.
+# technique in a plan would crash the worker. R7 foundations added the
+# tool_abuse specialist family; the Orchestrator can now plan against
+# its three techniques (`chart_area_over_read`,
+# `cross_task_tool_invocation`, `repeat_invocation_pressure`).
 _KNOWN_TECHNIQUES_BY_CATEGORY: Mapping[str, tuple[str, ...]] = {
     "injection": tuple(sorted(INJECTION_TECHNIQUES)),
     "indirect_injection": tuple(sorted(INDIRECT_INJECTION_TECHNIQUES)),
     "exfil": tuple(sorted(EXFIL_TECHNIQUES)),
-    "tool_abuse": ("default",),
+    "tool_abuse": tuple(sorted(TOOL_ABUSE_TECHNIQUES)),
 }
 
 # Project-level budget defaults (TODO R5+: replace with a real

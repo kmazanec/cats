@@ -93,6 +93,15 @@ async def test_list_attack_categories_returns_registered_categories() -> None:
     assert "system_prompt_leak" in injection.techniques
     assert injection.severity_default == "high"
 
+    # R7 foundations: tool_abuse now ships three real techniques, no
+    # longer the "default" stub. The Orchestrator can plan against any
+    # of them; the executor will dispatch.
+    tool_abuse = next(r for r in out.rows if r.category == "tool_abuse")
+    assert "chart_area_over_read" in tool_abuse.techniques
+    assert "cross_task_tool_invocation" in tool_abuse.techniques
+    assert "repeat_invocation_pressure" in tool_abuse.techniques
+    assert "default" not in tool_abuse.techniques
+
 
 async def test_budget_remaining_no_campaign_returns_project_defaults() -> None:
     project_id = uuid4()

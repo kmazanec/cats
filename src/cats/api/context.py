@@ -333,9 +333,9 @@ async def build_overview_context(session: AsyncSession) -> dict[str, Any]:
             {
                 "name": "tool_abuse",
                 "rubric_version": 1,
-                "fixtures": 0,
+                "fixtures": 10,
                 "accuracy_pct": 100,
-                "threshold_pct": 92,
+                "threshold_pct": 90,
             },
         ],
     }

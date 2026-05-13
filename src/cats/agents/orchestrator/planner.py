@@ -162,10 +162,11 @@ async def propose_plan(
     )
 
     # The planner gets ONE retry on a structural error. Strong models still
-    # occasionally hallucinate a technique key (e.g. ('injection','default')
-    # — 'default' belongs to tool_abuse) and a self-correction round
-    # eliminates almost all of them. We feed back the validator's message
-    # and the flattened valid pairs so the model isn't guessing twice.
+    # occasionally hallucinate a technique key (e.g. naming a deferred
+    # exfil technique or a not-yet-shipped tool_abuse variant) and a
+    # self-correction round eliminates almost all of them. We feed back
+    # the validator's message and the flattened valid pairs so the model
+    # isn't guessing twice.
     messages = list(prompt)
     last_error: str | None = None
     total_cost_usd = 0.0

@@ -61,8 +61,8 @@ pytestmark = pytest.mark.integration
 _PER_ATTEMPT_USD: float = 0.50
 
 # Maximum number of attempts the scripted planner emits per campaign.
-# Three categories ship today (injection, exfil, tool_abuse); cap at 3
-# so the assertion 'priority >= 2' is meaningful.
+# Four categories ship today (injection, indirect_injection, exfil,
+# tool_abuse); cap at 3 so the assertion 'priority >= 2' is meaningful.
 _MAX_ATTEMPTS: int = 3
 
 

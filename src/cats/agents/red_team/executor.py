@@ -37,6 +37,7 @@ from cats.agents.red_team.injection.dispatcher import (
 from cats.agents.red_team.injection.dispatcher import (
     propose_technique as propose_injection,
 )
+from cats.agents.red_team.tool_abuse import dispatcher as tool_abuse_dispatcher
 from cats.db.repositories.run_repo import record_execution, upsert_attack
 from cats.db.schema import project_versions, projects
 from cats.graph.events import publish
@@ -50,11 +51,13 @@ from cats.security.crypto import decrypt
 from cats.target.client import TargetClient
 from cats.target.contracts import AttachmentSpec, AttackEnvelope
 
-# Categories the executor knows how to dispatch to in this slice.
-# Tool-abuse is registered as a category but has no specialist family
-# yet — keep it raising NotImplementedError below so the Orchestrator's
-# plan validator can't silently emit unrunnable techniques.
-_SUPPORTED_CATEGORIES: frozenset[str] = frozenset({"injection", "indirect_injection", "exfil"})
+# Categories the executor knows how to dispatch to. R7 foundations
+# added ``tool_abuse``; the deterministic check compares observed
+# tool/area mentions against the per-task baseline in
+# ``reports/tool_abuse/baselines.md``.
+_SUPPORTED_CATEGORIES: frozenset[str] = frozenset(
+    {"injection", "indirect_injection", "exfil", "tool_abuse"}
+)
 
 log = get_logger(__name__)
 
@@ -256,6 +259,26 @@ async def _propose_attack(
             ),
             cost_role="redteam_indirect_injection",
             llm_result=indirect.llm,
+        )
+
+    if category == "tool_abuse":
+        tool_abuse = await tool_abuse_dispatcher.propose_technique(technique=technique, llm=llm)
+        return _NormalizedProposal(
+            title=tool_abuse.title,
+            description=tool_abuse.description,
+            user_message=tool_abuse.user_message,
+            # tool_abuse has no canary protocol — the deterministic check
+            # reads observed tools/areas from the response. Leave canary
+            # empty so downstream attack-row hashing stays stable.
+            canary="",
+            technique=tool_abuse.technique,
+            payload_extras={
+                "task_type": tool_abuse.task_type,
+                "target_areas": tool_abuse.target_areas,
+            },
+            envelope=AttackEnvelope(user_message=tool_abuse.user_message),
+            cost_role="redteam_toolabuse",
+            llm_result=tool_abuse.llm,
         )
 
     raise NotImplementedError(

@@ -1,10 +1,10 @@
 """The planner retries once on PlanStructuralError, feeding the
 validator's message + the flattened valid (category, technique) pairs
 back to the LLM. The first response asks for ``(injection, default)``
-— an unknown pair, since ``default`` only exists under ``tool_abuse``
-— and the second response returns a corrected plan. The planner
-should swallow the first failure, retry, and return the corrected
-plan."""
+— an unknown pair, since ``default`` is not a real technique under any
+category — and the second response returns a corrected plan. The
+planner should swallow the first failure, retry, and return the
+corrected plan."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ _BAD_PLAN = json.dumps(
         "attempts": [
             {
                 "category": "injection",
-                "technique": "default",  # hallucinated — 'default' is tool_abuse
+                "technique": "default",  # hallucinated — no category has 'default'
                 "per_attempt_budget_usd": 0.5,
                 "max_consecutive_partials": 2,
             }
