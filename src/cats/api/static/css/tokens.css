@@ -725,12 +725,100 @@ a.nav-link::after { content: ' →'; color: var(--ink-3); }
 .stage-banner {
   display: flex;
   align-items: center;
-  gap: 22px;
+  justify-content: space-between;
+  gap: 24px;
   padding: 18px 24px;
   background: var(--bg-2, var(--bg-3));
   border: 1px solid var(--line);
   border-radius: 12px;
+  flex-wrap: wrap;
 }
+.stage-main {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.stage-artifacts {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.artifact {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-decoration: none;
+  color: var(--ink);
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  min-width: 200px;
+}
+.artifact.ready:hover {
+  border-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 8%, var(--bg-3));
+}
+.artifact.pending {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.artifact-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  color: var(--ink-2);
+  background: var(--bg-2, var(--bg-3));
+  border: 1px solid var(--line);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.artifact-icon svg { width: 22px; height: 22px; display: block; }
+.artifact.ready .artifact-icon {
+  color: var(--amber);
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber),
+              0 0 16px color-mix(in srgb, var(--amber) 30%, transparent);
+}
+.artifact.state-green .artifact-icon {
+  color: var(--green);
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green),
+              0 0 16px color-mix(in srgb, var(--green) 30%, transparent);
+}
+.artifact.state-red .artifact-icon {
+  color: var(--red);
+  border-color: var(--red);
+  box-shadow: 0 0 0 1px var(--red),
+              0 0 16px color-mix(in srgb, var(--red) 30%, transparent);
+}
+.artifact-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.artifact-eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+}
+.artifact-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.artifact.pending .artifact-label { color: var(--ink-3); font-weight: 400; font-style: italic; }
 .stage-avatar {
   width: 84px;
   height: 84px;

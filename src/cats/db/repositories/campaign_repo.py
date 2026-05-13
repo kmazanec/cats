@@ -727,29 +727,43 @@ async def list_campaign_timeline(
         await session.execute(
             select(
                 runs.c.id,
+                runs.c.started_at,
                 runs.c.ended_at,
                 runs.c.attacks_fired,
                 runs.c.budget_consumed_usd,
                 runs.c.status,
-            )
-            .where(runs.c.campaign_id == campaign_id)
-            .where(runs.c.ended_at.is_not(None))
+            ).where(runs.c.campaign_id == campaign_id)
         )
     ).all()
     for r in run_rows:
-        events.append(
-            {
-                "kind": "run_completed",
-                "campaign_id": str(campaign_id),
-                "run_id": str(r.id),
-                "at": r.ended_at,
-                "payload": {
-                    "attacks_fired": r.attacks_fired,
-                    "spend_usd": r.budget_consumed_usd,
-                    "status": r.status,
-                },
-            }
-        )
+        # Emit run_started for every run so the client-side runs table can
+        # reconstruct rows on refresh — both for runs the server has
+        # rendered (idempotent dedupe via data-run-id) and for any in-flight
+        # run the server might not have surfaced yet.
+        if r.started_at is not None:
+            events.append(
+                {
+                    "kind": "run_started",
+                    "campaign_id": str(campaign_id),
+                    "run_id": str(r.id),
+                    "at": r.started_at,
+                    "payload": {},
+                }
+            )
+        if r.ended_at is not None:
+            events.append(
+                {
+                    "kind": "run_completed",
+                    "campaign_id": str(campaign_id),
+                    "run_id": str(r.id),
+                    "at": r.ended_at,
+                    "payload": {
+                        "attacks_fired": r.attacks_fired,
+                        "spend_usd": r.budget_consumed_usd,
+                        "status": r.status,
+                    },
+                }
+            )
 
     finding_rows = (
         await session.execute(

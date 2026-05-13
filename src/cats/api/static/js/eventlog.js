@@ -254,6 +254,7 @@
   function updateStageFromEvent(env) {
     const banner = document.getElementById("stage-banner");
     if (!banner) return;
+    updateArtifactsFromEvent(env, banner);
     const nextKey = STAGE_BY_KIND[env && env.kind];
     if (!nextKey) return;
     const meta = STAGE_META[nextKey];
@@ -274,6 +275,55 @@
     if (labelEl) labelEl.textContent = meta.label;
     if (pulseEl) {
       pulseEl.style.display = meta.pulse ? "" : "none";
+    }
+  }
+
+  function setArtifactReady(el, href, labelText) {
+    if (!el) return;
+    el.classList.remove("pending");
+    el.classList.add("ready");
+    el.setAttribute("href", href);
+    el.removeAttribute("aria-disabled");
+    el.removeAttribute("tabindex");
+    const labelEl = el.querySelector(".artifact-label");
+    if (labelEl && labelText) labelEl.textContent = labelText;
+  }
+  function setArtifactState(el, state) {
+    if (!el) return;
+    ["state-amber", "state-green", "state-red", "state-pending"].forEach((c) =>
+      el.classList.remove(c),
+    );
+    if (state) el.classList.add("state-" + state);
+  }
+
+  function updateArtifactsFromEvent(env, banner) {
+    if (!env || !env.kind) return;
+    const campaignId = banner.getAttribute("data-campaign-id");
+    const planEl = document.getElementById("artifact-plan");
+    const reportEl = document.getElementById("artifact-report");
+    // Plan transitions.
+    if (planEl && campaignId) {
+      const href = "/campaigns/" + campaignId + "/plan";
+      if (env.kind === "plan_proposed") {
+        setArtifactReady(planEl, href, "pending approval");
+        setArtifactState(planEl, "amber");
+      } else if (env.kind === "plan_approved") {
+        setArtifactReady(planEl, href, "approved");
+        setArtifactState(planEl, "green");
+      } else if (env.kind === "plan_failed") {
+        setArtifactReady(planEl, href, "failed");
+        setArtifactState(planEl, "red");
+      }
+    }
+    // Report becomes available once the campaign reaches a terminal stage.
+    if (reportEl && campaignId) {
+      if (env.kind === "run_completed" || env.kind === "campaign_halted") {
+        setArtifactReady(
+          reportEl,
+          "/campaigns/" + campaignId + "/report",
+          "view report →",
+        );
+      }
     }
   }
 
@@ -302,11 +352,11 @@
 
   function handleRunStarted(env) {
     const table = findRunsTable();
-    if (!table || !env || !env.run_id) return;
+    if (!table || !env || !env.run_id) return false;
     const campaignId = table.getAttribute("data-campaign-id");
-    if (table.querySelector(`tr[data-run-id="${env.run_id}"]`)) return;
+    if (table.querySelector(`tr[data-run-id="${env.run_id}"]`)) return false;
     const tbody = table.querySelector("tbody");
-    if (!tbody) return;
+    if (!tbody) return false;
     showRunsTable();
     const p = env.payload || {};
     const tech =
@@ -325,6 +375,7 @@
       `<td class="num muted">${escapeHtml(ts)}</td>`;
     tbody.insertBefore(tr, tbody.firstChild);
     updateRunsCountMeta();
+    return true;
   }
 
   function handleRunCompleted(env) {
@@ -454,6 +505,11 @@
           // Backfill is append-oldest-first; new rows from the live
           // source go to the top via insertBefore(firstChild), so the
           // final ordering is newest-at-top across both sources.
+          // Track run_ids the backfill *inserted* (vs. server-rendered).
+          // Only those need their attack/complete fields re-applied from
+          // history — server-rendered rows already carry the right values
+          // and re-applying would double-count.
+          const backfilledRunIds = new Set();
           events.forEach((env) => {
             rememberEnv(env);
             const row = renderRow(env);
@@ -466,6 +522,27 @@
             // Drive the stage avatar to the latest historical state
             // so the page paints with the right active agent.
             updateStageFromEvent(env);
+            // Reconstruct runs-table rows that the server didn't render
+            // (in-flight runs whose row is missing on refresh).
+            if (env && env.kind === "run_started") {
+              if (handleRunStarted(env)) {
+                backfilledRunIds.add(env.run_id);
+              }
+            } else if (
+              env &&
+              env.run_id &&
+              backfilledRunIds.has(env.run_id) &&
+              (env.kind === "attack_executed" || env.kind === "run_completed")
+            ) {
+              applyMutations(env);
+            }
+            const tr =
+              env && env.run_id
+                ? document.querySelector(
+                    `#runs-table tr[data-run-id="${env.run_id}"]`,
+                  )
+                : null;
+            if (tr) tr.classList.remove("fresh");
           });
         })
         .catch(() => {});

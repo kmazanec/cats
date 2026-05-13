@@ -8,157 +8,82 @@
     <div class="row" style="gap: 10px; margin-bottom: 6px;">
       <a class="nav-link" href="/campaigns">all campaigns</a>
     </div>
-    <div class="row between" style="align-items: flex-end;">
-      <div>
-        <span class="eyebrow">— Campaign · {{ (campaign.id|string)[:8] }}</span>
-        <h1 class="title">{{ campaign.name }}</h1>
-        <p class="subtitle">
-          Target <strong>{{ campaign.project_name }}</strong> · env
-          <code class="mono">{{ campaign.project_env }}</code> · trigger
-          <code class="mono">{{ campaign.trigger }}</code> · fired
-          {{ campaign.created_at.strftime('%Y-%m-%d %H:%M') }}
-        </p>
-      </div>
-      <div class="row" style="gap: 10px;">
-        {% if latest_plan_status == 'proposed' %}
-          <a class="pill amber" href="/campaigns/{{ campaign.id }}/plan">plan: pending approval →</a>
-        {% elif latest_plan_status == 'failed' %}
-          <a class="pill red" href="/campaigns/{{ campaign.id }}/plan">plan: failed →</a>
-        {% elif latest_plan_status == 'rejected' %}
-          <a class="pill red" href="/campaigns/{{ campaign.id }}/plan">plan: rejected</a>
-        {% elif latest_plan_status in ('approved', 'edited', 'dispatched') %}
-          <a class="pill green" href="/campaigns/{{ campaign.id }}/plan">plan: {{ latest_plan_status }}</a>
-        {% else %}
-          {# No plan row yet — the Orchestrator hasn't finished
-             writing one. The live SSE stream will flip this pill
-             via a page reload when `plan_proposed` lands. #}
-          <span class="pill amber">
-            <span class="dot amber pulse"></span>
-            orchestrator planning…
-          </span>
-        {% endif %}
-        {% if latest_run and latest_run.status == 'running' %}
-          <span class="pill amber">running</span>
-        {% elif latest_run and latest_run.status == 'completed' %}
-          <span class="pill green">completed</span>
-        {% elif latest_run and latest_run.status == 'failed' %}
-          <span class="pill red">failed</span>
-        {% elif latest_run %}
-          <span class="pill">{{ latest_run.status }}</span>
-        {% endif %}
-      </div>
+    <div>
+      <span class="eyebrow">— Campaign · {{ (campaign.id|string)[:8] }}</span>
+      <h1 class="title">{{ campaign.name }}</h1>
+      <p class="subtitle">
+        Target <strong>{{ campaign.project_name }}</strong> · env
+        <code class="mono">{{ campaign.project_env }}</code> · trigger
+        <code class="mono">{{ campaign.trigger }}</code> · fired
+        {{ campaign.created_at.strftime('%Y-%m-%d %H:%M') }}
+      </p>
     </div>
   </section>
 
-  {# --- Stage banner: which agent is active right now ---------------- #}
+  {# --- Stage banner: which agent is active + campaign artifacts ----- #}
+  {% set _report_ready = stage.key in ('complete', 'failed') or (latest_run and latest_run.status in ('completed', 'failed')) %}
+  {% set _plan_ready = latest_plan_status is not none %}
+  {% if latest_plan_status == 'proposed' %}
+    {% set _plan_state = 'amber' %}{% set _plan_label = 'pending approval' %}
+  {% elif latest_plan_status in ('failed', 'rejected') %}
+    {% set _plan_state = 'red' %}{% set _plan_label = latest_plan_status %}
+  {% elif latest_plan_status in ('approved', 'edited', 'dispatched') %}
+    {% set _plan_state = 'green' %}{% set _plan_label = latest_plan_status %}
+  {% else %}
+    {% set _plan_state = 'pending' %}{% set _plan_label = 'orchestrator drafting…' %}
+  {% endif %}
   <section class="stage-banner" id="stage-banner"
            data-campaign-id="{{ campaign.id }}"
            data-stage-key="{{ stage.key }}">
-    <img class="stage-avatar" src="{{ stage.img }}" alt="" />
-    <div class="stage-text">
-      <div class="stage-eyebrow">stage</div>
-      <div class="stage-label">
-        <span class="dot amber pulse" id="stage-pulse"></span>
-        <span id="stage-label-text">{{ stage.label }}</span>
+    <div class="stage-main">
+      <img class="stage-avatar" src="{{ stage.img }}" alt="" />
+      <div class="stage-text">
+        <div class="stage-eyebrow">stage</div>
+        <div class="stage-label">
+          <span class="dot amber pulse" id="stage-pulse"></span>
+          <span id="stage-label-text">{{ stage.label }}</span>
+        </div>
       </div>
+    </div>
+    <div class="stage-artifacts">
+      <a class="artifact {{ 'ready' if _plan_ready else 'pending' }} state-{{ _plan_state }}"
+         id="artifact-plan"
+         href="{% if _plan_ready %}/campaigns/{{ campaign.id }}/plan{% else %}#{% endif %}"
+         {% if not _plan_ready %}aria-disabled="true" tabindex="-1"{% endif %}>
+        <span class="artifact-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+            <path d="M14 3v5h5"/>
+            <path d="M8 13h8M8 17h5"/>
+          </svg>
+        </span>
+        <span class="artifact-text">
+          <span class="artifact-eyebrow">attack plan</span>
+          <span class="artifact-label" id="artifact-plan-label">{{ _plan_label }}</span>
+        </span>
+      </a>
+      <a class="artifact {{ 'ready' if _report_ready else 'pending' }}"
+         id="artifact-report"
+         href="{% if _report_ready %}/campaigns/{{ campaign.id }}/report{% else %}#{% endif %}"
+         {% if not _report_ready %}aria-disabled="true" tabindex="-1"{% endif %}>
+        <span class="artifact-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="3" width="16" height="18" rx="1.5"/>
+            <path d="M8 8h8M8 12h8M8 16h5"/>
+            <circle cx="17.5" cy="16.5" r="2.2"/>
+          </svg>
+        </span>
+        <span class="artifact-text">
+          <span class="artifact-eyebrow">campaign report</span>
+          <span class="artifact-label" id="artifact-report-label">
+            {% if _report_ready %}view report →{% else %}available when campaign ends{% endif %}
+          </span>
+        </span>
+      </a>
     </div>
   </section>
-
-  <section class="grid cols-2" style="gap: 18px;">
-    <div class="panel">
-      <header>
-        <div class="title">Run status</div>
-        <div class="meta" id="run-status-meta">{{ runs|length }} run{{ runs|pluralize }}</div>
-      </header>
-      <div class="body flush">
-        <table class="tbl" id="runs-table"
-               style="{% if not runs %}display:none;{% endif %}"
-               data-campaign-id="{{ campaign.id }}">
-          <thead>
-            <tr>
-              <th class="mono">Run</th>
-              <th>Status</th>
-              <th>Technique</th>
-              <th class="num">Attacks</th>
-              <th class="num">Spend (USD)</th>
-              <th class="num">Slowest</th>
-              <th class="num">Started</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in runs %}
-              <tr data-run-id="{{ r.id }}">
-                <td class="mono">
-                  <a class="nav-link" href="/campaigns/{{ campaign.id }}/runs/{{ r.id }}">{{ (r.id|string)[:8] }}</a>
-                </td>
-                <td class="run-status-cell">
-                  {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% elif r.status == 'failed' %}<span class="dot red"></span>{% else %}<span class="dot"></span>{% endif %}
-                  <span class="run-status-text">{{ r.status }}</span>
-                </td>
-                <td class="run-technique muted">—</td>
-                <td class="num run-attacks">{{ r.attacks_fired }}</td>
-                <td class="num mono run-spend">${{ '%.4f'|format(r.budget_consumed_usd) }}</td>
-                <td class="num mono run-slowest {% if r.max_target_latency_ms and r.max_target_latency_ms >= 60000 %}amber{% endif %}">
-                  {% if r.max_target_latency_ms %}{{ (r.max_target_latency_ms / 1000)|round(1) }}s{% else %}—{% endif %}
-                </td>
-                <td class="num muted">{{ r.started_at.strftime('%H:%M:%S') if r.started_at else '—' }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <div class="empty" id="runs-empty"
-             style="{% if runs %}display:none;{% endif %}">no runs yet</div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <header>
-        <div class="title">Cost by agent</div>
-        <div class="meta">per-role rollup of attack_executions</div>
-      </header>
-      <div class="body flush">
-        {% if cost_by_agent %}
-          <table class="tbl">
-            <thead>
-              <tr>
-                <th>Role</th>
-                <th class="num">Tokens in</th>
-                <th class="num">Tokens out</th>
-                <th class="num">USD</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for c in cost_by_agent %}
-                <tr>
-                  <td><span class="mono">{{ c.role }}</span></td>
-                  <td class="num">{{ c.tokens_in }}</td>
-                  <td class="num">{{ c.tokens_out }}</td>
-                  <td class="num mono">${{ '%.4f'|format(c.usd) }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <div class="empty">no executions yet</div>
-        {% endif %}
-      </div>
-    </div>
-  </section>
-
-  <div class="panel">
-    <header>
-      <div class="title">Campaign report</div>
-      <div class="meta">end-of-campaign rollup written by the Documentation Agent</div>
-    </header>
-    <div class="body">
-      <p class="subtitle">
-        A single rollup report summarizing what was tested, the verdict mix, open findings,
-        any inconclusive (verdict=error) runs the operator needs to investigate, and cost.
-        Auto-generated when every run reaches a terminal state.
-      </p>
-      <a class="btn" href="/campaigns/{{ campaign.id }}/report">View campaign report →</a>
-    </div>
-  </div>
 
   <div class="panel">
     <header>
@@ -195,6 +120,52 @@
           <span class="hint">if the campaign is still running, this will populate live</span>
         </div>
       {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Run status</div>
+      <div class="meta" id="run-status-meta">{{ runs|length }} run{{ runs|pluralize }}</div>
+    </header>
+    <div class="body flush">
+      <table class="tbl" id="runs-table"
+             style="{% if not runs %}display:none;{% endif %}"
+             data-campaign-id="{{ campaign.id }}">
+        <thead>
+          <tr>
+            <th class="mono">Run</th>
+            <th>Status</th>
+            <th>Technique</th>
+            <th class="num">Attacks</th>
+            <th class="num">Spend (USD)</th>
+            <th class="num">Slowest</th>
+            <th class="num">Started</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in runs %}
+            <tr data-run-id="{{ r.id }}">
+              <td class="mono">
+                <a class="nav-link" href="/campaigns/{{ campaign.id }}/runs/{{ r.id }}">{{ (r.id|string)[:8] }}</a>
+              </td>
+              <td class="run-status-cell">
+                {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% elif r.status == 'failed' %}<span class="dot red"></span>{% else %}<span class="dot"></span>{% endif %}
+                <span class="run-status-text">{{ r.status }}</span>
+              </td>
+              <td class="run-technique muted">—</td>
+              <td class="num run-attacks">{{ r.attacks_fired }}</td>
+              <td class="num mono run-spend">${{ '%.4f'|format(r.budget_consumed_usd) }}</td>
+              <td class="num mono run-slowest {% if r.max_target_latency_ms and r.max_target_latency_ms >= 60000 %}amber{% endif %}">
+                {% if r.max_target_latency_ms %}{{ (r.max_target_latency_ms / 1000)|round(1) }}s{% else %}—{% endif %}
+              </td>
+              <td class="num muted">{{ r.started_at.strftime('%H:%M:%S') if r.started_at else '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="empty" id="runs-empty"
+           style="{% if runs %}display:none;{% endif %}">no runs yet</div>
     </div>
   </div>
 
