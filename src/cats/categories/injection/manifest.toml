@@ -1,8 +1,8 @@
 name = "injection"
-title = "Prompt Injection (Direct + Indirect)"
+title = "Prompt Injection (Direct, chat-borne)"
 mvp = true
 severity_default = "high"
 atlas_technique_id = "AML.T0051"
 owasp_llm_id = "LLM01"
 judge_role = "judge"
-notes = "Includes docx-borne indirect injection per W3_THREAT_RESEARCH §1."
+notes = "Direct chat-borne injection per W3_THREAT_RESEARCH §1. Docx-borne indirect injection lives in the `indirect_injection` category (R5)."
