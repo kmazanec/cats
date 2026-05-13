@@ -68,9 +68,25 @@ class AttackEnvelope(BaseModel):
 
 
 class TargetCallResult(BaseModel):
-    """Return value of `TargetClient.attack`. `text` is what the Judge
-    inspects; `raw_body` is preserved for the AttackExecution row and
-    forensic replay.
+    """Return value of `TargetClient.attack`. ``text`` is the raw SSE
+    body verbatim — the Judge (and the category deterministic checks)
+    reason over the full event stream rather than a schema-parsed
+    extract. The previous schema-rigid extractor silently dropped any
+    content that didn't match a hard-coded key allowlist, which is
+    actively wrong for adversarial testing: an attack that mangles the
+    Co-Pilot's ``assistantMessage`` envelope is *precisely* the kind of
+    finding we cannot afford to filter out before the Judge sees it.
+
+    ``stream_shape`` is a sidecar descriptor produced by a single pass
+    over the body: per-event-type counts, whether a final
+    ``assistantMessage`` ever arrived, whether any unknown event types
+    showed up, whether the body is the bare-error trap. The Judge can
+    consult it without re-parsing.
+
+    ``raw_body`` is kept for backwards compatibility with callers that
+    distinguish the verbatim HTTP body from the assembled ``text``;
+    today they're identical on the SSE paths but the seam lets future
+    non-SSE channels diverge.
 
     ``assigned_conversation_id`` is the agent-assigned conversationId
     parsed from the SSE ``meta`` event on a ``default_briefing`` kickoff.
@@ -84,5 +100,6 @@ class TargetCallResult(BaseModel):
     status_code: int
     latency_ms: int
     raw_body: dict[str, Any] | str | None = None
+    stream_shape: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     assigned_conversation_id: str | None = None

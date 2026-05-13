@@ -163,9 +163,11 @@ class TargetClient:
                     resp = await client.post(url, content=json.dumps(body), headers=headers)
                 # agent.php sometimes returns error SSEs on 4xx (e.g.
                 # `event: error\ndata: {"type":"error","code":"invalid_envelope"}`).
-                # _assemble_sse_text on that body returns the raw SSE
-                # text — which the Judge can't tell apart from a real
-                # assistant reply. Mark it as an error explicitly.
+                # The Judge sees the raw SSE either way (we hand it the
+                # body verbatim), but conflating HTTP-error responses
+                # with successful replies muddies the stream_shape
+                # signal — mark 4xx explicitly so downstream verdict
+                # logic can short-circuit on `target_rejected`.
                 if resp.status_code >= 400:
                     elapsed_ms = int((time.perf_counter() - started) * 1000)
                     return TargetCallResult(
@@ -192,6 +194,7 @@ class TargetClient:
                         error=f"agent.php upstream rejected: {upstream_err}",
                     )
                 text = _assemble_sse_text(resp.text)
+                shape = _stream_shape(resp.text)
                 assigned_conv_id = _extract_assigned_conversation_id(resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -204,6 +207,7 @@ class TargetClient:
             status_code=resp.status_code,
             latency_ms=elapsed_ms,
             raw_body=resp.text,
+            stream_shape=shape,
             assigned_conversation_id=assigned_conv_id,
         )
 
@@ -471,11 +475,11 @@ class TargetClient:
                     headers=extract_headers,
                 )
                 # extract.php returns JSON errors (e.g. invalid_trigger_source,
-                # missing_pid) on the same channel as SSE pipeline events, so
-                # _assemble_sse_text on a JSON body returns the raw JSON —
-                # confusing the Judge with what looks like a real response.
+                # missing_pid) on the same channel as SSE pipeline events.
                 # Mirror the upload-error path: empty text, raw body
-                # preserved, error string set.
+                # preserved, error string set so the Judge sees the
+                # explicit failure marker rather than having to infer
+                # "this looks like an error" from the body shape.
                 if extract_resp.status_code >= 400:
                     elapsed_ms = int((time.perf_counter() - started) * 1000)
                     return TargetCallResult(
@@ -502,6 +506,7 @@ class TargetClient:
                         error=f"extract upstream rejected: {upstream_err}",
                     )
                 text = _assemble_sse_text(extract_resp.text)
+                shape = _stream_shape(extract_resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             log.warning("target.upload_extract_error", error=repr(e))
@@ -513,6 +518,7 @@ class TargetClient:
             status_code=extract_resp.status_code,
             latency_ms=elapsed_ms,
             raw_body=extract_resp.text,
+            stream_shape=shape,
         )
 
     # ------------------------------------------------------------------
@@ -536,6 +542,7 @@ class TargetClient:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(url, content=json.dumps(body), headers=headers)
             text = _assemble_sse_text(resp.text)
+            shape = _stream_shape(resp.text)
             assigned_conv_id = _extract_assigned_conversation_id(resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -546,6 +553,7 @@ class TargetClient:
             status_code=resp.status_code,
             latency_ms=elapsed_ms,
             raw_body=resp.text,
+            stream_shape=shape,
             assigned_conversation_id=assigned_conv_id,
         )
 
@@ -588,41 +596,132 @@ def _extract_assigned_conversation_id(raw: str) -> str | None:
     return None
 
 
-def _assemble_sse_text(raw: str) -> str:
-    """Walk an SSE stream and join every `data:` line's text content.
-    Tolerant of arbitrary `event:` types; concatenates anything that
-    looks like assistant content.
+# Co-Pilot SSE event types we know about today (from
+# ``openemr/agent/src/server/briefingStream.ts``). Membership here is
+# not a filter — it only feeds ``stream_shape.has_unknown_event_types``
+# so the Judge can notice when the agent ships an event we don't
+# recognize yet (a finding that mangles the envelope produces exactly
+# that signal).
+_KNOWN_BRIEFING_EVENTS: frozenset[str] = frozenset(
+    {
+        "meta",
+        "progress",
+        "supervisorNarration",
+        "assistantMessage",
+        "done",
+        "error",
+        "pipelineEvent",
+    }
+)
 
-    The Co-Pilot's `briefingStream.encodeStreamEvent` emits events like
-    `data: {"type":"section","content":"..."}` per chunk plus a final
-    `data: {"type":"complete"}`. For R2 we don't need to honor section
-    semantics — concatenating all string fields is enough to give the
-    Judge something to evaluate.
-    """
-    out: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:") :].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            obj = json.loads(payload)
-        except json.JSONDecodeError:
-            out.append(payload)
-            continue
-        if isinstance(obj, dict):
-            for key in ("content", "text", "delta", "message"):
-                v = obj.get(key)
-                if isinstance(v, str) and v:
-                    out.append(v)
-        elif isinstance(obj, str):
-            out.append(obj)
-    if out:
-        return "\n".join(out)
-    # If there are no SSE-shaped lines, treat the body as plain text.
+
+def _assemble_sse_text(raw: str) -> str:
+    """Return the SSE body verbatim.
+
+    Earlier revisions of this function tried to pull "assistant content"
+    out of each ``data:`` payload by scanning for a hard-coded set of
+    keys (``content``/``text``/``delta``/``message``). That schema
+    assumption is hostile to the use case: a successful attack is
+    *exactly* the case where the Co-Pilot emits something outside the
+    expected envelope (leaked tool output, raw chain-of-thought,
+    unredacted prescription text, a mangled ``assistantMessage``). The
+    old extractor silently discarded that content before the Judge
+    could see it.
+
+    We now hand the Judge the full SSE body. The Judge already runs its
+    own ``_response_shape`` introspection (`cats.agents.judge.verifier`)
+    and the LLM rubric prompts include the raw body in the "Target
+    response" block — both benefit from receiving more, not less. The
+    only special case is the empty body (no SSE framing at all), which
+    we still return verbatim so plain-text targets keep working."""
     return raw
+
+
+def _stream_shape(raw: str) -> dict[str, Any]:
+    """One-pass descriptor of the SSE body's shape. Sidecar evidence
+    for the Judge; never a precondition before the body is shown to it.
+
+    Fields:
+
+    - ``event_counts`` — per-``event:`` token tally. ``""`` is the
+      synthetic key for unframed ``data:`` lines (the SSE spec lets
+      ``event:`` be omitted, and the Co-Pilot still does on some
+      paths).
+    - ``data_payloads`` — how many ``data:`` frames were observed.
+    - ``has_assistant_message`` — at least one ``assistantMessage``
+      event reached us; the canonical "the model emitted a final
+      reply" marker on the briefing path.
+    - ``has_unknown_event_types`` — any event token outside the set
+      we know about. A true here on a successful attack is itself a
+      finding-worthy signal.
+    - ``has_bare_error_json`` — the body is the proxy-stamped-headers
+      trap (``_bare_error_in_sse`` would match). Kept here so the
+      Judge sees the same signal at the shape layer.
+    - ``looks_like_sse`` — at least one ``event:`` or ``data:`` line
+      was present.
+    """
+    text = raw or ""
+    event_counts: dict[str, int] = {}
+    data_frames = 0
+    has_assistant_message = False
+    has_unknown_event_types = False
+    looks_like_sse = False
+
+    current_event = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            # Blank line ends one SSE record; reset the event token.
+            current_event = ""
+            continue
+        if stripped.startswith("event:"):
+            looks_like_sse = True
+            token = stripped[len("event:") :].strip()
+            current_event = token
+            event_counts[token] = event_counts.get(token, 0) + 1
+            if token not in _KNOWN_BRIEFING_EVENTS:
+                has_unknown_event_types = True
+            if token == "assistantMessage":
+                has_assistant_message = True
+            continue
+        if stripped.startswith("data:"):
+            looks_like_sse = True
+            data_frames += 1
+            # An unframed `data:` line (no preceding `event:`) still
+            # counts; bucket under the empty key so the Judge can tell
+            # framed from unframed traffic.
+            if not current_event:
+                event_counts[""] = event_counts.get("", 0) + 1
+            # If the payload self-declares `"type":"assistantMessage"`,
+            # honor it even without the `event:` framing — the wire
+            # contract carries `type` redundantly for exactly this
+            # reason.
+            payload = stripped[len("data:") :].strip()
+            if payload and payload != "[DONE]":
+                try:
+                    obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(obj, dict):
+                        t = obj.get("type")
+                        if isinstance(t, str):
+                            if t == "assistantMessage":
+                                has_assistant_message = True
+                            if t not in _KNOWN_BRIEFING_EVENTS and not current_event:
+                                has_unknown_event_types = True
+
+    has_bare_error_json = _bare_error_in_sse(text) is not None
+
+    return {
+        "event_counts": event_counts,
+        "data_payloads": data_frames,
+        "has_assistant_message": has_assistant_message,
+        "has_unknown_event_types": has_unknown_event_types,
+        "has_bare_error_json": has_bare_error_json,
+        "looks_like_sse": looks_like_sse,
+        "char_count": len(text),
+    }
 
 
 def _bare_error_in_sse(raw: str) -> str | None:

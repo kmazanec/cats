@@ -54,7 +54,8 @@ async def run(state: CampaignState) -> CampaignState:
     state.last_target_response = {
         "status_code": result.status_code,
         "latency_ms": result.latency_ms,
-        "text": result.text[:5000],
+        "text": result.text[:65536],
+        "stream_shape": result.stream_shape,
         "error": result.error,
     }
     state.attacks_fired += 1

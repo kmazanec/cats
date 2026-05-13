@@ -378,6 +378,13 @@ async def execute_attempt(
         else:
             state.pending_attack_payload = mutator_context.prior_attack_payload
             state.pending_canary = mutator_context.prior_canary
+            # Hand the Mutator the prior target body as pseudo-rationale.
+            # Since the schema-rigid extractor was removed in favor of
+            # raw-SSE passthrough, this slice now contains event framing
+            # alongside the model's narration / assistantMessage segments
+            # — strictly more signal than the old prose-only extract, but
+            # the Mutator must read past the `event:`/`data:` plumbing.
+            # The 1000-char cap keeps the variant prompt bounded.
             state.last_verdict_rationale = mutator_context.prior_target_response[:1000]
             variant = await generate_variant(state=state, llm=get_llm())
             user_message = variant.user_message
@@ -480,10 +487,19 @@ async def execute_attempt(
             target_status_code = result.status_code
             target_latency_ms = result.latency_ms
             assigned_conv_id = result.assigned_conversation_id
+            # ``result.text`` is the raw SSE body verbatim (see
+            # ``_assemble_sse_text`` for the rationale — we deliberately
+            # do not pre-extract before persistence so the Judge sees
+            # everything the target emitted, including envelope-mangling
+            # findings that earlier schema parsing would have hidden).
+            # 64 KB cap matches typical briefing-stream sizes (tens of
+            # KB once segment text + claim refs are included) while
+            # keeping the JSONB row from ballooning.
             target_response_dict = {
                 "status_code": result.status_code,
                 "latency_ms": result.latency_ms,
-                "text": result.text[:5000],
+                "text": result.text[:65536],
+                "stream_shape": result.stream_shape,
                 "error": result.error,
                 # The agent-assigned conversationId from a default_briefing
                 # kickoff. Stored on the execution row so the partial-loop
