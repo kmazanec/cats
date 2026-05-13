@@ -38,13 +38,14 @@ from uuid import UUID
 
 from cats.agents.orchestrator.tools import (
     TOOL_DESCRIPTORS,
+    AttackCategoriesCatalog,
     budget_remaining,
     list_attack_categories,
     list_coverage,
     list_open_findings,
     list_recent_regressions,
 )
-from cats.llm.client import LLMClient, get_llm
+from cats.llm.client import LLMClient, LLMResult, get_llm
 from cats.llm.models import AgentRole
 from cats.logging import get_logger
 from cats.messaging.envelopes import PlanAttempt, PlannedCampaign
@@ -159,35 +160,89 @@ async def propose_plan(
         cold_start=cold_start,
         catalog_categories=[c.category for c in catalog.rows],
     )
-    try:
-        result = await llm.chat(
-            role=ORCHESTRATOR_MODEL_ROLE,
-            messages=prompt,
-            response_format={"type": "json_object"},
-            max_tokens=1200,
-            temperature=0.2,
-        )
-    except Exception as exc:
-        raise PlanStructuralError(f"orchestrator LLM call failed: {exc!r}") from exc
 
-    try:
-        raw = _extract_json_object(result.text)
-    except ValueError as exc:
-        raise PlanStructuralError(f"orchestrator LLM returned non-JSON: {exc}") from exc
+    # The planner gets ONE retry on a structural error. Strong models still
+    # occasionally hallucinate a technique key (e.g. ('injection','default')
+    # — 'default' belongs to tool_abuse) and a self-correction round
+    # eliminates almost all of them. We feed back the validator's message
+    # and the flattened valid pairs so the model isn't guessing twice.
+    messages = list(prompt)
+    last_error: str | None = None
+    total_cost_usd = 0.0
+    last_result: LLMResult | None = None
+    for attempt_idx in range(2):
+        try:
+            result = await llm.chat(
+                role=ORCHESTRATOR_MODEL_ROLE,
+                messages=messages,
+                response_format={"type": "json_object"},
+                max_tokens=1200,
+                temperature=0.2,
+            )
+        except Exception as exc:
+            raise PlanStructuralError(f"orchestrator LLM call failed: {exc!r}") from exc
 
-    plan = _validate_plan(
-        raw=raw,
-        budget_usd_cap=budget_usd,
-        catalog=catalog,
-    )
+        last_result = result
+        total_cost_usd += result.usd_estimate
 
+        try:
+            raw = _extract_json_object(result.text)
+            plan = _validate_plan(
+                raw=raw,
+                budget_usd_cap=budget_usd,
+                catalog=catalog,
+            )
+            break
+        except (ValueError, PlanStructuralError) as exc:
+            last_error = str(exc)
+            if attempt_idx == 1:
+                # Out of retries — bubble as a structural error with the
+                # final attempt's message so the operator sees what went
+                # wrong.
+                raise PlanStructuralError(last_error) from exc
+            log.warning(
+                "orchestrator.plan_retry",
+                error=last_error,
+                attempt_idx=attempt_idx,
+            )
+            messages = [
+                *messages,
+                {"role": "assistant", "content": result.text},
+                {"role": "user", "content": _retry_user_msg(last_error, catalog)},
+            ]
+    else:  # pragma: no cover - the loop always breaks or raises
+        raise PlanStructuralError(last_error or "orchestrator planner exhausted retries")
+
+    assert last_result is not None  # for type checker; loop sets it on each pass
     return PlanProposal(
         plan=plan,
         tool_transcript=transcript.entries,
-        cost_usd=result.usd_estimate,
-        model=result.model,
-        trace_id=result.trace_id,
+        cost_usd=total_cost_usd,
+        model=last_result.model,
+        trace_id=last_result.trace_id,
         cold_start=cold_start,
+    )
+
+
+def _retry_user_msg(error: str, catalog: AttackCategoriesCatalog) -> str:
+    """Build the retry user message that pins the LLM to the actual
+    valid pairs. We list every legal ``(category, technique)`` pair
+    explicitly so the model can't hallucinate a key from another
+    category."""
+    pairs: list[str] = []
+    for cat in catalog.rows:
+        for tech in cat.techniques:
+            pairs.append(f"  - {cat.category} / {tech}")
+    return (
+        "Your previous plan failed structural validation:\n\n"
+        f"    {error}\n\n"
+        "Return a corrected plan. Reminder: every `(category, technique)` "
+        "pair MUST appear in this exact list — copy the strings verbatim, "
+        "do NOT invent new ones or move a technique to a different "
+        "category:\n\n"
+        + "\n".join(pairs)
+        + "\n\nReturn the corrected strict-JSON plan now. No prose, "
+        "no markdown fence, no explanatory preface."
     )
 
 
