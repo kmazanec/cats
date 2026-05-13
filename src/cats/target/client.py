@@ -175,6 +175,22 @@ class TargetClient:
                         raw_body=resp.text,
                         error=(f"agent.php failed: HTTP {resp.status_code} — {resp.text[:200]}"),
                     )
+                # OpenEMR's proxy stamps SSE headers before checking the
+                # upstream agent's auth. If the agent rejects with 401
+                # the body is a bare ``{"error":"unauthorized"}`` JSON
+                # but the HTTP status is still 200 with text/event-stream
+                # content-type. Treat it like a 4xx so the Judge gets the
+                # `target_rejected` short-circuit.
+                upstream_err = _bare_error_in_sse(resp.text)
+                if upstream_err is not None:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=resp.text,
+                        error=f"agent.php upstream rejected: {upstream_err}",
+                    )
                 text = _assemble_sse_text(resp.text)
                 assigned_conv_id = _extract_assigned_conversation_id(resp.text)
         except httpx.HTTPError as e:
@@ -472,6 +488,19 @@ class TargetClient:
                             f" — {extract_resp.text[:200]}"
                         ),
                     )
+                # Same trap as agent.php: proxy flushes SSE headers
+                # before the agent's JWT verification can fail. See
+                # `_bare_error_in_sse` for the full diagnosis.
+                upstream_err = _bare_error_in_sse(extract_resp.text)
+                if upstream_err is not None:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=extract_resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=extract_resp.text,
+                        error=f"extract upstream rejected: {upstream_err}",
+                    )
                 text = _assemble_sse_text(extract_resp.text)
         except httpx.HTTPError as e:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -594,3 +623,37 @@ def _assemble_sse_text(raw: str) -> str:
         return "\n".join(out)
     # If there are no SSE-shaped lines, treat the body as plain text.
     return raw
+
+
+def _bare_error_in_sse(raw: str) -> str | None:
+    """Detect the "upstream proxy stamped SSE headers, then wrote a
+    plain JSON error" failure mode.
+
+    The OpenEMR ``AgentProxyController`` flushes ``text/event-stream``
+    headers *before* it learns whether the agent will accept the JWT.
+    When the agent rejects with 401 ``{"error": "unauthorized"}``, the
+    proxy pipes that body verbatim into the already-streaming response
+    — producing an HTTP 200 + ``text/event-stream`` response whose body
+    is a bare JSON object with an ``error`` key and no ``data:`` /
+    ``event:`` framing. The Judge can't tell this apart from a real
+    pipeline reply, so we surface it explicitly here.
+
+    Returns the upstream error code (the value of the ``error`` key)
+    when the body matches, otherwise ``None``. Callers should treat a
+    non-None return like a 4xx response."""
+    body = (raw or "").strip()
+    if not body or not body.startswith("{"):
+        return None
+    # Any SSE framing at all → real stream; not our case.
+    if "data:" in body or body.startswith("event:"):
+        return None
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    code = obj.get("error")
+    if isinstance(code, str) and code:
+        return code
+    return None
