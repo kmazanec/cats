@@ -33,6 +33,7 @@ from cats.agents.orchestrator.planner import PlanStructuralError, propose_plan
 from cats.agents.red_team.injection.dispatcher import ROTATION as INJECTION_ROTATION
 from cats.config import get_settings
 from cats.db.repositories.audit_repo import write_audit
+from cats.graph.events import publish
 from cats.messaging import (
     CampaignPlanApprovedPayload,
     CampaignPlanProposedPayload,
@@ -69,6 +70,19 @@ class OrchestratorWorker(Worker):
         settings = get_settings()
         campaign_id = await self._ensure_campaign_for_request(session, payload)
 
+        # Live UI: tell the campaign page the Orchestrator picked up
+        # the request so the placeholder can flip from "no plan yet"
+        # to "planning…" without a manual refresh.
+        await publish(
+            kind="campaign_requested",
+            campaign_id=campaign_id,
+            run_id=None,
+            payload={
+                "planner": ("llm" if settings.orchestrator_use_llm_planner else "stub"),
+                "budget_usd": payload.budget_usd,
+            },
+        )
+
         plan: PlannedCampaign
         tool_transcript: list[dict[str, object]] = []
         if settings.orchestrator_use_llm_planner:
@@ -98,6 +112,12 @@ class OrchestratorWorker(Worker):
                     error=repr(exc),
                 )
                 await self._mark_plan_failed(session, campaign_id=campaign_id, error=repr(exc))
+                await publish(
+                    kind="plan_failed",
+                    campaign_id=campaign_id,
+                    run_id=None,
+                    payload={"error": repr(exc)[:300]},
+                )
                 return
         else:
             plan = self._stub_plan(payload.budget_usd)
@@ -147,6 +167,17 @@ class OrchestratorWorker(Worker):
                 campaign_id=campaign_id,
                 idempotency_key=f"orchestrator:plan_proposed:{plan_id}",
             ),
+        )
+        # Live UI: plan is ready for the operator to review.
+        await publish(
+            kind="plan_proposed",
+            campaign_id=campaign_id,
+            run_id=None,
+            payload={
+                "plan_id": str(plan_id),
+                "attempt_count": len(plan.attempts),
+                "auto_approve": settings.orchestrator_auto_approve,
+            },
         )
 
         if settings.orchestrator_auto_approve:
@@ -319,6 +350,12 @@ class OrchestratorWorker(Worker):
                 campaign_id=campaign_id,
                 idempotency_key=f"orchestrator:plan_approved:{plan_id}",
             ),
+        )
+        await publish(
+            kind="plan_approved",
+            campaign_id=campaign_id,
+            run_id=None,
+            payload={"plan_id": str(plan_id), "auto_approved": True},
         )
 
 

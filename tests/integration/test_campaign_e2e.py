@@ -133,8 +133,8 @@ def patch_target_transport():
                 if not user_msg:
                     # Back-compat for any older R3 fixture that still
                     # ships the request.messages shape.
-                    user_msg = body_json.get("request", {}).get("messages", [{}])[0].get(
-                        "content", ""
+                    user_msg = (
+                        body_json.get("request", {}).get("messages", [{}])[0].get("content", "")
                     )
             except Exception:
                 user_msg = ""

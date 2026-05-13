@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cats.agents.judge.verifier import judge_deterministic, judge_llm
 from cats.db.repositories.rubric_repo import ensure_rubric_version
 from cats.db.repositories.run_repo import record_verdict, set_execution_verdict
+from cats.graph.events import publish
 from cats.llm.client import get_llm
 from cats.messaging import (
     AttackEventPayload,
@@ -134,6 +135,18 @@ class JudgeWorker(Worker):
             ),
         )
         await self._bus.emit(session, envelope)
+        # Live UI: verdict landed on a run.
+        await publish(
+            kind="judge_verdict_rendered",
+            campaign_id=payload.campaign_id,
+            run_id=payload.run_id,
+            payload={
+                "verdict": verdict,
+                "is_deterministic": is_deterministic,
+                "seed_idx": payload.seed_idx,
+                "iteration": payload.iteration,
+            },
+        )
 
 
 def main() -> None:

@@ -28,6 +28,14 @@
           <a class="pill red" href="/campaigns/{{ campaign.id }}/plan">plan: rejected</a>
         {% elif latest_plan_status in ('approved', 'edited', 'dispatched') %}
           <a class="pill green" href="/campaigns/{{ campaign.id }}/plan">plan: {{ latest_plan_status }}</a>
+        {% else %}
+          {# No plan row yet — the Orchestrator hasn't finished
+             writing one. The live SSE stream will flip this pill
+             via a page reload when `plan_proposed` lands. #}
+          <span class="pill amber">
+            <span class="dot amber pulse"></span>
+            orchestrator planning…
+          </span>
         {% endif %}
         {% if latest_run and latest_run.status == 'running' %}
           <span class="pill amber">running</span>

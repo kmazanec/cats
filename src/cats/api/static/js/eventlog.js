@@ -146,6 +146,31 @@
         .forEach((el) => el.remove());
     }
 
+    // Plan-lifecycle events change so much server-rendered state
+    // (status pill, "Pending Approval" CTA, run list, cost rollup)
+    // that the simplest reliable refresh is a one-shot page reload
+    // when one lands. Deduplicate so a rapid auto-approve flow
+    // (plan_proposed + plan_approved in <100ms) reloads at most
+    // once. Lifecycle kinds the campaign-detail page should react
+    // to: anything that flips the plan pill or seeds a new run.
+    const RELOAD_ON = new Set([
+      "plan_proposed",
+      "plan_approved",
+      "plan_failed",
+      "finding_promoted",
+      "run_completed",
+    ]);
+    let reloadScheduled = false;
+    function scheduleReload() {
+      if (reloadScheduled) return;
+      reloadScheduled = true;
+      // Small delay so the worker's transaction commits before we
+      // re-read the campaign + plan rows on reload.
+      setTimeout(function () {
+        window.location.reload();
+      }, 250);
+    }
+
     const src = new EventSource(url);
     src.onmessage = function (e) {
       let env;
@@ -159,6 +184,9 @@
       eventlog.insertBefore(row, eventlog.firstChild);
       while (eventlog.children.length > MAX_ROWS) {
         eventlog.removeChild(eventlog.lastChild);
+      }
+      if (env && env.kind && RELOAD_ON.has(env.kind)) {
+        scheduleReload();
       }
     };
     // Don't spam the console on transient reconnects — EventSource

@@ -323,6 +323,12 @@ async def plan_page(
         {
             "campaign": campaign,
             "plan_row": plan_row,
+            # The editor template's inline JS lives in {% block scripts %}
+            # which is a sibling of the main body block — Jinja's
+            # {% set %} doesn't cross block boundaries, so `proposed`
+            # has to come through the context dict rather than being
+            # set on the page body. Empty dict when no row yet.
+            "proposed": (plan_row or {}).get("proposed_plan") or {},
             "catalog_pairs": catalog_pairs,
             "auto_approve_on": settings.orchestrator_auto_approve,
         }
@@ -461,6 +467,20 @@ async def approve_plan(
         plan_id=str(plan_row["id"]),
         status=new_status,
         operator=principal.email,
+    )
+    # Live UI: flip the pill from "Pending Approval" → "Approved"
+    # without making the operator refresh the page.
+    from cats.graph.events import publish
+
+    await publish(
+        kind="plan_approved",
+        campaign_id=campaign_id,
+        run_id=None,
+        payload={
+            "plan_id": str(plan_row["id"]),
+            "auto_approved": False,
+            "status": new_status,
+        },
     )
     return RedirectResponse(url=f"/campaigns/{campaign_id}", status_code=303)
 

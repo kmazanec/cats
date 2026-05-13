@@ -15,6 +15,13 @@ EventKind = Literal[
     "finding_promoted",
     "run_completed",
     "campaign_halted",
+    # R4 — Orchestrator plan lifecycle. The campaign-detail page
+    # listens on these to flip the "Plan: Pending Approval" pill and
+    # surface the "plan ready" CTA without a manual refresh.
+    "campaign_requested",
+    "plan_proposed",
+    "plan_approved",
+    "plan_failed",
 ]
 
 

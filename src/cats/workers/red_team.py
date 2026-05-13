@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cats.agents.red_team.executor import MutatorContext, execute_attempt
 from cats.db.repositories.campaign_repo import create_run_in_campaign
 from cats.db.repositories.run_repo import mark_run_running
+from cats.graph.events import publish
 from cats.messaging import (
     AttackEventPayload,
     CampaignPlanApprovedPayload,
@@ -120,6 +121,19 @@ class RedTeamWorker(Worker):
                     max_iterations=attempt.max_consecutive_partials,
                 )
                 prior_user_messages.append(result.payload_user_message)
+                # Live UI: a new run + attack just fired.
+                await publish(
+                    kind="attack_executed",
+                    campaign_id=payload.campaign_id,
+                    run_id=run_id,
+                    payload={
+                        "category": attempt.category,
+                        "technique": attempt.technique,
+                        "seed_idx": seed_idx,
+                        "attack_id": str(result.attack_id),
+                        "output_filter_verdict": result.output_filter_verdict,
+                    },
+                )
                 # Emit AttackEvent to the Judge.
                 await self._bus.emit(
                     session,

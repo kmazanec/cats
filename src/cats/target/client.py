@@ -242,7 +242,11 @@ class TargetClient:
         body.update(envelope.extra)
         if "patient" in envelope.extra:
             # caller-supplied patient block wins, but enforce the int
-            pat = dict(envelope.extra["patient"]) if isinstance(envelope.extra["patient"], dict) else {}
+            pat = (
+                dict(envelope.extra["patient"])
+                if isinstance(envelope.extra["patient"], dict)
+                else {}
+            )
             try:
                 pat["pid"] = int(pat.get("pid", pid_int))
             except (TypeError, ValueError):

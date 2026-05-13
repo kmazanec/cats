@@ -28,6 +28,7 @@ from cats.db.repositories.run_repo import (
     upsert_finding,
 )
 from cats.db.schema import attack_executions, attacks
+from cats.graph.events import publish
 from cats.llm.client import get_llm
 from cats.messaging import (
     ClaimedMessage,
@@ -107,6 +108,12 @@ class DocumentationWorker(Worker):
                 run_id=payload.run_id,
                 attacks_fired=1,
                 budget_consumed_usd=0.0,
+            )
+            await publish(
+                kind="run_completed",
+                campaign_id=payload.campaign_id,
+                run_id=payload.run_id,
+                payload={"verdict": payload.verdict, "finding_id": None},
             )
             return
 
@@ -197,6 +204,22 @@ class DocumentationWorker(Worker):
             idempotency_key=f"documentation:finding:{finding_id}",
         )
         await self._bus.emit(session, envelope)
+        await publish(
+            kind="finding_promoted",
+            campaign_id=payload.campaign_id,
+            run_id=payload.run_id,
+            payload={
+                "finding_id": str(finding_id),
+                "report_id": str(report_id),
+                "severity": "high",
+            },
+        )
+        await publish(
+            kind="run_completed",
+            campaign_id=payload.campaign_id,
+            run_id=payload.run_id,
+            payload={"verdict": "pass", "finding_id": str(finding_id)},
+        )
 
 
 def main() -> None:
