@@ -427,6 +427,80 @@
     height: auto;
     max-height: 100%;
   }
+  /* Slide 3 uses a side-by-side layout: SVG fills its column, legend lives in a right rail */
+  .diagram-wrap.with-side-legend {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 220px;
+    gap: 28px;
+    align-items: stretch;
+  }
+  .diagram-wrap.with-side-legend .diagram-svg-host {
+    padding-top: 0;
+    align-items: stretch;
+  }
+  .diagram-wrap.with-side-legend .diagram-svg-host svg {
+    max-width: 100%;
+  }
+  .legend-side {
+    border-left: 1px solid var(--line);
+    padding-left: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    align-content: start;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+  }
+  .legend-side h4 {
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--ink-3);
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .legend-side .lg-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .legend-side .lg-item {
+    display: grid;
+    grid-template-columns: 14px 1fr;
+    gap: 10px;
+    align-items: center;
+    font-size: 10.5px;
+    line-height: 1.3;
+  }
+  .legend-side .lg-item .sw {
+    width: 12px; height: 12px;
+    border-radius: 1px;
+    display: inline-block;
+  }
+  .legend-side .lg-item.line .sw {
+    width: 18px; height: 2px;
+  }
+  .legend-side .lg-item .text { color: var(--ink-2); text-transform: none; letter-spacing: 0.02em; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 300; }
+  .legend-side .lg-item .text .k { display: block; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.16em; margin-bottom: 2px; }
+  .legend-side .sw.adv  { background: var(--amber); box-shadow: 0 0 6px var(--amber-soft); }
+  .legend-side .sw.plat { background: var(--cyan); box-shadow: 0 0 6px var(--cyan-soft); }
+  .legend-side .sw.bus  { background: var(--violet); }
+  .legend-side .sw.gate { background: #f472b6; box-shadow: 0 0 6px #f472b633; }
+  .legend-side .sw.ext  { background: var(--ink-3); }
+  .legend-side .lg-note {
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 11.5px;
+    color: var(--ink-3);
+    text-transform: none;
+    letter-spacing: 0.01em;
+    line-height: 1.5;
+    font-weight: 300;
+  }
+  .legend-side .lg-note strong { color: var(--ink-2); font-weight: 500; }
   .legend {
     display: flex;
     gap: 24px;
@@ -448,6 +522,7 @@
   .legend .sw-plat { background: var(--cyan); box-shadow: 0 0 6px var(--cyan-soft); }
   .legend .sw-ext { background: var(--ink-3); }
   .legend .sw-store { background: var(--violet); }
+  .legend .sw-gate { background: #f472b6; box-shadow: 0 0 6px #f472b633; }
 
   /* === SLIDE 5 === */
   .s5-cols {
@@ -668,12 +743,187 @@
     opacity: 0.5;
   }
 
+  /* === SLIDE 2b (THREATS) === */
+  .threats-wrap {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1.55fr 1fr;
+    gap: 48px;
+    margin-top: 20px;
+    min-height: 0;
+  }
+  .threats-table {
+    border: 1px solid var(--line);
+    background: var(--bg-2);
+    align-self: start;
+    width: 100%;
+  }
+  .threats-row {
+    display: grid;
+    grid-template-columns: 38px 1fr 56px 70px 80px 90px;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    padding: 11px 16px;
+    font-size: 13.5px;
+    color: var(--ink);
+    font-weight: 300;
+    gap: 8px;
+  }
+  .threats-row:last-child { border-bottom: 0; }
+  .threats-row.header {
+    background: var(--bg-3);
+    color: var(--ink-3);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    padding: 9px 16px;
+  }
+  .threats-row .t-idx {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.1em;
+  }
+  .threats-row .t-name { color: var(--ink); }
+  .threats-row .t-name .hc {
+    display: inline-block;
+    margin-left: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--violet);
+    border: 1px solid var(--violet);
+    padding: 1px 5px;
+    vertical-align: middle;
+    opacity: 0.8;
+  }
+  .threats-row .li {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    text-align: right;
+    padding-right: 4px;
+  }
+  .threats-row .li.tier-1 { color: var(--red); }
+  .threats-row .li.tier-2 { color: var(--amber); }
+  .threats-row .li.tier-3 { color: var(--amber-2); opacity: 0.85; }
+  .threats-row .li.tier-4 { color: var(--cyan); opacity: 0.8; }
+  .threats-row .li.tier-5 { color: var(--ink-3); }
+  .threats-row .def {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    text-align: center;
+  }
+  .threats-row .def.weak { color: var(--red); }
+  .threats-row .def.mod  { color: var(--amber); }
+  .threats-row .def.mix  { color: var(--amber-2); }
+  .threats-row .def.strong { color: var(--green); }
+  .threats-row .cov {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    text-align: center;
+    padding: 3px 6px;
+    border: 1px solid var(--line-2);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .threats-row .cov.mvp {
+    border-color: var(--amber);
+    color: var(--amber);
+    background: var(--amber-soft);
+  }
+  .threats-row .cov.final {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+  .threats-row .cov.split {
+    border-color: var(--amber-2);
+    color: var(--amber-2);
+  }
+  .threats-row .atlas {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-3);
+    text-align: right;
+  }
+
+  .threats-side {
+    border-left: 1px solid var(--line);
+    padding-left: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    align-self: stretch;
+  }
+  .threats-side h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    font-weight: 500;
+    margin-bottom: 10px;
+  }
+  .threats-callout {
+    border-left: 2px solid var(--amber);
+    padding: 4px 0 4px 18px;
+    background: linear-gradient(90deg, var(--amber-soft) 0%, transparent 70%);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink);
+    font-weight: 300;
+  }
+  .threats-callout strong { color: var(--amber); font-weight: 500; }
+  .threats-callout em { color: var(--ink-2); font-style: normal; }
+  .threats-callout.cyan {
+    border-left-color: var(--cyan);
+    background: linear-gradient(90deg, var(--cyan-soft) 0%, transparent 70%);
+  }
+  .threats-callout.cyan strong { color: var(--cyan); }
+  .threats-callout.violet {
+    border-left-color: var(--violet);
+    background: linear-gradient(90deg, #a78bfa1a 0%, transparent 70%);
+  }
+  .threats-callout.violet strong { color: var(--violet); }
+  .threats-legend {
+    margin-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+  }
+  .threats-legend .lk { display: inline-flex; align-items: center; gap: 7px; }
+  .threats-legend .lk::before {
+    content: '';
+    width: 10px; height: 2px;
+    background: var(--ink-3);
+  }
+  .threats-legend .lk.t1::before { background: var(--red); }
+  .threats-legend .lk.t2::before { background: var(--amber); }
+  .threats-legend .lk.t3::before { background: var(--amber-2); }
+  .threats-legend .lk.t4::before { background: var(--cyan); }
+
   /* responsive guardrails */
   @media (max-width: 1100px) {
     .slide { padding: 40px 48px 76px; }
     .s2-layout { gap: 40px; }
     .s5-cols { grid-template-columns: 1fr; }
     .s6-cols { grid-template-columns: 1fr; gap: 32px; }
+    .threats-wrap { grid-template-columns: 1fr; gap: 28px; }
+    .threats-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 24px; }
+    .threats-row { grid-template-columns: 34px 1fr 50px 60px 70px 80px; font-size: 12px; }
+    .diagram-wrap.with-side-legend { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+    .legend-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 14px; }
   }
 </style>
 </head>
@@ -762,33 +1012,177 @@
     </div>
   </section>
 
+  <!-- ============================================================ SLIDE 2b · THREATS -->
+  <section class="slide" id="s2b" data-slide="2b">
+    <div class="chrome-top">
+      <div class="brand"><span class="brand-dot"></span>CATS · Adversarial Eval Platform</div>
+      <div class="sysline">Section <span>02</span> · <span>Threat Landscape</span></div>
+    </div>
+
+    <span class="eyebrow">02 · Threat Landscape</span>
+    <h2 class="title">What we're defending against.</h2>
+    <p class="subtitle">Nine categories scored 5×5 in the Co-Pilot threat model, anchored to MITRE ATLAS and OWASP LLM Top 10 v2025. Sort order drives the Orchestrator's initial category weights — top of the list is hunted first, hardest, and most often.</p>
+
+    <div class="threats-wrap">
+      <div class="threats-table" role="table" aria-label="Threat categories by Likelihood × Impact">
+        <div class="threats-row header" role="row">
+          <div>#</div>
+          <div>Category</div>
+          <div style="text-align:right;">L×I</div>
+          <div style="text-align:center;">Defense</div>
+          <div style="text-align:center;">Coverage</div>
+          <div style="text-align:right;">OWASP</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">01</div>
+          <div class="t-name">Prompt Injection — direct + indirect via <code style="font-family:'JetBrains Mono',monospace;font-size:.86em;color:var(--cyan);">.docx</code></div>
+          <div class="li tier-1">25</div>
+          <div class="def weak">Weak</div>
+          <div class="cov mvp">MVP</div>
+          <div class="atlas">LLM01</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">02</div>
+          <div class="t-name">Clinical Misinformation Propagation <span class="hc">HC</span></div>
+          <div class="li tier-1">25</div>
+          <div class="def mix">Mixed</div>
+          <div class="cov final">Final</div>
+          <div class="atlas">LLM09</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">03</div>
+          <div class="t-name">PHI / Cross-Patient Exfiltration — markdown-image side channel</div>
+          <div class="li tier-2">20</div>
+          <div class="def mix">Mixed</div>
+          <div class="cov mvp">MVP</div>
+          <div class="atlas">LLM02</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">04</div>
+          <div class="t-name">Extraction Poisoning → <code style="font-family:'JetBrains Mono',monospace;font-size:.86em;color:var(--cyan);">accept_fact</code> <span class="hc">HC</span></div>
+          <div class="li tier-2">20</div>
+          <div class="def mix">Mixed</div>
+          <div class="cov split">MVP / Final</div>
+          <div class="atlas">LLM05</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">05</div>
+          <div class="t-name">Citation &amp; Evidence Fabrication <span class="hc">HC</span></div>
+          <div class="li tier-2">20</div>
+          <div class="def mix">Mixed</div>
+          <div class="cov final">Final</div>
+          <div class="atlas">LLM09</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">06</div>
+          <div class="t-name">Tool Misuse &amp; Authorization Bypass — confused deputy, over-read</div>
+          <div class="li tier-3">16</div>
+          <div class="def strong">Strong</div>
+          <div class="cov mvp">MVP</div>
+          <div class="atlas">LLM06</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">07</div>
+          <div class="t-name">Multi-Turn / State / Context Corruption — MINJA, Crescendo</div>
+          <div class="li tier-3">16</div>
+          <div class="def mix">Mixed</div>
+          <div class="cov final">Final</div>
+          <div class="atlas">LLM04</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">08</div>
+          <div class="t-name">Denial of Service &amp; Cost Amplification — Clawdrain, EDoS</div>
+          <div class="li tier-4">12</div>
+          <div class="def mod">Moderate</div>
+          <div class="cov final">Final</div>
+          <div class="atlas">LLM10</div>
+        </div>
+
+        <div class="threats-row" role="row">
+          <div class="t-idx">09</div>
+          <div class="t-name">Identity &amp; Role Exploitation — output misrepresentation</div>
+          <div class="li tier-5">9</div>
+          <div class="def mix">Mixed</div>
+          <div class="cov final">Final</div>
+          <div class="atlas">LLM07</div>
+        </div>
+
+        <div class="threats-row header" style="border-top:1px solid var(--line-2);">
+          <div></div>
+          <div style="letter-spacing:0.14em;color:var(--ink-3);">
+            <span class="hc" style="margin-left:0;">HC</span> healthcare-specific · sort order drives Orchestrator weights
+          </div>
+          <div></div><div></div><div></div><div></div>
+        </div>
+      </div>
+
+      <aside class="threats-side">
+        <div>
+          <h3>MVP shipping focus</h3>
+          <div class="threats-callout">
+            Four categories run end-to-end against the live Co-Pilot for the MVP: <strong>Injection · Exfil · Tool Misuse · Extraction-Poisoning (docx → artifact)</strong>. Top-3 by L×I plus the highest-stakes write path.
+          </div>
+        </div>
+        <div>
+          <h3>Why this shape</h3>
+          <div class="threats-callout cyan">
+            Co-Pilot has <strong>no LLM-callable write tool</strong> and JWT auth is established outside the model — the Replit-style "agent destroyed prod" failure is structurally prevented. <em>What remains is the EchoLeak / ForcedLeak shape: the docx ingestion path.</em>
+          </div>
+        </div>
+        <div>
+          <h3>Healthcare specials</h3>
+          <div class="threats-callout violet">
+            Three healthcare-specific categories are <strong>not in the OWASP / ATLAS canon</strong> but score in the top tier here: clinical-misinfo propagation (Nature Comm Med 2025 baselined <strong>83%</strong> propagation), citation fabrication (bbox pipeline, no semantic-support check), and the docx → <code style="font-family:'JetBrains Mono',monospace;font-size:.86em;color:var(--cyan);">accept_fact</code> chain that bridges injection to a real chart write.
+          </div>
+        </div>
+        <div class="threats-legend" aria-label="L×I tier legend">
+          <span class="lk t1">25 · top</span>
+          <span class="lk t2">20</span>
+          <span class="lk t3">16</span>
+          <span class="lk t4">12 ↓</span>
+        </div>
+      </aside>
+    </div>
+  </section>
+
   <!-- ============================================================ SLIDE 3 -->
   <section class="slide" id="s3" data-slide="3">
     <div class="chrome-top">
       <div class="brand"><span class="brand-dot"></span>CATS · Adversarial Eval Platform</div>
-      <div class="sysline">Section <span>02</span> · <span>Agent Topology</span></div>
+      <div class="sysline">Section <span>03</span> · <span>Agent Topology</span></div>
     </div>
 
-    <span class="eyebrow">02 · Agent Topology</span>
-    <h2 class="title">Six roles, one LangGraph state machine.</h2>
-    <p class="subtitle">Adversarial roles in amber, platform-trusted roles in cyan, external surfaces in gray. Deterministic checks always run before any LLM judgment.</p>
+    <span class="eyebrow">03 · Agent Topology</span>
+    <h2 class="title">Four agents around a typed message bus.</h2>
+    <p class="subtitle">Four independent worker processes, each with a distinct trust level. Coordination is durable typed envelopes on a Postgres-backed bus — not shared state, not a monolithic graph. Two human gates: strategy and high-blast-radius promotion.</p>
 
-    <div class="diagram-wrap">
+    <div class="diagram-wrap with-side-legend">
       <div class="diagram-svg-host">
-        <!-- ============= AGENT TOPOLOGY SVG ============= -->
-        <svg viewBox="0 0 1280 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Agent topology diagram">
+        <!-- ============= FOUR-AGENT BUS TOPOLOGY SVG ============= -->
+        <svg viewBox="0 0 1640 700" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Four-agent message-bus topology" preserveAspectRatio="xMidYMid meet">
           <defs>
-            <marker id="arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <marker id="arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
               <path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/>
             </marker>
-            <marker id="arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <marker id="arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
               <path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/>
             </marker>
-            <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
               <path d="M0,0 L10,5 L0,10 z" fill="#6b7591"/>
             </marker>
-            <marker id="arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <marker id="arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
               <path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/>
+            </marker>
+            <marker id="arr-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="#f472b6"/>
             </marker>
 
             <linearGradient id="grad-amber" x1="0" y1="0" x2="0" y2="1">
@@ -800,188 +1194,384 @@
               <stop offset="100%" stop-color="#080e16" />
             </linearGradient>
             <linearGradient id="grad-violet" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#161020" />
-              <stop offset="100%" stop-color="#0e0816" />
+              <stop offset="0%" stop-color="#1a1428" />
+              <stop offset="100%" stop-color="#100a1c" />
             </linearGradient>
             <linearGradient id="grad-gray" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#141821" />
               <stop offset="100%" stop-color="#0d1019" />
             </linearGradient>
+            <linearGradient id="grad-rose" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#1c1015" />
+              <stop offset="100%" stop-color="#15080d" />
+            </linearGradient>
           </defs>
 
           <style>
-            .lbl-title { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; letter-spacing: 0.06em; }
-            .lbl-role  { font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; }
-            .lbl-model { font-family: 'JetBrains Mono', monospace; font-weight: 400; font-size: 10px; }
-            .lbl-cap   { font-family: 'IBM Plex Sans', sans-serif; font-weight: 300; font-size: 11px; }
+            .lbl-title  { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 16px; letter-spacing: 0.04em; }
+            .lbl-role   { font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 11.5px; letter-spacing: 0.18em; text-transform: uppercase; }
+            .lbl-model  { font-family: 'JetBrains Mono', monospace; font-weight: 400; font-size: 11.5px; }
+            .lbl-cap    { font-family: 'IBM Plex Sans', sans-serif; font-weight: 300; font-size: 12.5px; }
+            .lbl-edge   { font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 11.5px; letter-spacing: 0.04em; }
             .ink   { fill: #e7ecf5; }
             .ink-2 { fill: #aab3c6; }
             .ink-3 { fill: #6b7591; }
             .amber { fill: #f5a524; }
             .cyan  { fill: #38bdf8; }
             .violet{ fill: #a78bfa; }
+            .rose  { fill: #f472b6; }
             .box-stroke-amber  { stroke: #f5a524; stroke-width: 1; }
             .box-stroke-cyan   { stroke: #38bdf8; stroke-width: 1; }
             .box-stroke-gray   { stroke: #6b7591; stroke-width: 1; }
-            .box-stroke-violet { stroke: #a78bfa; stroke-width: 1; }
+            .box-stroke-violet { stroke: #a78bfa; stroke-width: 1.6; }
+            .box-stroke-rose   { stroke: #f472b6; stroke-width: 1.4; }
           </style>
 
-          <!-- ENTRY: trigger sources -->
+          <!-- =================================================================
+               LAYOUT (1640 × 700)
+                 LEFT COLUMN  x= 40..400  (w=360)  Orchestrator stack
+                 MID  COLUMN  x=560..1080 (w=520)  Message Bus + lane labels
+                 RIGHT COLUMN x=1240..1600 (w=360) Judge / Docs stack
+               ================================================================= -->
+
+          <!-- TRIGGER -->
           <g>
-            <rect x="40" y="30" width="200" height="56" rx="2" fill="url(#grad-gray)" class="box-stroke-gray"/>
-            <text x="56" y="50" class="lbl-role ink-3">TRIGGER</text>
-            <text x="56" y="70" class="lbl-title ink">CLI · UI · CI webhook</text>
+            <rect x="40" y="30" width="240" height="58" rx="2" fill="url(#grad-gray)" class="box-stroke-gray"/>
+            <text x="58" y="54" class="lbl-role ink-3">TRIGGER</text>
+            <text x="58" y="76" class="lbl-title ink">CLI · UI · CI webhook</text>
           </g>
 
           <!-- ORCHESTRATOR -->
           <g>
-            <rect x="340" y="20" width="320" height="78" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
-            <text x="356" y="42" class="lbl-role cyan">PLATFORM · 01</text>
-            <text x="356" y="64" class="lbl-title ink">ORCHESTRATOR</text>
-            <text x="356" y="82" class="lbl-model ink-3">bandit · meta-LLM · Claude Sonnet 4.6</text>
+            <rect x="40" y="124" width="360" height="108" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
+            <text x="58" y="148" class="lbl-role cyan">AGENT · 01 · PLATFORM-TRUSTED</text>
+            <text x="58" y="174" class="lbl-title ink">ORCHESTRATOR</text>
+            <text x="58" y="196" class="lbl-model ink-3">Claude Sonnet 4.6 · LLM planner</text>
+            <text x="58" y="216" class="lbl-cap ink-2">reads coverage / findings via tool surface</text>
           </g>
 
-          <!-- RED TEAM ROUTER -->
+          <!-- HITL Gate 01 -->
           <g>
-            <rect x="340" y="148" width="320" height="56" rx="2" fill="url(#grad-amber)" class="box-stroke-amber"/>
-            <text x="356" y="170" class="lbl-role amber">DISPATCH</text>
-            <text x="356" y="190" class="lbl-title ink">RED TEAM ROUTER</text>
+            <rect x="40" y="252" width="360" height="64" rx="2" fill="url(#grad-rose)" class="box-stroke-rose"/>
+            <text x="58" y="276" class="lbl-role rose">HUMAN GATE · 01 · STRATEGY</text>
+            <text x="58" y="298" class="lbl-title ink">Operator approves plan</text>
+            <text x="58" y="312" class="lbl-cap ink-2">edits or rejects · audited diff</text>
           </g>
 
-          <!-- Three RT specialists -->
+          <!-- RED TEAM (opaque) -->
           <g>
-            <rect x="40" y="246" width="260" height="86" rx="2" fill="url(#grad-amber)" class="box-stroke-amber"/>
-            <text x="56" y="268" class="lbl-role amber">ADVERSARY · A</text>
-            <text x="56" y="290" class="lbl-title ink">INJECTION SPECIALIST</text>
-            <text x="56" y="310" class="lbl-model ink-3">Hermes 4 · 405B</text>
-            <text x="56" y="324" class="lbl-cap ink-3">direct · indirect · docx · SPE</text>
+            <rect x="40" y="364" width="360" height="150" rx="2" fill="url(#grad-amber)" class="box-stroke-amber"/>
+            <text x="58" y="388" class="lbl-role amber">AGENT · 02 · ADVERSARIAL</text>
+            <text x="58" y="414" class="lbl-title ink">RED TEAM</text>
+            <text x="58" y="436" class="lbl-model ink-3">internal LangGraph · see slide 04</text>
+            <text x="58" y="458" class="lbl-cap ink-2">specialist · mutator · filter · target caller</text>
+            <text x="58" y="476" class="lbl-cap ink-2">bounded partial-loop · per-attack counter</text>
+            <text x="58" y="498" class="lbl-cap ink-3">crash-safe via durable red_team_attempts</text>
           </g>
 
+          <!-- TARGET CO-PILOT -->
           <g>
-            <rect x="340" y="246" width="260" height="86" rx="2" fill="url(#grad-amber)" class="box-stroke-amber"/>
-            <text x="356" y="268" class="lbl-role amber">ADVERSARY · B</text>
-            <text x="356" y="290" class="lbl-title ink">EXFIL SPECIALIST</text>
-            <text x="356" y="310" class="lbl-model ink-3">Hermes 4 · 405B</text>
-            <text x="356" y="324" class="lbl-cap ink-3">cross-patient · markdown img · canary</text>
+            <rect x="40" y="554" width="360" height="72" rx="2" fill="url(#grad-gray)" class="box-stroke-gray"/>
+            <text x="58" y="578" class="lbl-role ink-3">EXTERNAL · LIVE</text>
+            <text x="58" y="600" class="lbl-title ink">TARGET CO-PILOT</text>
+            <text x="58" y="616" class="lbl-cap ink-3">reached only by Red Team's egress</text>
           </g>
 
+          <!-- MESSAGE BUS (center) -->
           <g>
-            <rect x="640" y="246" width="260" height="86" rx="2" fill="url(#grad-amber)" class="box-stroke-amber"/>
-            <text x="656" y="268" class="lbl-role amber">ADVERSARY · C</text>
-            <text x="656" y="290" class="lbl-title ink">TOOL ABUSE SPECIALIST</text>
-            <text x="656" y="310" class="lbl-model ink-3">DeepSeek V3.2</text>
-            <text x="656" y="324" class="lbl-cap ink-3">confused deputy · param pollution · EDoS</text>
-          </g>
-
-          <!-- MUTATOR -->
-          <g>
-            <rect x="940" y="246" width="260" height="86" rx="2" fill="url(#grad-amber)" class="box-stroke-amber"/>
-            <text x="956" y="268" class="lbl-role amber">VARIANTS</text>
-            <text x="956" y="290" class="lbl-title ink">MUTATOR</text>
-            <text x="956" y="310" class="lbl-model ink-3">DeepSeek V3.2</text>
-            <text x="956" y="324" class="lbl-cap ink-3">N variants per partial-success</text>
-          </g>
-
-          <!-- OUTPUT FILTER -->
-          <g>
-            <rect x="340" y="378" width="320" height="64" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
-            <text x="356" y="400" class="lbl-role cyan">SAFETY GATE</text>
-            <text x="356" y="420" class="lbl-title ink">OUTPUT FILTER</text>
-            <text x="356" y="436" class="lbl-cap ink-3">regex · NFKC · LLM classifier · quarantine</text>
-          </g>
-
-          <!-- TARGET CO-PILOT (external) -->
-          <g>
-            <rect x="40" y="378" width="260" height="64" rx="2" fill="url(#grad-gray)" class="box-stroke-gray"/>
-            <text x="56" y="400" class="lbl-role ink-3">EXTERNAL · LIVE</text>
-            <text x="56" y="420" class="lbl-title ink">TARGET CO-PILOT</text>
-            <text x="56" y="436" class="lbl-cap ink-3">per-project HTTP contract</text>
+            <rect x="560" y="170" width="520" height="280" rx="3" fill="url(#grad-violet)" class="box-stroke-violet"/>
+            <text x="580" y="200" class="lbl-role violet">MESSAGE BUS</text>
+            <text x="580" y="232" class="lbl-title ink" font-size="22">agent_messages</text>
+            <text x="580" y="258" class="lbl-model ink-3">Postgres · LISTEN/NOTIFY</text>
+            <text x="580" y="276" class="lbl-model ink-3">FOR UPDATE SKIP LOCKED</text>
+            <text x="580" y="306" class="lbl-cap ink-2">typed envelopes · durable · audited · replayable</text>
+            <text x="580" y="326" class="lbl-cap ink-3">at-least-once delivery + idempotency_key</text>
+            <text x="580" y="344" class="lbl-cap ink-3">visibility timeouts for crash recovery</text>
+            <line x1="580" y1="368" x2="1060" y2="368" stroke="#2a3553" stroke-width="0.5"/>
+            <text x="580" y="392" class="lbl-edge violet">6 envelope kinds</text>
+            <text x="580" y="414" class="lbl-cap ink-3">CampaignRequested · CampaignPlanApproved · AttackEvent</text>
+            <text x="580" y="432" class="lbl-cap ink-3">VerdictRendered · FindingPromoted</text>
           </g>
 
           <!-- JUDGE -->
           <g>
-            <rect x="340" y="486" width="320" height="86" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
-            <text x="356" y="508" class="lbl-role cyan">PLATFORM · 02</text>
-            <text x="356" y="530" class="lbl-title ink">JUDGE</text>
-            <text x="356" y="550" class="lbl-model ink-3">Claude Haiku 4.5 · cached rubric</text>
-            <text x="356" y="564" class="lbl-cap ink-3">deterministic post-condition first</text>
+            <rect x="1240" y="124" width="360" height="132" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
+            <text x="1258" y="148" class="lbl-role cyan">AGENT · 03 · INDEPENDENT</text>
+            <text x="1258" y="174" class="lbl-title ink">JUDGE</text>
+            <text x="1258" y="196" class="lbl-model ink-3">Claude Haiku 4.5</text>
+            <text x="1258" y="214" class="lbl-cap ink-2">different family by policy</text>
+            <text x="1258" y="232" class="lbl-cap ink-2">deterministic post-conditions first</text>
+            <text x="1258" y="250" class="lbl-cap ink-3">then locked-version rubric · cached</text>
           </g>
 
-          <!-- DOC AGENT -->
+          <!-- DOCUMENTATION -->
           <g>
-            <rect x="700" y="486" width="280" height="86" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
-            <text x="716" y="508" class="lbl-role cyan">PLATFORM · 03</text>
-            <text x="716" y="530" class="lbl-title ink">DOCUMENTATION</text>
-            <text x="716" y="550" class="lbl-model ink-3">Claude Sonnet 4.6</text>
-            <text x="716" y="564" class="lbl-cap ink-3">critical · human approval gate</text>
+            <rect x="1240" y="364" width="360" height="124" rx="2" fill="url(#grad-cyan)" class="box-stroke-cyan"/>
+            <text x="1258" y="388" class="lbl-role cyan">AGENT · 04 · PLATFORM-TRUSTED</text>
+            <text x="1258" y="414" class="lbl-title ink">DOCUMENTATION</text>
+            <text x="1258" y="436" class="lbl-model ink-3">Claude Sonnet 4.6</text>
+            <text x="1258" y="458" class="lbl-cap ink-2">writes Findings + reports</text>
+            <text x="1258" y="478" class="lbl-cap ink-2">pauses on severity = critical</text>
           </g>
 
-          <!-- POSTGRES + LANGSMITH (data stores) -->
+          <!-- HITL Gate 02 -->
           <g>
-            <rect x="1020" y="486" width="180" height="40" rx="2" fill="url(#grad-violet)" class="box-stroke-violet"/>
-            <text x="1036" y="503" class="lbl-role violet">STORE</text>
-            <text x="1036" y="518" class="lbl-title ink">Postgres</text>
+            <rect x="1240" y="510" width="360" height="64" rx="2" fill="url(#grad-rose)" class="box-stroke-rose"/>
+            <text x="1258" y="534" class="lbl-role rose">HUMAN GATE · 02 · PROMOTION</text>
+            <text x="1258" y="556" class="lbl-title ink">CISO approves critical findings</text>
+            <text x="1258" y="570" class="lbl-cap ink-2">before promotion to remediation queue</text>
           </g>
+
+          <!-- ===== EDGES =====
+               Naming convention: edges between left/mid use the gap x=400..560;
+               edges between mid/right use the gap x=1080..1240.
+               Labels sit centered in those gaps so they never overlap boxes. -->
+
+          <!-- trigger → orchestrator -->
+          <path d="M160,88 L160,124" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#arr-gray)"/>
+          <text x="170" y="110" class="lbl-edge ink-3">CampaignRequested</text>
+
+          <!-- orchestrator → gate 01 (internal handoff, no label) -->
+          <path d="M220,232 L220,252" stroke="#f472b6" stroke-width="1.4" fill="none" marker-end="url(#arr-rose)" stroke-dasharray="3 3"/>
+
+          <!-- gate 01 → bus -->
+          <path d="M400,280 L555,255" stroke="#f472b6" stroke-width="1.6" fill="none" marker-end="url(#arr-rose)"/>
+          <text x="410" y="252" class="lbl-edge rose">CampaignPlanApproved</text>
+
+          <!-- bus → red team (approved plan) -->
+          <path d="M555,355 L400,400" stroke="#a78bfa" stroke-width="1.6" fill="none" marker-end="url(#arr-violet)"/>
+          <text x="410" y="378" class="lbl-edge violet">approved plan</text>
+
+          <!-- red team → bus (AttackEvent) -->
+          <path d="M400,430 L555,340" stroke="#f5a524" stroke-width="1.6" fill="none" marker-end="url(#arr-amber)"/>
+          <text x="410" y="424" class="lbl-edge amber">AttackEvent</text>
+
+          <!-- bus → red team (partial → variant loop) -->
+          <path d="M555,400 L400,470" stroke="#a78bfa" stroke-width="1.2" fill="none" marker-end="url(#arr-violet)" stroke-dasharray="3 3" opacity="0.85"/>
+          <text x="410" y="466" class="lbl-edge violet" opacity="0.95">partial → variant loop</text>
+
+          <!-- red team ↔ target -->
+          <path d="M180,514 L180,554" stroke="#f5a524" stroke-width="1.6" fill="none" marker-end="url(#arr-amber)"/>
+          <path d="M260,554 L260,514" stroke="#6b7591" stroke-width="1.6" fill="none" marker-end="url(#arr-gray)" stroke-dasharray="4 3"/>
+          <text x="90"  y="540" class="lbl-edge amber">HTTP attack</text>
+          <text x="288" y="540" class="lbl-edge ink-3">response</text>
+
+          <!-- bus → judge -->
+          <path d="M1080,230 L1235,180" stroke="#a78bfa" stroke-width="1.6" fill="none" marker-end="url(#arr-violet)"/>
+          <text x="1098" y="200" class="lbl-edge violet">AttackEvent → Judge</text>
+
+          <!-- judge → bus (VerdictRendered) -->
+          <path d="M1240,228 L1085,290" stroke="#38bdf8" stroke-width="1.6" fill="none" marker-end="url(#arr-cyan)"/>
+          <text x="1098" y="276" class="lbl-edge cyan">VerdictRendered</text>
+
+          <!-- bus → documentation (pass) -->
+          <path d="M1080,400 L1235,406" stroke="#a78bfa" stroke-width="1.6" fill="none" marker-end="url(#arr-violet)"/>
+          <text x="1098" y="394" class="lbl-edge violet">pass verdict → Docs</text>
+
+          <!-- documentation → bus (FindingPromoted) -->
+          <path d="M1240,460 L1085,432" stroke="#38bdf8" stroke-width="1.6" fill="none" marker-end="url(#arr-cyan)" opacity="0.9"/>
+          <text x="1098" y="452" class="lbl-edge cyan" opacity="0.95">FindingPromoted</text>
+
+          <!-- documentation → gate 02 (internal handoff) -->
+          <path d="M1420,488 L1420,510" stroke="#f472b6" stroke-width="1.4" fill="none" marker-end="url(#arr-rose)" stroke-dasharray="3 3"/>
+
+          <!-- orchestrator reads bus for tool surface (dotted feedback, routed over the top) -->
+          <path d="M400,160 L500,160 L500,200 L555,200" stroke="#a78bfa" stroke-width="1" fill="none" marker-end="url(#arr-violet)" stroke-dasharray="3 4" opacity="0.55"/>
+          <text x="410" y="152" class="lbl-edge ink-3" opacity="0.85">tool surface · coverage / findings</text>
+
+          <!-- Bottom annotations -->
+          <text x="40" y="666" class="lbl-cap ink-3">Four <tspan class="ink-2">independent worker processes</tspan> — start, stop, scale per-agent. A crashed agent's inbox queues until a replacement picks up.</text>
+          <text x="40" y="686" class="lbl-cap ink-3">Within-agent failures: retry inside each agent's graph. Cross-agent failures: visibility timeouts + dead-lettering on the bus.</text>
+        </svg>
+      </div>
+
+      <aside class="legend-side">
+        <h4>Legend</h4>
+        <div class="lg-group">
+          <div class="lg-item"><span class="sw plat"></span><span class="text"><span class="k">Platform · cyan</span>Trusted role; reasoning, judging, or documenting</span></div>
+          <div class="lg-item"><span class="sw adv"></span><span class="text"><span class="k">Adversarial · amber</span>Red Team — every output scrubbed by the Output Filter</span></div>
+          <div class="lg-item"><span class="sw bus"></span><span class="text"><span class="k">Bus / trace · violet</span>Typed envelopes &amp; LangSmith trace_id</span></div>
+          <div class="lg-item"><span class="sw gate"></span><span class="text"><span class="k">Human gate · rose</span>Operator approval — strategy or promotion</span></div>
+          <div class="lg-item"><span class="sw ext"></span><span class="text"><span class="k">External · gray</span>Trigger source or live target</span></div>
+        </div>
+        <div class="lg-note">
+          The bus is the only coordination surface. Agents share <strong>nothing</strong> in memory — only typed envelopes, with idempotency keys for safe retries and visibility timeouts for crash recovery.
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============================================================ SLIDE 3b · RED TEAM INTERNALS -->
+  <section class="slide" id="s3b" data-slide="3b">
+    <div class="chrome-top">
+      <div class="brand"><span class="brand-dot"></span>CATS · Adversarial Eval Platform</div>
+      <div class="sysline">Section <span>04</span> · <span>Inside the Red Team</span></div>
+    </div>
+
+    <span class="eyebrow">04 · Inside the Red Team</span>
+    <h2 class="title">One agent. One LangGraph. One AttackEvent.</h2>
+    <p class="subtitle">Zoom inside the Red Team worker. These nodes are not separate agents — they have no independent lifecycle and share the same private <code style="font-family:'JetBrains Mono',monospace;font-size:.86em;color:var(--cyan);">CampaignState</code>. Trust boundary: nothing leaves without passing the Output Filter.</p>
+
+    <div class="diagram-wrap">
+      <div class="diagram-svg-host">
+        <!-- ============= RED TEAM INTERNAL LANGGRAPH SVG ============= -->
+        <svg viewBox="0 0 1280 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Red Team internal LangGraph">
+          <defs>
+            <marker id="rt-arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+            <marker id="rt-arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
+            <marker id="rt-arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7591"/></marker>
+            <marker id="rt-arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+          </defs>
+
+          <style>
+            .rt-title { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 13px; letter-spacing: 0.04em; fill: #e7ecf5; }
+            .rt-role  { font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; }
+            .rt-model { font-family: 'JetBrains Mono', monospace; font-weight: 400; font-size: 10px; fill: #6b7591; }
+            .rt-cap   { font-family: 'IBM Plex Sans', sans-serif; font-weight: 300; font-size: 11px; fill: #aab3c6; }
+            .rt-edge  { font-family: 'JetBrains Mono', monospace; font-weight: 400; font-size: 10px; letter-spacing: 0.04em; }
+            .rt-amber { fill: #f5a524; }
+            .rt-cyan  { fill: #38bdf8; }
+            .rt-violet{ fill: #a78bfa; }
+            .rt-ink-3 { fill: #6b7591; }
+          </style>
+
+          <!-- Outer Red Team agent boundary -->
+          <rect x="20" y="20" width="1240" height="520" rx="4" fill="#15110a" fill-opacity="0.3" stroke="#f5a524" stroke-width="1" stroke-dasharray="6 4" opacity="0.7"/>
+          <text x="36" y="44" class="rt-role rt-amber">RED TEAM AGENT · INTERNAL LANGGRAPH</text>
+          <text x="1244" y="44" class="rt-cap" text-anchor="end" fill="#aab3c6">private CampaignState · not on the bus</text>
+
+          <!-- INBOX CONSUMER -->
           <g>
-            <rect x="1020" y="532" width="180" height="40" rx="2" fill="url(#grad-violet)" class="box-stroke-violet"/>
-            <text x="1036" y="549" class="lbl-role violet">TRACE</text>
-            <text x="1036" y="564" class="lbl-title ink">LangSmith</text>
+            <rect x="40" y="76" width="220" height="84" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1.4"/>
+            <text x="56" y="98" class="rt-role rt-violet">INBOX</text>
+            <text x="56" y="120" class="rt-title">consume from bus</text>
+            <text x="56" y="138" class="rt-cap">PlanApproved</text>
+            <text x="56" y="153" class="rt-cap">Verdict(partial)</text>
           </g>
 
-          <!-- ===== EDGES ===== -->
-          <!-- trigger -> orch -->
-          <path d="M240,58 L340,58" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#arr-gray)"/>
+          <!-- DISPATCHER -->
+          <g>
+            <rect x="320" y="76" width="240" height="84" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+            <text x="336" y="98" class="rt-role rt-amber">EXECUTE STEP</text>
+            <text x="336" y="120" class="rt-title">specialist dispatcher</text>
+            <text x="336" y="138" class="rt-cap">pick category from plan attempt</text>
+            <text x="336" y="153" class="rt-cap">increments per-attack iteration</text>
+          </g>
 
-          <!-- orch -> router -->
-          <path d="M500,98 L500,148" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#arr-cyan)"/>
+          <!-- INJECTION -->
+          <g>
+            <rect x="620" y="40" width="240" height="76" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+            <text x="636" y="62" class="rt-role rt-amber">SPECIALIST · A</text>
+            <text x="636" y="82" class="rt-title">INJECTION</text>
+            <text x="636" y="99" class="rt-model">Hermes 4 · 405B</text>
+            <text x="636" y="112" class="rt-cap">direct · indirect · docx · SPE</text>
+          </g>
 
-          <!-- router -> 3 specialists -->
-          <path d="M420,204 L420,232 L170,232 L170,246" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)"/>
-          <path d="M500,204 L500,232 L470,232 L470,246" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)"/>
-          <path d="M580,204 L580,232 L770,232 L770,246" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)"/>
+          <!-- EXFIL -->
+          <g>
+            <rect x="620" y="124" width="240" height="76" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+            <text x="636" y="146" class="rt-role rt-amber">SPECIALIST · B</text>
+            <text x="636" y="166" class="rt-title">EXFIL</text>
+            <text x="636" y="183" class="rt-model">Hermes 4 · 405B</text>
+            <text x="636" y="196" class="rt-cap">cross-patient · markdown img · canary</text>
+          </g>
 
-          <!-- 3 specialists -> mutator -->
-          <path d="M300,289 L320,289 L320,360 L1070,360 L1070,332" stroke="#f5a524" stroke-width="1" fill="none" marker-end="url(#arr-amber)" opacity="0.55"/>
-          <path d="M600,289 L620,289 L620,358 L1070,358 L1070,332" stroke="#f5a524" stroke-width="1" fill="none" opacity="0"/>
-          <path d="M900,289 L1070,289 L1070,246" stroke="#f5a524" stroke-width="0" fill="none" opacity="0"/>
-          <!-- cleaner: specialists feed mutator directly -->
-          <path d="M900,289 L940,289" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)"/>
-          <path d="M600,289 L640,289" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)" opacity="0.5"/>
-          <path d="M300,289 L340,289" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)" opacity="0.5"/>
+          <!-- TOOL ABUSE -->
+          <g>
+            <rect x="620" y="208" width="240" height="76" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+            <text x="636" y="230" class="rt-role rt-amber">SPECIALIST · C</text>
+            <text x="636" y="250" class="rt-title">TOOL ABUSE</text>
+            <text x="636" y="267" class="rt-model">DeepSeek V3.2</text>
+            <text x="636" y="280" class="rt-cap">confused deputy · params · EDoS</text>
+          </g>
 
-          <!-- mutator -> output filter -->
-          <path d="M1070,332 L1070,410 L660,410" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#arr-amber)"/>
+          <!-- MUTATOR -->
+          <g>
+            <rect x="620" y="304" width="240" height="76" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1" stroke-dasharray="4 3"/>
+            <text x="636" y="326" class="rt-role rt-amber">VARIANTS · ON PARTIAL</text>
+            <text x="636" y="346" class="rt-title">MUTATOR</text>
+            <text x="636" y="363" class="rt-model">DeepSeek V3.2 → Qwen 3.6 Flash</text>
+            <text x="636" y="376" class="rt-cap">N variants of partial-success</text>
+          </g>
 
-          <!-- output filter -> target -->
-          <path d="M340,410 L300,410" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#arr-cyan)"/>
+          <!-- OUTPUT FILTER -->
+          <g>
+            <rect x="920" y="100" width="280" height="100" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1.5"/>
+            <text x="936" y="122" class="rt-role rt-cyan">RED TEAM SAFETY GATE</text>
+            <text x="936" y="144" class="rt-title">OUTPUT FILTER</text>
+            <text x="936" y="162" class="rt-model">regex · NFKC · OSS classifier</text>
+            <text x="936" y="180" class="rt-cap">scrubs every outbound payload</text>
+            <text x="936" y="194" class="rt-cap" fill="#f5a524" opacity="0.9">trust boundary on the outbox</text>
+          </g>
 
-          <!-- target -> judge (response) -->
-          <path d="M170,442 L170,514 L340,514" stroke="#6b7591" stroke-width="1.4" stroke-dasharray="4 3" fill="none" marker-end="url(#arr-gray)"/>
+          <!-- TARGET CALLER -->
+          <g>
+            <rect x="920" y="220" width="280" height="80" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+            <text x="936" y="242" class="rt-role rt-amber">EGRESS · (no model)</text>
+            <text x="936" y="264" class="rt-title">TARGET CALLER</text>
+            <text x="936" y="282" class="rt-cap">per-project HTTP contract</text>
+            <text x="936" y="296" class="rt-cap">auth · rate-limit · response capture</text>
+          </g>
 
-          <!-- judge -> doc -->
-          <path d="M660,529 L700,529" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#arr-cyan)"/>
+          <!-- DURABLE STATE -->
+          <g>
+            <rect x="40" y="304" width="220" height="76" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1.2"/>
+            <text x="56" y="326" class="rt-role rt-violet">DURABLE STATE</text>
+            <text x="56" y="348" class="rt-title">red_team_attempts</text>
+            <text x="56" y="365" class="rt-cap">attack_id · iteration · cap</text>
+            <text x="56" y="378" class="rt-cap">crash-safe loop counter</text>
+          </g>
 
-          <!-- doc -> postgres / langsmith -->
-          <path d="M980,514 L1020,506" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#arr-violet)"/>
-          <path d="M980,544 L1020,552" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#arr-violet)"/>
+          <!-- OUTBOX -->
+          <g>
+            <rect x="920" y="380" width="280" height="80" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1.4"/>
+            <text x="936" y="402" class="rt-role rt-violet">OUTBOX</text>
+            <text x="936" y="424" class="rt-title">emit to bus</text>
+            <text x="936" y="442" class="rt-cap">AttackEvent → Judge inbox</text>
+            <text x="936" y="456" class="rt-cap">idempotency_key per logical event</text>
+          </g>
 
-          <!-- Orchestrator reads back (dotted return path on right side) -->
-          <path d="M1110,486 L1110,140 L660,140" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#arr-violet)" opacity="0.7"/>
-          <text x="1118" y="320" class="lbl-cap ink-3" transform="rotate(-90 1118 320)">coverage · findings · audit</text>
+          <!-- EDGES -->
+          <!-- inbox → dispatcher -->
+          <path d="M260,118 L320,118" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-violet)"/>
 
-          <!-- Annotation labels -->
-          <text x="510" y="124" class="lbl-cap ink-3">campaign plan</text>
-          <text x="178" y="404" class="lbl-cap ink-3" text-anchor="end">attack</text>
-          <text x="222" y="486" class="lbl-cap ink-3">response</text>
-          <text x="678" y="520" class="lbl-cap ink-3">verdict</text>
+          <!-- dispatcher → 3 specialists -->
+          <path d="M560,100 L620,78" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+          <path d="M560,118 L620,162" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+          <path d="M560,135 L620,246" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+          <!-- dispatcher → mutator on partial -->
+          <path d="M560,150 L620,342" stroke="#f5a524" stroke-width="1" fill="none" marker-end="url(#rt-arr-amber)" stroke-dasharray="3 3" opacity="0.7"/>
+          <text x="566" y="358" class="rt-edge rt-amber" opacity="0.8">on Verdict(partial)</text>
+
+          <!-- specialists / mutator → output filter -->
+          <path d="M860,78 L920,138" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+          <path d="M860,162 L920,150" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+          <path d="M860,246 L920,170" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+          <path d="M860,342 L920,186" stroke="#f5a524" stroke-width="1" fill="none" marker-end="url(#rt-arr-amber)" stroke-dasharray="3 3" opacity="0.7"/>
+
+          <!-- filter → target caller -->
+          <path d="M1060,200 L1060,220" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-violet)"/>
+          <text x="1068" y="215" class="rt-edge rt-cyan">scrubbed payload</text>
+
+          <!-- target caller → outbox -->
+          <path d="M1060,300 L1060,380" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-violet)"/>
+          <text x="1068" y="346" class="rt-edge rt-ink-3">response captured</text>
+
+          <!-- dispatcher ↔ durable state -->
+          <path d="M340,160 L160,304" stroke="#a78bfa" stroke-width="1" fill="none" marker-end="url(#rt-arr-violet)" stroke-dasharray="3 4" opacity="0.55"/>
+          <path d="M180,304 L350,160" stroke="#a78bfa" stroke-width="1" fill="none" marker-end="url(#rt-arr-violet)" stroke-dasharray="3 4" opacity="0.55"/>
+          <text x="180" y="232" class="rt-edge rt-violet" opacity="0.75">read / write iteration</text>
+
+          <!-- Bottom annotations -->
+          <text x="40" y="500" class="rt-cap rt-ink-3">Partial-loop bound: <tspan fill="#aab3c6">plan.max_consecutive_partials</tspan> per attack. Counter durable in <tspan fill="#aab3c6">red_team_attempts</tspan> — a mid-loop crash resumes.</text>
+          <text x="40" y="518" class="rt-cap rt-ink-3">Trust boundary: <tspan fill="#aab3c6">everything in this graph is adversarial</tspan>; nothing leaves the Red Team without passing the Output Filter.</text>
         </svg>
       </div>
 
       <div class="legend">
-        <span><span class="swatch sw-adv"></span>Adversarial role</span>
-        <span><span class="swatch sw-plat"></span>Platform-trusted role</span>
-        <span><span class="swatch sw-store"></span>Durable store / trace</span>
-        <span><span class="swatch sw-ext"></span>External surface</span>
+        <span><span class="swatch sw-adv"></span>Adversarial node</span>
+        <span><span class="swatch sw-plat"></span>Safety gate</span>
+        <span><span class="swatch sw-store"></span>Bus I/O · durable state</span>
       </div>
     </div>
   </section>
@@ -990,12 +1580,12 @@
   <section class="slide" id="s4" data-slide="4">
     <div class="chrome-top">
       <div class="brand"><span class="brand-dot"></span>CATS · Adversarial Eval Platform</div>
-      <div class="sysline">Section <span>03</span> · <span>System Architecture</span></div>
+      <div class="sysline">Section <span>05</span> · <span>System Architecture</span></div>
     </div>
 
-    <span class="eyebrow">03 · System Architecture</span>
-    <h2 class="title">Python service · Postgres state · Redis pub/sub · OpenRouter fan-out.</h2>
-    <p class="subtitle">One service on one droplet. Stateful where it matters. External fan-out behind one SDK so model choice is configuration, not code.</p>
+    <span class="eyebrow">05 · System Architecture</span>
+    <h2 class="title">Four worker processes · one Postgres-backed bus.</h2>
+    <p class="subtitle">Each agent is its own async worker — start, stop, scale independently. The <code style="font-family:'JetBrains Mono',monospace;font-size:.86em;color:var(--cyan);">agent_messages</code> table is the coordination backbone; Redis is for ephemeral live-UI streaming only. External fan-out sits behind one SDK.</p>
 
     <div class="diagram-wrap">
       <div class="diagram-svg-host">
@@ -1092,65 +1682,58 @@
             <text x="660" y="188" class="s4-lbl-sub" text-anchor="end">:8080</text>
           </g>
 
-          <!-- ==================== LAYER 3: AGENTS -->
+          <!-- ==================== LAYER 3: AGENTS (4 worker processes) -->
           <g>
             <rect x="160" y="240" width="640" height="124" rx="2" fill="url(#s4-grad-amber)" class="s4-r-amber"/>
-            <text x="174" y="260" class="s4-lbl-role s4-amber">AGENT RUNTIME</text>
-            <text x="174" y="282" class="s4-lbl-title">LangGraph state machine</text>
+            <text x="174" y="260" class="s4-lbl-role s4-amber">AGENT WORKERS · 4 PROCESSES</text>
+            <text x="174" y="282" class="s4-lbl-title">independent async workers · own systemd unit each</text>
 
-            <!-- inner agent chiclets -->
+            <!-- four agent worker chiclets -->
             <g>
-              <rect x="174" y="294" width="116" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
-              <text x="186" y="311" class="s4-lbl-sub s4-cyan">Orchestrator</text>
+              <rect x="174" y="298" width="148" height="56" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
+              <text x="186" y="316" class="s4-lbl-sub s4-cyan">orchestrator-worker</text>
+              <text x="186" y="332" class="s4-lbl-sub s4-ink-3">Sonnet 4.6</text>
+              <text x="186" y="347" class="s4-lbl-sub s4-ink-3">planner · gated</text>
             </g>
             <g>
-              <rect x="298" y="294" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/>
-              <text x="310" y="311" class="s4-lbl-sub s4-amber">RT · Injection</text>
+              <rect x="330" y="298" width="148" height="56" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/>
+              <text x="342" y="316" class="s4-lbl-sub s4-amber">redteam-worker</text>
+              <text x="342" y="332" class="s4-lbl-sub s4-ink-3">internal LangGraph</text>
+              <text x="342" y="347" class="s4-lbl-sub s4-ink-3">specialists · mutator</text>
             </g>
             <g>
-              <rect x="422" y="294" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/>
-              <text x="434" y="311" class="s4-lbl-sub s4-amber">RT · Exfil</text>
+              <rect x="486" y="298" width="148" height="56" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
+              <text x="498" y="316" class="s4-lbl-sub s4-cyan">judge-worker</text>
+              <text x="498" y="332" class="s4-lbl-sub s4-ink-3">Haiku 4.5</text>
+              <text x="498" y="347" class="s4-lbl-sub s4-ink-3">different family</text>
             </g>
             <g>
-              <rect x="546" y="294" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/>
-              <text x="558" y="311" class="s4-lbl-sub s4-amber">RT · ToolAbuse</text>
-            </g>
-            <g>
-              <rect x="670" y="294" width="116" height="26" rx="1" fill="#0f1424" stroke="#f5a524" stroke-width="0.8"/>
-              <text x="682" y="311" class="s4-lbl-sub s4-amber">Mutator</text>
-            </g>
-            <g>
-              <rect x="174" y="328" width="180" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
-              <text x="186" y="345" class="s4-lbl-sub s4-cyan">Output Filter</text>
-            </g>
-            <g>
-              <rect x="362" y="328" width="180" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
-              <text x="374" y="345" class="s4-lbl-sub s4-cyan">Judge</text>
-            </g>
-            <g>
-              <rect x="550" y="328" width="236" height="26" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
-              <text x="562" y="345" class="s4-lbl-sub s4-cyan">Documentation · human gate</text>
+              <rect x="642" y="298" width="148" height="56" rx="1" fill="#0f1424" stroke="#38bdf8" stroke-width="0.8"/>
+              <text x="654" y="316" class="s4-lbl-sub s4-cyan">docs-worker</text>
+              <text x="654" y="332" class="s4-lbl-sub s4-ink-3">Sonnet 4.6</text>
+              <text x="654" y="347" class="s4-lbl-sub s4-ink-3">HITL on critical</text>
             </g>
           </g>
 
           <!-- ==================== LAYER 4: DATA PLANE -->
           <g>
             <rect x="160" y="392" width="380" height="124" rx="2" fill="url(#s4-grad-violet)" class="s4-r-violet"/>
-            <text x="174" y="412" class="s4-lbl-role s4-violet">STATE</text>
-            <text x="174" y="434" class="s4-lbl-title">Postgres 16</text>
-            <text x="174" y="452" class="s4-lbl-cap">campaigns · findings · reports</text>
-            <text x="174" y="468" class="s4-lbl-cap">regression_cases · coverage · audit_log</text>
-            <text x="174" y="488" class="s4-lbl-sub">tables: 9 · row-level enforcement on principal</text>
-            <text x="174" y="502" class="s4-lbl-sub">migrations: alembic</text>
+            <text x="174" y="412" class="s4-lbl-role s4-violet">STATE · POSTGRES 16</text>
+            <text x="174" y="434" class="s4-lbl-title">campaigns · findings · reports · coverage</text>
+            <!-- agent_messages bus callout -->
+            <rect x="174" y="446" width="354" height="40" rx="1" fill="#1c1430" stroke="#a78bfa" stroke-width="1.2"/>
+            <text x="186" y="462" class="s4-lbl-sub s4-violet">agent_messages</text>
+            <text x="186" y="478" class="s4-lbl-cap">durable bus · LISTEN/NOTIFY · FOR UPDATE SKIP LOCKED</text>
+            <text x="174" y="502" class="s4-lbl-sub">alembic migrations · row-level enforcement on principal</text>
           </g>
           <g>
             <rect x="560" y="392" width="240" height="124" rx="2" fill="url(#s4-grad-violet)" class="s4-r-violet"/>
             <text x="574" y="412" class="s4-lbl-role s4-violet">REALTIME</text>
             <text x="574" y="434" class="s4-lbl-title">Redis 7</text>
-            <text x="574" y="452" class="s4-lbl-cap">pub/sub channels</text>
+            <text x="574" y="452" class="s4-lbl-cap">pub/sub · ephemeral</text>
             <text x="574" y="468" class="s4-lbl-cap">campaign.{id}.events</text>
             <text x="574" y="488" class="s4-lbl-sub">drives HTMX SSE dashboard</text>
-            <text x="574" y="502" class="s4-lbl-sub">no durable state</text>
+            <text x="574" y="502" class="s4-lbl-sub">losing this loses animations, not work</text>
           </g>
 
           <!-- ==================== LAYER 5: EXTERNAL -->
@@ -1192,27 +1775,33 @@
           <!-- edge -> agents -->
           <path d="M480,212 L480,240" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-amber)"/>
 
-          <!-- agents -> data -->
-          <path d="M350,364 L350,392" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-violet)"/>
-          <path d="M680,364 L680,392" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-violet)"/>
+          <!-- all four workers ↔ agent_messages bus -->
+          <path d="M248,354 L248,446" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-violet)"/>
+          <path d="M404,354 L348,446" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-violet)"/>
+          <path d="M560,354 L448,446" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-violet)"/>
+          <path d="M716,354 L508,446" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-violet)"/>
+
+          <!-- agents -> redis (pub/sub for live UI) -->
+          <path d="M716,354 L640,392" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#s4-arr-violet)" opacity="0.6"/>
 
           <!-- data -> edge (read for dashboard, dotted) -->
           <path d="M680,392 L860,392 L860,180 L800,180" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#s4-arr-violet)" opacity="0.7"/>
 
           <!-- agents -> openrouter -->
-          <path d="M800,302 L956,104" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-gray)"/>
+          <path d="M800,316 L956,104" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-gray)"/>
           <!-- agents -> langsmith -->
-          <path d="M800,328 L956,208" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-gray)"/>
-          <!-- agents -> targets -->
-          <path d="M800,344 L956,312" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-gray)"/>
+          <path d="M800,326 L956,208" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-gray)"/>
+          <!-- redteam -> targets -->
+          <path d="M478,354 L956,312" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#s4-arr-amber)" opacity="0.7"/>
           <!-- postgres -> s3 backups -->
           <path d="M540,454 L880,454 L880,406 L956,406" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#s4-arr-violet)" opacity="0.7"/>
 
           <!-- annotations -->
           <text x="490" y="232" class="s4-lbl-cap s4-ink-3">campaign API</text>
-          <text x="356" y="386" class="s4-lbl-cap s4-ink-3">durable</text>
-          <text x="690" y="386" class="s4-lbl-cap s4-ink-3">live events</text>
+          <text x="378" y="386" class="s4-lbl-cap s4-violet">typed envelopes</text>
+          <text x="610" y="386" class="s4-lbl-cap s4-ink-3">live events</text>
           <text x="826" y="200" class="s4-lbl-cap s4-ink-3">dashboard reads</text>
+          <text x="660" y="346" class="s4-lbl-cap s4-amber" opacity="0.85">Red Team only</text>
         </svg>
       </div>
 
@@ -1229,10 +1818,10 @@
   <section class="slide" id="s5" data-slide="5">
     <div class="chrome-top">
       <div class="brand"><span class="brand-dot"></span>CATS · Adversarial Eval Platform</div>
-      <div class="sysline">Section <span>04</span> · <span>Cost &amp; Model Strategy</span></div>
+      <div class="sysline">Section <span>06</span> · <span>Cost &amp; Model Strategy</span></div>
     </div>
 
-    <span class="eyebrow">04 · Cost &amp; Model Strategy</span>
+    <span class="eyebrow">06 · Cost &amp; Model Strategy</span>
     <h2 class="title">Cost discipline via tiered model routing.</h2>
     <p class="subtitle">Frontier where it matters. Open weights for volume. Prompt-cached judges. The OpenRouter layer keeps model choice as configuration, not code — so we can swap a model without changing an agent.</p>
 
@@ -1304,10 +1893,10 @@
   <section class="slide" id="s6" data-slide="6">
     <div class="chrome-top">
       <div class="brand"><span class="brand-dot"></span>CATS · Adversarial Eval Platform</div>
-      <div class="sysline">Section <span>05</span> · <span>Scope &amp; Open Questions</span></div>
+      <div class="sysline">Section <span>07</span> · <span>Scope &amp; Open Questions</span></div>
     </div>
 
-    <span class="eyebrow">05 · Scope &amp; Open Questions</span>
+    <span class="eyebrow">07 · Scope &amp; Open Questions</span>
     <h2 class="title">What ships Tuesday. What we want to discuss.</h2>
     <p class="subtitle">The MVP is intentionally narrow — one category end-to-end against the live target, with the full agent topology in place. The right column is what we'd value the team's read on before Wednesday.</p>
 
@@ -1380,15 +1969,15 @@
       <span class="crumb" id="section-crumb">01 · Rationale</span>
     </div>
     <div class="dots" id="dots"></div>
-    <div class="pgnum"><span id="pgcur">01</span><span class="total"> / 06</span></div>
+    <div class="pgnum"><span id="pgcur">01</span><span class="total"> / 08</span></div>
   </div>
 
-  <div class="help-key">← →  or  1 – 6  ·  Click dots to navigate</div>
+  <div class="help-key">← →  or  1 – 8  ·  Click dots to navigate</div>
 </div>
 
 <script>
 (function() {
-  const total = 6;
+  const total = 8;
   const slides = Array.from(document.querySelectorAll('.slide'));
   const dotsEl = document.getElementById('dots');
   const pgcur  = document.getElementById('pgcur');
@@ -1397,10 +1986,12 @@
   const sectionLabels = [
     '00 · Title',
     '01 · Rationale',
-    '02 · Agent Topology',
-    '03 · System Architecture',
-    '04 · Cost & Model Strategy',
-    '05 · Scope & Open Questions',
+    '02 · Threat Landscape',
+    '03 · Agent Topology',
+    '04 · Inside the Red Team',
+    '05 · System Architecture',
+    '06 · Cost & Model Strategy',
+    '07 · Scope & Open Questions',
   ];
 
   // build dots
@@ -1431,7 +2022,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(cur + 1); }
     else if (e.key === 'ArrowLeft' || e.key === 'PageUp')  { e.preventDefault(); go(cur - 1); }
-    else if (/^[1-6]$/.test(e.key)) { go(parseInt(e.key, 10) - 1); }
+    else if (/^[1-8]$/.test(e.key)) { go(parseInt(e.key, 10) - 1); }
     else if (e.key === 'Home') { go(0); }
     else if (e.key === 'End')  { go(total - 1); }
   });
