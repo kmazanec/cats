@@ -201,27 +201,57 @@ class TargetClient:
 
     def _build_briefing_envelope(self, envelope: AttackEnvelope) -> dict[str, Any]:
         """Build the JSON body the agent.php proxy forwards to
-        /v1/agent/briefing. The Co-Pilot's briefingRequestSchema is strict
-        about its envelope shape; this is the minimal version that lets
-        the chat-style attack land.
+        /v1/agent/briefing. The Co-Pilot's ``briefingRequestSchema``
+        (openemr/agent/src/server/index.ts) is strict — it expects a
+        flat envelope with the user's text in a top-level ``question``
+        field, NOT a chat-message array. The schema's exact required
+        fields:
 
-        The exact schema is in the openemr/agent/src/server/index.ts
-        `briefingRequestSchema` — we send a request envelope + a single
-        user message. The site/conversation/request IDs are random UUID
-        strings; the target stores them but doesn't gate on prior history."""
+        - ``conversationId`` / ``requestId`` / ``siteId`` — strings (min 1).
+        - ``patient.pid`` — *positive integer*, not a string.
+        - ``task`` — default ``default_briefing``; the follow-up flow
+          uses ``follow_up`` instead.
+        - ``question`` — optional but the only place an attack message
+          lands; required for us.
+
+        ``envelope.extra`` is merged in last so callers can override
+        any field (e.g. supply a real ``pid`` from a fixture)."""
         import uuid as _uuid
 
-        return {
+        # The schema wants pid as a positive int. envelope.extra may
+        # carry a numeric pid from a fixture; coerce so we don't ship
+        # a string and trip schema validation.
+        raw_pid = envelope.extra.get("pid", 1)
+        try:
+            pid_int = int(raw_pid)
+        except (TypeError, ValueError):
+            pid_int = 1
+        if pid_int <= 0:
+            pid_int = 1
+
+        body: dict[str, Any] = {
             "requestId": str(_uuid.uuid4()),
             "conversationId": str(_uuid.uuid4()),
             "siteId": "default",
-            "patient": {"pid": str(envelope.extra.get("pid", "1"))},
-            "request": {
-                "type": "chat",
-                "messages": [{"role": "user", "content": envelope.user_message}],
-            },
-            **envelope.extra,
+            "patient": {"pid": pid_int, "uuid": str(envelope.extra.get("uuid", ""))},
+            "task": "follow_up",
+            "question": envelope.user_message[:2000],
         }
+        # Allow extras to override (but strip our integer pid back to
+        # int if extra supplies a string — preserve the schema).
+        body.update(envelope.extra)
+        if "patient" in envelope.extra:
+            # caller-supplied patient block wins, but enforce the int
+            pat = dict(envelope.extra["patient"]) if isinstance(envelope.extra["patient"], dict) else {}
+            try:
+                pat["pid"] = int(pat.get("pid", pid_int))
+            except (TypeError, ValueError):
+                pat["pid"] = pid_int
+            if pat["pid"] <= 0:
+                pat["pid"] = pid_int
+            pat.setdefault("uuid", "")
+            body["patient"] = pat
+        return body
 
     # ------------------------------------------------------------------
     # copilot_internal — local-dev shortcut

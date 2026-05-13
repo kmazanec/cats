@@ -124,9 +124,18 @@ def patch_target_transport():
             )
         if "agent.php" in path:
             # Sniff the user_message for the canary and echo it back.
+            # R4 — the briefing envelope now puts the user text in a
+            # top-level ``question`` field (matches the OpenEMR
+            # agent's briefingRequestSchema).
             try:
                 body_json = json.loads(request.content.decode("utf-8"))
-                user_msg = body_json["request"]["messages"][0]["content"]
+                user_msg = body_json.get("question", "")
+                if not user_msg:
+                    # Back-compat for any older R3 fixture that still
+                    # ships the request.messages shape.
+                    user_msg = body_json.get("request", {}).get("messages", [{}])[0].get(
+                        "content", ""
+                    )
             except Exception:
                 user_msg = ""
             # Pull CATS-CANARY-XXXX out of the message.

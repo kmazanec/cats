@@ -68,64 +68,75 @@ class RedTeamWorker(Worker):
         payload: CampaignPlanApprovedPayload,
         trace_id: str,
     ) -> None:
+        """Walk the plan. For each attempt, fire ``seeds_per_attempt``
+        diverse seed attacks back-to-back (each seed gets its own Run
+        + AttackEvent). Each seed sees the prior seeds' user_messages
+        so the specialist produces materially different angles."""
         plan = payload.plan
         consecutive_fails = 0
         for idx, attempt in enumerate(plan.attempts):
-            run_id = await create_run_in_campaign(
-                session,
-                campaign_id=payload.campaign_id,
-                project_version_id=payload.project_version_id,
-            )
-            await mark_run_running(session, run_id=run_id)
-            try:
-                result = await execute_attempt(
+            prior_user_messages: list[str] = []
+            for seed_idx in range(attempt.seeds_per_attempt):
+                run_id = await create_run_in_campaign(
                     session,
                     campaign_id=payload.campaign_id,
-                    run_id=run_id,
                     project_version_id=payload.project_version_id,
-                    category=attempt.category,
-                    technique=attempt.technique,
-                    iteration=0,
                 )
-            except Exception as exc:
-                self._log.exception(
-                    "red_team.attempt_failed",
-                    error=repr(exc),
-                    campaign_id=str(payload.campaign_id),
-                    attempt_idx=idx,
-                )
-                consecutive_fails += 1
-                if consecutive_fails >= plan.halt_on_consecutive_fails:
-                    self._log.info(
-                        "red_team.halted",
-                        reason="consecutive_fails",
-                        campaign_id=str(payload.campaign_id),
+                await mark_run_running(session, run_id=run_id)
+                try:
+                    result = await execute_attempt(
+                        session,
+                        campaign_id=payload.campaign_id,
+                        run_id=run_id,
+                        project_version_id=payload.project_version_id,
+                        category=attempt.category,
+                        technique=attempt.technique,
+                        iteration=0,
+                        seed_idx=seed_idx,
+                        prior_user_messages=list(prior_user_messages),
                     )
-                    return
-                continue
-            # Persist the red_team_attempts row for the partial-loop counter.
-            await self._upsert_red_team_attempt(
-                session,
-                attack_id=result.attack_id,
-                iteration=0,
-                max_iterations=attempt.max_consecutive_partials,
-            )
-            # Emit AttackEvent to the Judge.
-            await self._bus.emit(
-                session,
-                _attack_event_envelope(
-                    campaign_id=payload.campaign_id,
-                    run_id=run_id,
-                    attempt=attempt,
-                    result_attack_id=result.attack_id,
-                    attack_execution_id=result.attack_execution_id,
-                    payload_user_message=result.payload_user_message,
-                    canary=result.canary,
-                    target_response_text=result.target_response_text,
+                except Exception as exc:
+                    self._log.exception(
+                        "red_team.seed_failed",
+                        error=repr(exc),
+                        campaign_id=str(payload.campaign_id),
+                        attempt_idx=idx,
+                        seed_idx=seed_idx,
+                    )
+                    consecutive_fails += 1
+                    if consecutive_fails >= plan.halt_on_consecutive_fails:
+                        self._log.info(
+                            "red_team.halted",
+                            reason="consecutive_fails",
+                            campaign_id=str(payload.campaign_id),
+                        )
+                        return
+                    continue
+                # Persist the red_team_attempts row for the partial-loop counter.
+                await self._upsert_red_team_attempt(
+                    session,
+                    attack_id=result.attack_id,
                     iteration=0,
-                    trace_id=trace_id,
-                ),
-            )
+                    max_iterations=attempt.max_consecutive_partials,
+                )
+                prior_user_messages.append(result.payload_user_message)
+                # Emit AttackEvent to the Judge.
+                await self._bus.emit(
+                    session,
+                    _attack_event_envelope(
+                        campaign_id=payload.campaign_id,
+                        run_id=run_id,
+                        attempt=attempt,
+                        result_attack_id=result.attack_id,
+                        attack_execution_id=result.attack_execution_id,
+                        payload_user_message=result.payload_user_message,
+                        canary=result.canary,
+                        target_response_text=result.target_response_text,
+                        iteration=0,
+                        seed_idx=seed_idx,
+                        trace_id=trace_id,
+                    ),
+                )
         # Note: this handler returns after EMITTING the AttackEvents.
         # The Judge worker processes them asynchronously; partial
         # verdicts come back on the Red Team's inbox as separate
@@ -248,7 +259,8 @@ class RedTeamWorker(Worker):
             ),
             {"iter": next_iter, "id": payload.attack_id},
         )
-        # Emit the next AttackEvent.
+        # Emit the next AttackEvent — same seed_idx as the partial we
+        # came from; iteration bumps so the idempotency key is unique.
         await self._bus.emit(
             session,
             _attack_event_envelope(
@@ -265,6 +277,7 @@ class RedTeamWorker(Worker):
                 target_response_text=result.target_response_text,
                 iteration=next_iter,
                 trace_id=trace_id,
+                seed_idx=payload.seed_idx,
             ),
         )
 
@@ -308,6 +321,7 @@ def _attack_event_envelope(
     target_response_text: str,
     iteration: int,
     trace_id: str,
+    seed_idx: int = 0,
 ) -> Envelope[AttackEventPayload]:
     return Envelope[AttackEventPayload](
         kind=MessageKind.ATTACK_EVENT,
@@ -324,11 +338,12 @@ def _attack_event_envelope(
             target_response=target_response_text,
             canary=canary,
             iteration=iteration,
+            seed_idx=seed_idx,
         ),
         trace_id=trace_id,
         campaign_id=campaign_id,
         attack_id=result_attack_id,
-        idempotency_key=(f"red_team:attack_event:{attack_execution_id}:{iteration}"),
+        idempotency_key=(f"red_team:attack_event:{attack_execution_id}:{seed_idx}:{iteration}"),
     )
 
 

@@ -23,12 +23,19 @@ from cats.llm.client import LLMClient
 TECHNIQUE = "encoded_payload"
 
 
-async def propose(*, llm: LLMClient) -> InjectionProposal:
+async def propose(
+    *,
+    llm: LLMClient,
+    seed_idx: int = 0,
+    prior_user_messages: list[str] | None = None,
+) -> InjectionProposal:
     canary = new_canary()
     parsed, llm_result = await run_specialist_llm(
         llm=llm,
         technique=TECHNIQUE,
         canary=canary,
         temperature=0.5,
+        seed_idx=seed_idx,
+        prior_user_messages=prior_user_messages,
     )
     return build_proposal(parsed=parsed, canary=canary, technique=TECHNIQUE, llm_result=llm_result)

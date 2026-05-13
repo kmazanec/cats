@@ -74,15 +74,29 @@ def pick_technique(state: CampaignState) -> str:
     return ROTATION[len(state.techniques_attempted) % len(ROTATION)]
 
 
-async def propose_technique(*, technique: str, llm: LLMClient) -> InjectionProposal:
+async def propose_technique(
+    *,
+    technique: str,
+    llm: LLMClient,
+    seed_idx: int = 0,
+    prior_user_messages: list[str] | None = None,
+) -> InjectionProposal:
     """Run one specific specialist. Raises ``KeyError`` if the technique
     is not registered — fail loud so a typo in fixtures surfaces
-    immediately rather than silently degrading to a default."""
+    immediately rather than silently degrading to a default.
+
+    ``seed_idx`` + ``prior_user_messages`` let the Red Team probe a
+    single technique from K distinct angles per plan attempt; see
+    :func:`cats.agents.red_team.injection.base.run_specialist_llm`."""
     if technique not in _PROPOSERS:
         raise KeyError(
             f"unknown injection technique {technique!r}; known: {sorted(KNOWN_TECHNIQUES)}"
         )
-    return await _PROPOSERS[technique](llm=llm)
+    return await _PROPOSERS[technique](
+        llm=llm,
+        seed_idx=seed_idx,
+        prior_user_messages=prior_user_messages,
+    )
 
 
 async def propose(*, llm: LLMClient, state: CampaignState | None = None) -> InjectionProposal:

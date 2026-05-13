@@ -136,6 +136,8 @@ async def execute_attempt(
     technique: str,
     iteration: int = 0,
     mutator_context: MutatorContext | None = None,
+    seed_idx: int = 0,
+    prior_user_messages: list[str] | None = None,
 ) -> AttemptResult:
     """Run one plan attempt: generate an attack, scan the payload,
     fire it at the target, record the AttackExecution row. Returns
@@ -144,6 +146,12 @@ async def execute_attempt(
     On ``iteration == 0`` the specialist generates a fresh attack.
     On ``iteration > 0`` the mutator produces a variant of
     ``mutator_context``.
+
+    ``seed_idx`` + ``prior_user_messages`` together let the Red Team
+    worker probe one technique with K diverse seed attempts per plan
+    attempt — see :class:`PlanAttempt.seeds_per_attempt`. The
+    specialist sees the prior seeds' user_messages in its prompt and
+    is told to produce something materially different.
 
     The output filter still gates egress: a ``dangerous`` or
     ``attack_payload`` verdict skips the live-target call (state
@@ -165,7 +173,12 @@ async def execute_attempt(
 
     # --- Generate or mutate the attack payload ------------------------
     if iteration == 0 or mutator_context is None:
-        proposal = await propose_technique(technique=technique, llm=get_llm())
+        proposal = await propose_technique(
+            technique=technique,
+            llm=get_llm(),
+            seed_idx=seed_idx,
+            prior_user_messages=prior_user_messages,
+        )
         user_message = proposal.user_message
         canary = proposal.canary
         title = proposal.title

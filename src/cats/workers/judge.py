@@ -122,11 +122,16 @@ class JudgeWorker(Worker):
                 evidence=evidence,
                 rubric_version_id=rubric_version_id,
                 is_deterministic=is_deterministic,
+                iteration=payload.iteration,
+                seed_idx=payload.seed_idx,
             ),
             trace_id=trace_id,
             campaign_id=payload.campaign_id,
             attack_id=payload.attack_id,
-            idempotency_key=(f"judge:verdict:{payload.attack_execution_id}:{payload.iteration}"),
+            idempotency_key=(
+                f"judge:verdict:{payload.attack_execution_id}:"
+                f"{payload.seed_idx}:{payload.iteration}"
+            ),
         )
         await self._bus.emit(session, envelope)
 

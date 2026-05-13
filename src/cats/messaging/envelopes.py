@@ -47,7 +47,14 @@ AgentName = Literal[
 class PlanAttempt(BaseModel):
     """One attempt in the Orchestrator's plan. The Red Team walks
     attempts in order; each row supplies the specialist + per-attempt
-    budget the executor uses."""
+    budget the executor uses.
+
+    ``seeds_per_attempt`` is K — the number of distinct seed attacks
+    the Red Team fires for this technique before moving on. Each seed
+    re-calls the specialist with an elevated temperature and the
+    prior seeds' user_messages threaded into the prompt, producing K
+    materially different angles on the same technique. Default 5;
+    bounded at 10 to keep blast radius predictable."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +62,7 @@ class PlanAttempt(BaseModel):
     technique: str
     per_attempt_budget_usd: float = Field(default=0.50, ge=0.0)
     max_consecutive_partials: int = Field(default=2, ge=0, le=10)
+    seeds_per_attempt: int = Field(default=5, ge=1, le=10)
 
 
 class PlannedCampaign(BaseModel):
@@ -130,7 +138,12 @@ class CampaignPlanApprovedPayload(BaseModel):
 
 
 class AttackEventPayload(BaseModel):
-    """Red Team → Judge. One attempted attack against the live target."""
+    """Red Team → Judge. One attempted attack against the live target.
+
+    ``seed_idx`` distinguishes the K seeds the Red Team fires per plan
+    attempt; ``iteration`` distinguishes Mutator variants of a single
+    seed when the Judge keeps returning ``partial``. Together they
+    namespace the idempotency key so retries dedupe correctly."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -145,6 +158,7 @@ class AttackEventPayload(BaseModel):
     target_response: str
     canary: str = ""
     iteration: int = 0
+    seed_idx: int = 0
     rubric_version_id: UUID | None = None
 
 
@@ -154,7 +168,12 @@ VerdictKind = Literal["pass", "fail", "partial", "error"]
 class VerdictRenderedPayload(BaseModel):
     """Judge → Red Team (partial) and Judge → Documentation (pass/fail).
     The same envelope shape on both inbox routes; the consumer decides
-    what to do with it."""
+    what to do with it.
+
+    ``seed_idx`` is carried through from the incoming ``AttackEvent``
+    so the Red Team's partial-loop handler can produce the next
+    Mutator variant in the same seed lane (preserving the
+    one-seed-many-variants topology)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -169,6 +188,8 @@ class VerdictRenderedPayload(BaseModel):
     evidence: dict[str, object] = Field(default_factory=dict)
     rubric_version_id: UUID | None = None
     is_deterministic: bool = False
+    iteration: int = 0
+    seed_idx: int = 0
 
 
 class FindingPromotedPayload(BaseModel):
