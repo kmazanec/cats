@@ -12,9 +12,10 @@
     <span class="eyebrow">— Queue a new campaign</span>
     <h1 class="title">Fire an adversarial run.</h1>
     <p class="subtitle">
-      Pick the target project, set a budget cap, choose the attack category. The
-      run dispatches as a background task; you'll land on its detail page where
-      events stream live as the agents act.
+      Pick the target project and set a budget cap. The Orchestrator authors
+      a plan grounded in the project's coverage history; you approve it
+      before any attacks fire. Events then stream live on the campaign
+      detail page as the agents act.
     </p>
   </section>
 
@@ -57,15 +58,6 @@
             </label>
           </div>
 
-          <label class="field">
-            <span class="l">Attack category</span>
-            <select name="category" required>
-              <option value="injection" selected>injection</option>
-              <option value="exfil" disabled>exfil · post-R2</option>
-              <option value="tool_abuse" disabled>tool_abuse · post-R2</option>
-            </select>
-          </label>
-
           <div class="row between" style="margin-top: 6px;">
             <div class="mono" style="font-size: 11px; color: var(--ink-3); letter-spacing: 0.12em;">
               est · 150 attacks · ~$4.20 · 6m wall
@@ -90,10 +82,11 @@
         </header>
         <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
           <ol style="padding-left: 18px; display: flex; flex-direction: column; gap: 8px;">
-            <li>CATS creates a Campaign + Run row and authorizes the project's latest version.</li>
-            <li>The orchestrator graph spins up Red Team + Mutator agents to probe the target.</li>
-            <li>The Judge promotes successful exploits to Findings as they're verified.</li>
-            <li>You land on the campaign detail page — events stream live via SSE.</li>
+            <li>CATS creates a Campaign row and emits a CampaignRequested envelope onto the Orchestrator's inbox.</li>
+            <li>The Orchestrator reads the project's coverage history and authors a plan: which categories and techniques to run, in what order, with rationale.</li>
+            <li>You approve, edit, or reject the plan. Nothing fires until you do.</li>
+            <li>The Red Team walks the approved plan; the Judge verifies each attempt; the Documentation agent promotes successful exploits to Findings.</li>
+            <li>Events stream live via SSE on the campaign detail page as the agents act.</li>
           </ol>
         </div>
       </div>
