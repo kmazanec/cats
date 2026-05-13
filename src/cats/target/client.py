@@ -239,17 +239,41 @@ class TargetClient:
         if pid_int <= 0:
             pid_int = 1
 
+        # ``task`` defaults to ``default_briefing`` (the kickoff path
+        # that accepts a fresh conversationId). Callers wanting to
+        # continue an existing conversation can pass ``task="follow_up"``
+        # + ``conversation_id=<existing>`` in ``envelope.extra``; the
+        # agent server requires the conversation to be owned by the
+        # authenticated principal (rejected as ``invalid_envelope``
+        # otherwise — happens when the kickoff hasn't been sent yet).
+        #
+        # The Red Team worker uses this seam to fire K seeds within
+        # one plan attempt as a single conversation: seed #0 sends
+        # ``default_briefing`` and gets a fresh conversationId; seeds
+        # #1..K-1 send ``follow_up`` with that same conversationId,
+        # so the model sees them as turns in one chat.
+        task_value = str(envelope.extra.get("task") or "default_briefing")
+        if task_value not in ("default_briefing", "follow_up"):
+            task_value = "default_briefing"
+        conv_id = str(envelope.extra.get("conversation_id") or _uuid.uuid4())
+
         body: dict[str, Any] = {
             "requestId": str(_uuid.uuid4()),
-            "conversationId": str(_uuid.uuid4()),
+            "conversationId": conv_id,
             "siteId": "default",
             "patient": {"pid": pid_int, "uuid": str(envelope.extra.get("uuid", ""))},
-            "task": "follow_up",
+            "task": task_value,
             "question": envelope.user_message[:2000],
         }
         # Allow extras to override (but strip our integer pid back to
-        # int if extra supplies a string — preserve the schema).
-        body.update(envelope.extra)
+        # int if extra supplies a string — preserve the schema). Keys
+        # we already consumed above are filtered so a stale extra
+        # doesn't clobber the canonical value (e.g. ``task=follow_up``
+        # arriving as raw extra wouldn't re-set body["task"] because
+        # we already chose it; the snake_case ``conversation_id``
+        # extra is consumed → ``conversationId`` is already set).
+        _CONSUMED = frozenset({"task", "conversation_id", "uuid", "pid", "patient"})
+        body.update({k: v for k, v in envelope.extra.items() if k not in _CONSUMED})
         if "patient" in envelope.extra:
             # caller-supplied patient block wins, but enforce the int
             pat = (

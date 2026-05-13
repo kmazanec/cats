@@ -70,13 +70,22 @@ class RedTeamWorker(Worker):
         trace_id: str,
     ) -> None:
         """Walk the plan. For each attempt, fire ``seeds_per_attempt``
-        diverse seed attacks back-to-back (each seed gets its own Run
-        + AttackEvent). Each seed sees the prior seeds' user_messages
-        so the specialist produces materially different angles."""
+        diverse seed attacks back-to-back as **one OpenEMR conversation**:
+        seed 0 is a ``default_briefing`` (kickoff) that opens a fresh
+        conversation; seeds 1..K-1 are ``follow_up``s sharing that
+        conversationId so the model sees them as turns in one chat.
+        Each seed sees the prior seeds' user_messages so the specialist
+        produces materially different angles."""
+        import uuid as _uuid
+
         plan = payload.plan
         consecutive_fails = 0
         for idx, attempt in enumerate(plan.attempts):
             prior_user_messages: list[str] = []
+            # One conversation per plan attempt; minted here so all K
+            # seeds + any partial-loop variants stay in the same chat
+            # turn-sequence.
+            conv_id = str(_uuid.uuid4())
             for seed_idx in range(attempt.seeds_per_attempt):
                 run_id = await create_run_in_campaign(
                     session,
@@ -95,6 +104,8 @@ class RedTeamWorker(Worker):
                         iteration=0,
                         seed_idx=seed_idx,
                         prior_user_messages=list(prior_user_messages),
+                        conversation_id=conv_id,
+                        task="default_briefing" if seed_idx == 0 else "follow_up",
                     )
                 except Exception as exc:
                     self._log.exception(
@@ -230,6 +241,16 @@ class RedTeamWorker(Worker):
         if isinstance(prior.target_response, dict):
             prior_response_text = str(prior.target_response.get("text", ""))
         next_iter = row.iteration + 1
+        # Variant continues in the same OpenEMR conversation as the
+        # seed it came from — that's the whole point of "iterate on a
+        # partial success". When prior's conversation_id is missing
+        # (older rows before this field landed), fall back to a fresh
+        # default_briefing so we don't hang on a stale conversation.
+        prior_conv_id = prior_payload.get("conversation_id")
+        variant_conv_id: str | None = (
+            str(prior_conv_id) if isinstance(prior_conv_id, str) and prior_conv_id else None
+        )
+        variant_task = "follow_up" if variant_conv_id else "default_briefing"
         try:
             result = await execute_attempt(
                 session,
@@ -245,6 +266,8 @@ class RedTeamWorker(Worker):
                     prior_canary=str(prior_payload.get("canary", "")),
                     prior_target_response=prior_response_text,
                 ),
+                conversation_id=variant_conv_id,
+                task=variant_task,
             )
         except Exception as exc:
             self._log.exception(

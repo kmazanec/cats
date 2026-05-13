@@ -267,6 +267,8 @@ async def execute_attempt(
     mutator_context: MutatorContext | None = None,
     seed_idx: int = 0,
     prior_user_messages: list[str] | None = None,
+    conversation_id: str | None = None,
+    task: str = "default_briefing",
 ) -> AttemptResult:
     """Run one plan attempt: generate an attack, scan the payload,
     fire it at the target, record the AttackExecution row. Returns
@@ -281,6 +283,14 @@ async def execute_attempt(
     attempt — see :class:`PlanAttempt.seeds_per_attempt`. The
     specialist sees the prior seeds' user_messages in its prompt and
     is told to produce something materially different.
+
+    ``conversation_id`` + ``task`` let the worker fire all K seeds of
+    a single plan attempt as turns in one OpenEMR conversation
+    (seed 0 = ``default_briefing``, seeds 1..K-1 = ``follow_up`` with
+    the same conversationId). The first seed gets a fresh conversation;
+    subsequent seeds carry the one the worker minted. Variant-loop
+    iterations on partials inherit the same conversationId from the
+    seed they came from.
 
     The output filter still gates egress: a ``dangerous`` or
     ``attack_payload`` verdict skips the live-target call (state
@@ -354,6 +364,11 @@ async def execute_attempt(
         "canary": canary,
         "technique": technique,
         "category": category,
+        # Persist conversation/task so the partial-loop variant
+        # handler can fetch the prior attack's row and continue
+        # firing into the same OpenEMR conversation.
+        "conversation_id": conversation_id,
+        "task": task,
         **payload_extras,
     }
     attack = Attack(
@@ -384,6 +399,17 @@ async def execute_attempt(
         source="red_team" if iteration == 0 else "mutator",
         run_id=run_id,
     )
+
+    # --- Inject conversation + task into the envelope -----------------
+    # The Red Team worker controls which conversationId all seeds in a
+    # plan attempt share + which task (kickoff vs follow-up) goes on
+    # each call. The specialist builds an `AttackEnvelope` without
+    # those concerns; we layer them on here.
+    extra_overrides: dict[str, Any] = dict(envelope.extra)
+    if conversation_id is not None:
+        extra_overrides["conversation_id"] = conversation_id
+    extra_overrides["task"] = task
+    envelope = envelope.model_copy(update={"extra": extra_overrides})
 
     # --- Fire (unless filter quarantined) -----------------------------
     target_text = ""

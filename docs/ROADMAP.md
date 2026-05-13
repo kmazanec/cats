@@ -2000,9 +2000,16 @@ Out:
 
 **Retrospective.** *(builder fills in after R5 ships)*
 
-- What went well: _
-- What didn't: _
-- What to change for R6: _
+- What went well:
+  - **Foundations-then-finish split worked exactly as designed.** The R5 foundations slice landed three weeks ahead of the rest of R5 on a separate worktree, R4-orthogonal by construction. When R4 finally landed in main, the R5 finish slice was a rebase + four small commits (specialist family, upload path, executor dispatch, smoke). Zero rework on the foundations work; no conflicts beyond a single 10-line adjacent edit in the executor that resolved cleanly. The pattern is repeatable for future rounds where the heavy work is foundations + the integration is small.
+  - **Building docx OOXML from scratch (no `python-docx` runtime dep) was the right call.** The synthesis library has zero runtime deps and is testable against the bytes it produces. `python-docx` is used only by the validity test bench as a gold-standard reader. The 13-technique enum partitions cleanly into hide-vs-render classes; the per-technique structural assertions caught one shape bug during authoring.
+  - **The two-step upload+extract flow was simpler than feared.** The OpenEMR threat model named the endpoints; the existing `_login_openemr` session-handshake machinery worked verbatim for the new codepath; the only new code was the multipart POST + JSON trigger. `httpx.MockTransport` testing the full sequence cost ~7 unit tests.
+- What didn't:
+  - **The smoke surfaced a real integration gap I'd missed: OpenEMR's session needs a patient context (`$_SESSION['pid']`) set before `document_upload.php` accepts an upload.** Login alone gets you authUser but not pid; the UI normally sets pid when a clinician navigates to a patient chart. The smoke run rejected with `HTTP 400 missing_pid` on the first fire. Fixable (one `library/ajax/set_pt.php` call after login), but I should have read the upload endpoint's PHP more carefully before writing the test — the ACL block was right there.
+  - **Per-technique specialists are a lot of repetitive code.** Each is 25-30 lines, but the boilerplate (mint canary, load prompts, run LLM, build proposal) is identical across all 13 + the 5 exfil ones. A factory or a single-specialist-per-category design that takes the technique as a parameter would have been less code. The injection family's per-technique-module pattern is set, so consistency wins for now; if R7 (tool_abuse) hits the same wall, factor it then.
+- What to change for R6:
+  - **Read the target's auth + session flow before writing the upload codepath, not after.** The patient-context gap should have been a known-known.
+  - **Live-fire one technique per category as part of the same commit as the wiring, not as a separate slice.** The smoke being a separate commit was fine but the "what does the target actually return?" loop should be part of the build-and-test cycle. The fix is mechanical (`scripts/r5_r6_smoke.py` exists now); future categories should run their smoke before declaring "wired" rather than declaring "wired" and then smoking.
 
 ---
 
@@ -2156,9 +2163,18 @@ Out:
 
 **Retrospective.** *(builder fills in after R6 ships)*
 
-- What went well: _
-- What didn't: _
-- What to change for R7: _
+- What went well:
+  - **The marker-protocol-and-detector-first design paid off.** R6 foundations shipped `cats.exfil_markers` (token shape, in-process registry, multi-channel detector covering 12 obfuscation paths) before any specialist existed. The deterministic check consumed the detector immediately; the cross-patient probe consumed it; the foundations test bench had 70+ tests against the detector's coverage matrix. When the finish slice added the specialist + executor dispatch, the verdict path was already wired end-to-end — the specialist just minted a marker and the rest was plumbing.
+  - **R4-orthogonality of the foundations was real.** Zero imports from `cats.agents.red_team` or `cats.graph` in any of the marker-protocol code. When R4 landed (rewrote the dispatcher + the agent shape + the campaign route), the foundations were untouched. The same pattern works for any future round that wants to land design work ahead of the integration commit.
+  - **The cross-patient probe abstraction reads cleanly.** `Planter` + `Asker` callable types let the probe orchestrate plant → query-as-attacker → scan against fakes (unit tests), against a manual operator's notebook session, and against a future specialist that drives it from the LLM. One interface, three callers — no per-caller branching.
+  - **The smoke surfaced a real defense-held result on the first live fire.** Coverage-framed cross-patient request reached the Co-Pilot, got a full briefing back, and didn't leak unauthorized PHI. That's a genuine finding — not a "the codepath compiles" finding, a "the defense actually held against this technique on this run" finding. The latency (66.6 s) tells us the model engaged with the request rather than fast-refusing it, which is more informative than a refusal would have been.
+- What didn't:
+  - **The marker plant in the smoke is virtual.** The specialist mints a `CATS-EXFIL-<hex>` token but nothing writes it into the victim patient's chart, so the deterministic check could never have returned `pass` regardless of how the model responded. The real signal had to come from reading the response text. For a rigorous verdict, the smoke would need `cats.exfil_markers.cross_patient.run_cross_patient_probe` driving an actual plant via the OpenEMR chart API. The probe is authored; the planter callable for OpenEMR isn't yet.
+  - **Ships only two of five catalogued techniques.** `reference_link_exfil`, `tool_param_exfil`, `clarifying_question_echo` raise NotImplementedError in the dispatcher. Each is a ~30-line specialist + per-technique prompts. Manageable follow-up; nothing structurally hard, just authoring.
+  - **The exfil specialist's marker handling is single-marker by design.** The `ExfilProposal.markers` field is `list[str]` but every shipped specialist mints exactly one marker per attack. Multi-marker attacks (plant in chart-note + problem-list + recent encounter, scan all three) need to wait until the planter orchestration lands — multi-plant per-attack with a single proposal is the natural next shape.
+- What to change for R7:
+  - **Land specialist + smoke in the same slice from now on.** R6 had specialist-without-smoke for three weeks, R5 had specialist-with-smoke-that-found-an-integration-gap. The latter is faster to a real verdict; do that.
+  - **Build the live planter helpers as part of category foundations, not as deferred follow-up.** For exfil that's a "plant marker in chart via OpenEMR API" helper; for tool_abuse it'll be whatever the equivalent is. The probe abstractions are great but they're useless until the live planter exists.
 
 ---
 
