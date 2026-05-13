@@ -212,8 +212,25 @@
           <div class="meta">budget shown before run</div>
         </header>
         <div class="body">
-          <form hx-post="/campaigns" hx-swap="outerHTML" hx-headers='{"X-CSRF-Token": "{{ request.state.csrf_token }}"}' class="stack" style="gap: 14px;">
+          <form hx-post="/campaigns"
+                hx-swap="outerHTML"
+                hx-headers='{"X-CSRF-Token": "{{ request.state.csrf_token }}"}'
+                hx-on::response-error="
+                  let msg = event.detail.xhr.responseText;
+                  try { msg = JSON.parse(msg).detail || msg; } catch (e) {}
+                  const slot = this.querySelector('[data-fire-error]');
+                  slot.textContent = msg;
+                  slot.hidden = false;
+                "
+                hx-on::before-request="
+                  const slot = this.querySelector('[data-fire-error]');
+                  slot.hidden = true;
+                  slot.textContent = '';
+                "
+                class="stack" style="gap: 14px;">
             {{ csrf_input(request) | safe }}
+            <div class="empty" data-fire-error hidden
+                 style="border-color: var(--red); color: var(--red);"></div>
             <label class="field">
               <span class="l">Project</span>
               <select name="project_id" required>
