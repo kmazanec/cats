@@ -75,6 +75,17 @@ class CampaignState(BaseModel):
     report_id: UUID | None = None
     last_trace_id: str = ""
 
+    # R3 — multi-technique inner loop bookkeeping.
+    # ``techniques_attempted`` accumulates the keys the dispatcher has
+    # picked so far this campaign; the outer loop drives until this
+    # reaches ``MIN_TECHNIQUES_PER_CAMPAIGN`` (or the budget runs out).
+    # ``consecutive_partial_count`` is incremented by the mutator when
+    # the judge rules ``partial`` and reset whenever the verdict changes
+    # — bounds the partial→mutate cycle at ``MAX_CONSECUTIVE_PARTIALS``.
+    techniques_attempted: list[str] = Field(default_factory=list)
+    consecutive_partial_count: int = 0
+    current_outer_iteration: int = 0
+
     # Test hooks — the smoke path sets these so nodes know to take the
     # canned paths.
     smoke_mode: bool = False

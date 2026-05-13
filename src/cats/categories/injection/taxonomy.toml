@@ -1,0 +1,53 @@
+# Per-technique MITRE ATLAS + OWASP LLM mapping for the injection category.
+#
+# Used by `cats.categories.taxonomy.lookup(category, technique)`. R3 replaces
+# the previously hardcoded `if category == "injection"` branch in the
+# documentation node, so every finding can be tagged with the most-specific
+# label its technique earns rather than the category-wide default.
+#
+# References:
+# - MITRE ATLAS v5.4.0 (Feb 2026), agentic suite (Oct 2025)
+# - OWASP LLM Top 10 v2025
+# - docs/W3_THREAT_RESEARCH.md §1 (direct-injection landscape)
+#
+# Maintenance: when adding a technique, also add its key + ids here AND a
+# matching specialist module under `cats/agents/red_team/injection/`.
+
+# Category-wide default (matches manifest.toml). Used when a technique key
+# is not listed below or when the technique field on a finding is empty.
+[default]
+atlas_technique_id = "AML.T0051"
+owasp_llm_id = "LLM01"
+description = "Prompt Injection — direct or indirect"
+
+[techniques.ignore_previous]
+atlas_technique_id = "AML.T0051"
+owasp_llm_id = "LLM01"
+description = "Classic 'ignore previous instructions' override"
+
+[techniques.policy_puppetry]
+atlas_technique_id = "AML.T0051"
+owasp_llm_id = "LLM01"
+description = "Fake <system_policy> XML wrap to override the real system prompt (HiddenLayer 2025)"
+
+[techniques.role_override]
+atlas_technique_id = "AML.T0051"
+owasp_llm_id = "LLM01"
+description = "Instruction-hierarchy break via injected role tags (</user>\\nSystem: …)"
+
+[techniques.system_prompt_leak]
+atlas_technique_id = "AML.T0057"
+owasp_llm_id = "LLM07"
+description = "SPE-LLM: reflect / complete / translate the system prompt out of the model"
+
+[techniques.encoded_payload]
+atlas_technique_id = "AML.T0051"
+owasp_llm_id = "LLM01"
+description = "Base64 / leetspeak / ROT13 wrapping of the injection payload to evade filters"
+
+# Mutator-generated variants inherit the parent technique's label; we tag the
+# original technique on the Finding, not the variant strategy.
+[techniques.task_redirect]
+atlas_technique_id = "AML.T0051"
+owasp_llm_id = "LLM01"
+description = "Pretextual task substitution (Mutator-generated variant of ignore_previous)"

@@ -865,17 +865,285 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R3 builder_
+R3 paid down four R2-retro items as the foundation, then built the
+multi-technique injection family on top. Two natural commit seams: the
+retro-paydown + plumbing, then the techniques + mutator + evals + report.
+
+**R2-retro paydown (Phase A):**
+
+- [x] `cats.config.settings` DI factory — `get_settings()` + `set_settings_for_test()`
+      + `reset_settings_cache()` accessors in `src/cats/config.py`. The module-level
+      `settings` singleton stays for R1/R2 import-compat; new code uses the
+      accessors. Doc'd in `tests/README.md`. Five new unit tests cover the seam.
+- [x] `with_cost(state, role, llm_result)` helper at `src/cats/agents/common/cost.py`,
+      retrofitted into judge / red_team_router / documentation nodes.
+      Three new unit tests; collapses three copies of the
+      `AgentCostEntry` boilerplate.
+- [x] Smoke-path integration test at `tests/integration/test_smoke.py`. Covers
+      run_smoke end-to-end + idempotency under repeat invocation. ~1s, the
+      gap R2 retro flagged.
+- [x] Suppress the `langgraph.checkpoint.serde.jsonplus` `allowed_objects`
+      pending-deprecation warning. Filter installed in `cats/__init__.py` so
+      it runs before any transitive langgraph import; `pyproject.toml`
+      `filterwarnings` covers pytest collection-time noise.
+- [x] Per-technique taxonomy lookup — `src/cats/categories/injection/taxonomy.toml`
+      + `src/cats/categories/taxonomy.py::lookup()`. Replaces the
+      `if category == "injection"` hardcode in the documentation node so
+      every finding can carry the most-specific ATLAS/OWASP label its
+      technique earns. Six new unit tests, including a sanity check that
+      every R3 technique resolves to non-None IDs.
+
+**Multi-technique injection (Phase B):**
+
+- [x] `src/cats/agents/red_team/injection/` is now a package. Shared scaffolding
+      (canary, prompt loading, JSON parsing, proposal assembly) lives in
+      `base.py`. Each technique gets its own thin module: `ignore_previous.py`,
+      `policy_puppetry.py`, `role_override.py`, `system_prompt_leak.py`,
+      `encoded_payload.py`. Public `propose()` is preserved for R2-compat.
+- [x] `dispatcher.py` with `pick_technique(state)` (rotation policy: walk the
+      rotation, skip already-attempted; round-robin once exhausted; explicit
+      `state.selected_technique` honored when set). `propose_technique(...)`
+      delegates to the named specialist. Ten new unit tests.
+- [x] Four new locked system_prompt.md + few_shots.md files for
+      `policy_puppetry`, `role_override`, `system_prompt_leak`, `encoded_payload`
+      under `src/cats/categories/injection/red_team/<technique>/`. Each prompt
+      ships with a YAML frontmatter `technique:` line so a fake-LLM in tests
+      can route by sniffing the prompt.
+- [x] Mutator variant generator at `src/cats/agents/mutator/strategies.py`.
+      LLM-driven primary path (DeepSeek V3.2 family per ARCHITECTURE.md §4.1
+      via `AgentRole = "mutator"`); deterministic fallback rotates among
+      three transforms (`task_redirect`, `boundary_tighten`, `encoding_shift`)
+      so the loop makes forward progress when the LLM fails. Defense-in-depth
+      canary splice-in if the variant drops it. Eight new unit tests.
+- [x] Graph topology updated in `src/cats/graph/build.py`: judge → mutator
+      conditional edge fires on `partial` verdicts when
+      `consecutive_partial_count < MAX_CONSECUTIVE_PARTIALS` (3); otherwise
+      advances to documentation. `_route_after_judge()` is the routing
+      function; covered by a dedicated unit test.
+- [x] Mutator node rewritten to invoke `generate_variant()` in variant mode,
+      splice the rewritten message into `pending_attack_payload`, append
+      `mutator` cost via `with_cost`, and clear the verdict so the next
+      target_caller + judge cycle sees a fresh attack.
+- [x] `CampaignState` extended: `techniques_attempted: list[str]`,
+      `consecutive_partial_count: int`, `current_outer_iteration: int`.
+- [x] Multi-technique outer loop: `run_campaign_multi_technique()` in
+      `cats/workers/campaign_worker.py` issues `MIN_TECHNIQUES_PER_CAMPAIGN`
+      (3) consecutive Runs against one Campaign, each pinned to a different
+      technique from the dispatcher's rotation. CLI (`cats run-campaign`) +
+      API (`POST /campaigns`) route through it.
+- [x] `tests/integration/test_multi_technique_campaign.py` — drives a full
+      campaign with FakeLLM + MockTransport, asserts ≥3 distinct techniques
+      attempted + every Run fires its attack. **Plus** a load-bearing
+      partial→mutator→variant e2e test that patches the deterministic
+      judge to force the LLM-judge branch, drives ``run_one`` end-to-end,
+      and asserts the mutator actually rewrote the user message between
+      target hits. A companion unit test pins the judge→mutator routing
+      decision in isolation.
+
+**Evals + nightly:**
+
+- [x] Answer key v1 at `evals/injection/answer_key/v1/cases.jsonl` — 30
+      hand-labeled `(attack, response, expected_verdict)` triples covering
+      all five R3 techniques, with `label_rationale` per row. README ships
+      the labeling guide so a second reviewer can sanity-check.
+- [x] `evals/runner.py` runs the Judge against the answer key, emits an
+      accuracy figure + per-technique confusion table + per-case failure
+      report. Exits non-zero below the configured accuracy threshold
+      (env-driven via `CATS_EVAL_ACCURACY_THRESHOLD`, default 0.85).
+      Supports `--deterministic-only` for the fast CI subset and
+      `--budget-usd` as a soft cap.
+- [x] `tests/integration/test_judge_accuracy.py` — fast CI subset asserting
+      the deterministic Judge resolves every pass/fail case correctly (all
+      five partial cases route to the LLM judge under the full nightly
+      run).
+- [x] `.gitlab-ci.yml` `judge-accuracy-nightly` stage gated on
+      `CATS_NIGHTLY_EVAL == "1"` (set in the GitLab schedule's variables).
+      Threshold + budget are env-overridable.
+
+**Polished vuln report:**
+
+- [x] `findings/R3_policy_puppetry_canary_echo.TEMPLATE.md` — a complete
+      polished report shape with attack payload, response, reproduction
+      command, mitigations, ATLAS/OWASP labels, cross-reference index.
+      Renamed with the `TEMPLATE` suffix per self-review feedback so a
+      reader cannot confuse the synthetic shape for a confirmed live
+      finding. §7 documents the operator's post-merge live-fire step:
+      if the behavior reproduces, copy the file dropping the suffix and
+      replace §3's example response + add a real LangSmith trace ID.
+      The live-target fire is the single open R3 task on this checklist.
+
+**Test count:** **114 passing** (89 unit + 25 integration) — up from R2's
+75. `ruff check`, `ruff format --check`, and `mypy --strict` clean across
+125 source files.
 
 **Decisions.** *(builder records as made)*
 
-- _to be filled by R3 builder_
+- **Five techniques, not four.** Kept `encoded_payload` rather than dropping
+  to four to test the input-normalization layer specifically. It's the only
+  R3 technique that exercises filter/normalization weaknesses rather than
+  semantic-instruction confusion. Per the W3 research the Co-Pilot's
+  defense rating here is genuinely low; ducking it would have left a real
+  gap.
+- **Multi-technique = multiple Runs per Campaign, not multiple attacks
+  per Run.** The data model already supports multiple Runs per Campaign
+  cleanly (R2's dashboard pages `list_runs_for_campaign`). Looping inside
+  the graph would have meant splitting the documentation node into
+  per-attack-persist + finish-run halves, which is invasive. The per-Run
+  approach reuses every existing accounting + audit path and the dashboard
+  shows the run sequence naturally. R6's adaptive planning may revisit;
+  for R3 the simpler shape is the right call.
+- **`MAX_CONSECUTIVE_PARTIALS = 3`.** Three iterations gives the Mutator a
+  real chance without letting one stubborn target eat the budget. The
+  three deterministic transforms (`task_redirect`, `boundary_tighten`,
+  `encoding_shift`) are also exactly three, so each partial gets a
+  qualitatively different fallback. Revisit when real campaigns produce
+  evidence on which cap is right.
+- **Per-technique prompts in a sub-directory, not a single growing prompt.**
+  R2's monolithic `system_prompt.md` listed four techniques as a `technique:
+  <one of: …>` enum and would have grown unwieldy at five+. Per-technique
+  directories let each prompt evolve independently and let the answer key
+  cite a specific specialist's prompt when a label dispute arises.
+- **YAML frontmatter `technique:` line is load-bearing for tests.** The fake
+  LLM in `tests/integration/test_multi_technique_campaign.py` sniffs the
+  system prompt's frontmatter to route to the right responder. Without
+  this, the test can't distinguish which specialist was called. Future
+  prompts must keep the frontmatter line.
+- **Settings DI is additive, not a flag-day refactor.** The module-level
+  `settings` singleton remains because 19 source files import it. New
+  code uses `get_settings()` / `set_settings_for_test()`; old code keeps
+  working. Sweeping every import was explicit non-goal in the planning
+  questions to avoid bloating R3.
+- **The `allowed_objects` warning is filtered, not fixed.** The deprecation
+  fires from `langchain_core.load.load.Reviver()` constructed inside
+  `langgraph.checkpoint.serde.jsonplus` at module-import time. No caller
+  code can pass a value. R3 ships filters at three layers (cats/__init__.py
+  runtime, pyproject.toml pytest collection, cats/logging.py app start)
+  so the next dependency-version bump can lift the suppression cleanly.
+- **Mutator deterministic fallback is intentional, not just a safety net.**
+  Tests use the fallback path heavily because `FakeLLMClient` has no
+  `mutator` responder by default. The fallback being a first-class
+  citizen means the loop never stalls, and the answer-key labels reflect
+  what a real DeepSeek call *would* produce shape-wise.
+- **The R3 polished vuln report ships as a template populated with one
+  representative finding from the fake-LLM run.** Firing the live campaign
+  from the build pipeline (or from the worktree) would mean attacking the
+  deployed Co-Pilot from a non-operator context. The report's §7 names
+  this explicitly and points the operator at the replay command for the
+  canonical reproduction.
 
-**Retrospective.** *(builder fills in after R3 ships)*
+**Retrospective.**
 
-- What went well: _
-- What didn't: _
-- What to change for R4: _
+- **What went well.**
+  - **R2-retro paydown landed first paid off in every subsequent file.**
+    The new `with_cost` helper, the taxonomy lookup, and the smoke test
+    each got reused by R3 code immediately — there was no temptation to
+    "skip it for now," because skipping it would have meant writing
+    a duplicate inline. Doing the debt sweep before any technique work
+    flipped the cost-of-cleanup ratio.
+  - **Per-technique sub-packages were the right scope unit.** Each
+    specialist is ~25 lines; the shared scaffolding in `base.py` is the
+    only thing that needs to evolve as the protocol matures. Adding the
+    fifth technique (`encoded_payload`) took ~10 minutes from prompt
+    file to passing unit test — that's the cost level future rounds
+    should hit.
+  - **The deterministic mutator fallback was the difference between a
+    flaky integration test and a stable one.** Eight unit tests for the
+    mutator strategies all run offline because the fallback path is the
+    default when no LLM responder is registered. The R2 retro's note
+    about "the e2e test works *because* the canary is fresh per attack"
+    has a direct R3 analogue: "the mutator tests work *because* the
+    fallback is intentional."
+  - **Self-review caught two real DoD gaps.** The first reviewer
+    pointed out that the multi-technique e2e didn't actually exercise
+    the partial→variant cycle (deterministic judge short-circuited to
+    pass) and that the polished vuln report was template-shaped but
+    not labeled as such. Both were closed in one fix pass and a second
+    reviewer confirmed ship-ready. The self-review step is load-bearing
+    — without it, R3 would have shipped with a half-met DoD line and
+    a misleading finding file.
+  - **Settings DI as additive seam.** Sweeping all 19 import sites was
+    not necessary and would have bloated R3. New code uses
+    `get_settings()` / `set_settings_for_test()`; old code keeps
+    working. Tests/README documents the pattern. Two retros in a row
+    asked for this; doing it minimally was the right call.
+
+- **What didn't.**
+  - **The integration test's deterministic-judge short-circuit caught
+    me off guard.** I wrote the multi-technique e2e expecting partials
+    to flow naturally, but the deterministic check returns
+    `pass` whenever the target echoes the canary — which my fake
+    target always does. Result: the variant cycle never fired in the
+    first version of the test. The fix (patch `judge_deterministic` for
+    one test) works but is uglier than I'd like. R4 should grow a
+    proper test seam — maybe a `state.bypass_deterministic_judge` flag
+    that defaults False — so future rounds can write LLM-judge-driven
+    e2es without monkey-patching.
+  - **The `allowed_objects` warning suppression took three tries to get
+    right.** Filtering by message regex, by category name string, then
+    by direct category import — each one revealed a new pytest /
+    Python import-order quirk. Pytest captures warnings at collection
+    time, which fires *before* `cats/__init__.py` loads. The fix
+    works but the layering (cats init + pyproject.toml + cats.logging)
+    is fragile under dependency-version skew. A note in
+    `cats/__init__.py` explains the situation; R5 should re-check
+    whether the upstream deprecation has flipped and lift the
+    suppression entirely.
+  - **30 partials in the answer key would be more honest.** The DoD
+    test only proves the deterministic check passes on the 25 pass/fail
+    cases. The 5 partial cases all rely on the LLM judge in the
+    nightly. R3 ships without observing one green nightly. The judge
+    accuracy threshold (0.85) is therefore an aspirational target, not
+    a measured one. R4 should kick off one nightly within the first
+    week and capture a baseline accuracy figure to put in the
+    retrospective there.
+  - **Live-target reproduction of the polished vuln report was
+    deferred.** The original clarifying question had me commit to
+    firing the live campaign as part of the round; in practice, firing
+    against the deployed Co-Pilot from the build pipeline is a higher-
+    blast-radius action than the round called for. Renaming the file
+    to `.TEMPLATE.md` is honest, but it leaves a real R3 task in the
+    operator's queue: fire once, confirm or correct the report,
+    commit the canonical version. Capture this in R4's prep notes.
+  - **The integration test's red-team responder routes by sniffing the
+    system prompt's YAML frontmatter.** That works today, but it's a
+    convention enforced only by every future specialist remembering
+    to include `technique: <name>` in the frontmatter. A dedicated
+    technique-detector field on the proposal (or a thread-local in
+    the fake LLM) would be more robust.
+
+- **What to change for R4.**
+  - **Fire one nightly judge-accuracy run before R4 starts.** Capture
+    the real accuracy number, the per-technique confusion table, and
+    the spend. Either confirm 0.85 is hit or adjust the threshold in
+    `cats.config` to match reality. This is the single most important
+    R4-prep item.
+  - **Fire the live deployed Co-Pilot campaign and confirm / correct
+    the polished vuln report.** Either promote
+    `findings/R3_policy_puppetry_canary_echo.TEMPLATE.md` to its
+    un-suffixed twin with a real LangSmith trace ID, or delete it
+    because the live model defends correctly.
+  - **Refactor `TargetClient`'s SSE walk into a pure-function module.**
+    R2's retro asked for this; R3 punted again. R4's indirect-injection
+    via `.docx` needs section-aware citation handling and will trip
+    over the inline parser. Extract `walk_sse_to_text(events) -> str`
+    before any docx work starts.
+  - **Add a `bypass_deterministic_judge: bool` test seam on
+    `CampaignState`.** R3's e2e test monkey-patches the function; that
+    works once but doesn't scale. A flag the test can set means
+    R4/R5 can drive LLM-judge paths without import-time gymnastics.
+  - **Bump answer-key v2 once R4 produces .docx attacks.** v1 is
+    direct-injection only. v2 should add another 30 rows covering the
+    indirect-injection technique families R4 introduces. Ship `v2/`
+    alongside R4's runner; keep `v1/` intact.
+  - **Use a `<technique-marker>` HTML comment in specialist prompts
+    instead of frontmatter sniffing.** A dedicated marker is harder
+    to lose accidentally than a YAML field that prompt-engineers
+    might delete during a tweak.
+  - **Pin langchain-core (or whatever depends on it transitively).**
+    The `allowed_objects` warning fires from a library API that's
+    actively being deprecated. R5 should evaluate whether the upstream
+    default has flipped and we can lift the suppression — or whether
+    the API itself is gone and we have a real port to do.
 
 ---
 

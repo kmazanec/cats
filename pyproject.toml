@@ -113,3 +113,15 @@ markers = [
     "integration: requires postgres + redis (skip in pure-unit runs)",
     "smoke: end-to-end no-LLM smoke path",
 ]
+# Third-party warnings we cannot fix at source. R2 retro asked R3 to pin
+# `allowed_objects` on the langgraph serializer, but it is set at
+# library-import time by `langchain_core.load.load.Reviver()` — no hook
+# from caller code. Suppress here so the noise doesn't mask real warnings.
+filterwarnings = [
+    # `LangChainPendingDeprecationWarning` (langchain_core) fires from
+    # `langgraph.checkpoint.serde.jsonplus` at module-import time — no hook
+    # from caller code. R2 retro flagged this for R3; the runtime filter in
+    # `cats/__init__.py` also installs it, but pytest collects warnings
+    # before that runs.
+    "ignore::langchain_core._api.deprecation.LangChainPendingDeprecationWarning",
+]

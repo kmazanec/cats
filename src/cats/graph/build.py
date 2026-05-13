@@ -1,12 +1,32 @@
 """Build the LangGraph state machine.
 
-Topology (matches ARCHITECTURE.md §2.2):
-    orchestrator → red_team_router → mutator → output_filter →
-    target_caller → judge → documentation → END
+Topology (matches ARCHITECTURE.md §2.2; R3 wires the partial→mutate loop)::
 
-The output_filter -> target_caller edge is conditional: when the filter
-quarantines the payload, the graph short-circuits to documentation
-without firing at the live target.
+    orchestrator → red_team_router → mutator → output_filter
+                                                    │
+                                          ┌─────────┴─────────┐
+                                          │                   │
+                                          ▼                   ▼
+                                     target_caller       documentation  (filter quarantined)
+                                          │
+                                          ▼
+                                        judge
+                                          │
+                                ┌─────────┴─────────┐
+                                │                   │
+                          (partial &&         (else: pass/fail or
+                           cap not hit)        partial cap hit)
+                                │                   │
+                                ▼                   ▼
+                             mutator           documentation → END
+
+Two conditional edges:
+
+1. ``output_filter → {target_caller, documentation}`` (R2): a quarantined
+   payload never reaches the live target.
+2. ``judge → {mutator, documentation}`` (R3): a ``partial`` verdict
+   loops back through the Mutator for variant generation, bounded by
+   ``MAX_CONSECUTIVE_PARTIALS``.
 """
 
 from __future__ import annotations
@@ -15,6 +35,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from cats.agents.mutator import MAX_CONSECUTIVE_PARTIALS
 from cats.graph.checkpointer import get_inmemory_checkpointer
 from cats.graph.nodes import (
     documentation,
@@ -34,6 +55,18 @@ def _route_after_filter(state: CampaignState) -> str:
     if state.output_filter_verdict in ("dangerous", "attack_payload"):
         return "documentation"
     return "target_caller"
+
+
+def _route_after_judge(state: CampaignState) -> str:
+    """R3: loop back through the Mutator on ``partial`` verdicts, bounded
+    by ``MAX_CONSECUTIVE_PARTIALS``. On ``pass``, ``fail``, or when the
+    cap is reached, advance to documentation as before."""
+    if (
+        state.last_verdict == "partial"
+        and state.consecutive_partial_count < MAX_CONSECUTIVE_PARTIALS
+    ):
+        return "mutator"
+    return "documentation"
 
 
 def build_graph(*, checkpointer: Any | None = None) -> Any:
@@ -56,7 +89,7 @@ def build_graph(*, checkpointer: Any | None = None) -> Any:
     g.add_edge("mutator", "output_filter")
     g.add_conditional_edges("output_filter", _route_after_filter)
     g.add_edge("target_caller", "judge")
-    g.add_edge("judge", "documentation")
+    g.add_conditional_edges("judge", _route_after_judge)
     g.add_edge("documentation", END)
 
     return g.compile(checkpointer=checkpointer or get_inmemory_checkpointer())

@@ -93,7 +93,10 @@ def run_campaign(
     from cats.db.engine import session_scope
     from cats.db.repositories.campaign_repo import create_campaign_and_run
     from cats.db.repositories.project_repo import get_project
-    from cats.workers.campaign_worker import run_one
+    from cats.workers.campaign_worker import (
+        MIN_TECHNIQUES_PER_CAMPAIGN,
+        run_campaign_multi_technique,
+    )
 
     if category != "injection":
         typer.echo(f"R2 ships injection only (got {category!r})")
@@ -117,18 +120,23 @@ def run_campaign(
                 budget_usd=budget_usd,
                 trigger="on_demand",
             )
-        typer.echo(f"dispatched campaign={cid} run={rid}")
-        state = await run_one(
+        typer.echo(f"dispatched campaign={cid} first_run={rid}")
+        states = await run_campaign_multi_technique(
             campaign_id=cid,
-            run_id=rid,
+            first_run_id=rid,
             project_version_id=pvid,
-            smoke_mode=False,
+            num_techniques=MIN_TECHNIQUES_PER_CAMPAIGN,
             selected_category=category,
         )
-        typer.echo(
-            f"verdict={state.last_verdict} attacks_fired={state.attacks_fired} "
-            f"usd={state.budget_consumed_usd:.4f} finding={state.finding_id}"
-        )
+        for s in states:
+            typer.echo(
+                f"run={s.run_id} technique={s.selected_technique} "
+                f"verdict={s.last_verdict} attacks_fired={s.attacks_fired} "
+                f"usd={s.budget_consumed_usd:.4f} finding={s.finding_id}"
+            )
+        total = sum(s.budget_consumed_usd for s in states)
+        techs = sorted({t for s in states for t in s.techniques_attempted})
+        typer.echo(f"campaign complete — techniques={techs} total_usd={total:.4f}")
         return 0
 
     code = asyncio.run(_go())

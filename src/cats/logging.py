@@ -5,10 +5,27 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import warnings
 
 import structlog
 
 from cats.config import settings
+
+# R3: silence a langchain-core PendingDeprecationWarning fired at
+# `langgraph.checkpoint.serde.jsonplus` import time. The Reviver() it
+# constructs takes its default `allowed_objects` — no hook to override
+# from caller code. R2 retro asked R3 to pin this; suppression is the
+# only available lever until the upstream default flips.
+warnings.filterwarnings(
+    "ignore",
+    message=".*allowed_objects.*",
+    category=DeprecationWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=".*allowed_objects.*",
+    category=PendingDeprecationWarning,
+)
 
 
 def configure_logging() -> None:

@@ -1,9 +1,29 @@
-"""Environment-driven configuration. Loaded once at import time."""
+"""Environment-driven configuration.
+
+Two ways to get settings:
+
+1. ``from cats.config import get_settings`` — DI-friendly accessor. Use this
+   in FastAPI routes via ``Depends(get_settings)`` and in any new module
+   that wants to be testable without monkeypatching globals.
+
+2. ``from cats.config import settings`` — module-level singleton, preserved
+   for backwards compatibility with R1/R2 call sites. It is the same object
+   ``get_settings()`` returns; tests can mutate its fields directly via
+   :func:`set_settings_for_test`.
+
+Tests:
+- Use :func:`set_settings_for_test` to override fields cleanly. It mutates
+  the shared singleton in place (Pydantic BaseSettings allows attribute
+  assignment), so every module that holds a reference to ``settings`` sees
+  the new values immediately.
+- For a full reload from env (e.g. after ``os.environ`` changes), call
+  :func:`reset_settings_cache` then re-access via :func:`get_settings`.
+"""
 
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -71,10 +91,47 @@ class Settings(BaseSettings):
         alias="LANGSMITH_URL_BASE",
     )
 
+    # Nightly judge-accuracy eval budget cap (R3). The nightly CI runner
+    # refuses to start if the cap is below the minimum needed for one full
+    # answer-key pass; below threshold the runner exits non-zero.
+    eval_nightly_budget_usd: float = Field(default=2.00, alias="CATS_EVAL_NIGHTLY_BUDGET_USD")
+    eval_accuracy_threshold: float = Field(default=0.85, alias="CATS_EVAL_ACCURACY_THRESHOLD")
+
 
 @lru_cache(maxsize=1)
 def _load() -> Settings:
     return Settings()
+
+
+def get_settings() -> Settings:
+    """Canonical accessor for application settings.
+
+    Use this in new code and FastAPI routes via ``Depends(get_settings)``.
+    Returns the cached singleton; tests should use :func:`set_settings_for_test`
+    to override individual fields.
+    """
+    return _load()
+
+
+def set_settings_for_test(**overrides: Any) -> Settings:
+    """Mutate the shared settings singleton in place. Returns the same object.
+
+    Mirrors the ``install_override`` test seam used by ``cats.llm.client``.
+    Pydantic BaseSettings instances are mutable, so this works across every
+    module that has imported ``settings`` or that calls :func:`get_settings`.
+    """
+    s = _load()
+    for key, value in overrides.items():
+        if not hasattr(s, key):
+            raise AttributeError(f"Settings has no field {key!r}")
+        setattr(s, key, value)
+    return s
+
+
+def reset_settings_cache() -> None:
+    """Drop the cached Settings so the next :func:`get_settings` call re-reads
+    from ``os.environ``. Used by test conftest after env-var manipulation."""
+    _load.cache_clear()
 
 
 settings: Settings = _load()

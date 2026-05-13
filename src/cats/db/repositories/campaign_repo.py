@@ -82,9 +82,7 @@ async def create_campaign_and_run(
     return campaign_id, run_id, project_version_id
 
 
-async def list_campaigns(
-    session: AsyncSession, *, limit: int = 100
-) -> list[dict[str, Any]]:
+async def list_campaigns(session: AsyncSession, *, limit: int = 100) -> list[dict[str, Any]]:
     """Return campaigns (newest first) joined with their target project and
     a one-row summary of the most-recent run (status, attacks, spend)."""
     latest_run = (
@@ -118,9 +116,9 @@ async def list_campaigns(
             latest_run.c.started_at,
         )
         .select_from(
-            campaigns
-            .join(projects, campaigns.c.project_id == projects.c.id)
-            .outerjoin(latest_run, campaigns.c.id == latest_run.c.campaign_id)
+            campaigns.join(projects, campaigns.c.project_id == projects.c.id).outerjoin(
+                latest_run, campaigns.c.id == latest_run.c.campaign_id
+            )
         )
         .order_by(desc(campaigns.c.created_at))
         .limit(limit)
@@ -145,6 +143,27 @@ async def list_campaigns(
         }
         for r in rows
     ]
+
+
+async def create_run_in_campaign(
+    session: AsyncSession,
+    *,
+    campaign_id: UUID,
+    project_version_id: UUID,
+) -> UUID:
+    """R3: create an additional Run row against an existing Campaign so
+    one campaign exercises multiple distinct techniques. Each Run carries
+    its own findings, executions, and per-agent cost rollup."""
+    run_id = uuid4()
+    await session.execute(
+        insert(runs).values(
+            id=run_id,
+            campaign_id=campaign_id,
+            project_version_id=project_version_id,
+            status="pending",
+        )
+    )
+    return run_id
 
 
 async def get_campaign_with_project(

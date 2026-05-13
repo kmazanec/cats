@@ -40,32 +40,32 @@ POSTs with the matching `csrf_token` form field. **Tests using plain
 `client.post(...)` against any mutating route will fail with 403** —
 that's the system working as intended.
 
-### 3. `cats.config.settings` monkeypatch
+### 3. `cats.config` overrides (R3 DI factory)
 
-`Settings` is loaded once at import time via `@lru_cache`, then the
-module attribute `settings` is bound to that instance. Reaching into
-`monkeypatch.setenv("CATS_X", "y")` after the first import does
-nothing visible — the cached `settings` already has the old value.
+R3 added a DI factory in `cats.config`. Three accessors:
 
-Two correct workarounds:
+- `get_settings()` — canonical accessor. Use in new code; in FastAPI
+  routes, prefer `Depends(get_settings)`.
+- `set_settings_for_test(**overrides)` — mutate the shared singleton
+  in place. Every module that has `from cats.config import settings`
+  sees the new values immediately. No `monkeypatch` dance.
+- `reset_settings_cache()` — drop the lru-cached Settings so the next
+  access re-reads `os.environ`. Call this at the top of a conftest
+  after manipulating env vars.
 
 ```python
-# 1. monkeypatch the module attribute directly (preferred for the
-#    health-check tests):
+# New pattern — preferred:
+from cats.config import set_settings_for_test
+set_settings_for_test(openrouter_api_key="sk-test")
+
+# Legacy pattern — still works for existing R1/R2 tests:
 from cats.health import checks as mod
 monkeypatch.setattr(mod.settings, "openrouter_api_key", "sk-test")
-
-# 2. set the env BEFORE cats.config imports — only works at the very
-#    top of conftest.py, before the first `from cats... import`.
-import os
-os.environ["CATS_X"] = "y"
-from cats.config import _load
-_load.cache_clear()  # so the next access rebuilds
 ```
 
-R3 should move `settings` behind a `Depends(get_settings)` /
-testable-factory pattern so this dance goes away — flagged in R1 retro
-and still open.
+Use `monkeypatch.setattr` when you want auto-revert between tests.
+Use `set_settings_for_test` when you want a one-line override that
+mirrors the `LLMClient.install_override()` test seam.
 
 ### 4. FakeLLM via `install_override`
 

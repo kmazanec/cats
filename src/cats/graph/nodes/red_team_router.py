@@ -1,15 +1,21 @@
 """Red Team Router.
 
-Dispatches to the selected category's specialist. R2 ships the injection
-specialist only; other categories return a placeholder. The smoke path
-short-circuits to a canned attack so the smoke test stays offline.
+Dispatches to the selected category's specialist. R2 shipped one
+specialist; R3 introduces a family of injection techniques and picks
+among them via :mod:`cats.agents.red_team.injection.dispatcher` so a
+single campaign can exercise multiple distinct techniques. The smoke
+path short-circuits to a canned attack so the smoke test stays offline.
 """
 
 from __future__ import annotations
 
-from cats.agents.red_team.injection import propose as propose_injection
+from cats.agents.common import with_cost
+from cats.agents.red_team.injection.dispatcher import (
+    pick_technique,
+    propose_technique,
+)
 from cats.graph.events import publish
-from cats.graph.state import AgentCostEntry, CampaignState
+from cats.graph.state import CampaignState
 from cats.llm.client import get_llm
 from cats.models.attack import Attack
 
@@ -52,7 +58,13 @@ async def run(state: CampaignState) -> CampaignState:
             f"category={category!r} has no specialist yet (R2 ships injection only)"
         )
 
-    proposal = await propose_injection(llm=get_llm())
+    technique = pick_technique(state)
+    proposal = await propose_technique(technique=technique, llm=get_llm())
+    # Record the technique attempt before we mutate `selected_technique`
+    # so the dispatcher's "skip already-attempted" rule kicks in next
+    # iteration even when the same technique key is selected.
+    if proposal.technique not in state.techniques_attempted:
+        state.techniques_attempted.append(proposal.technique)
 
     payload = {
         "endpoint": "/interface/modules/custom_modules/oe-module-clinical-copilot"
@@ -80,17 +92,7 @@ async def run(state: CampaignState) -> CampaignState:
     state.selected_technique = proposal.technique
     state.last_trace_id = proposal.llm.trace_id
 
-    # Per-agent cost line.
-    state.per_agent_costs.append(
-        AgentCostEntry(
-            role="redteam_injection",
-            model=proposal.llm.model,
-            tokens_in=proposal.llm.tokens_in,
-            tokens_out=proposal.llm.tokens_out,
-            usd=proposal.llm.usd_estimate,
-        )
-    )
-    state.budget_consumed_usd += proposal.llm.usd_estimate
+    with_cost(state, role="redteam_injection", llm_result=proposal.llm)
 
     await publish(
         kind="attack_proposed",

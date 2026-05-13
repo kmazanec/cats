@@ -9,9 +9,10 @@ Records cost on the per-agent breakdown when the LLM stage runs.
 
 from __future__ import annotations
 
+from cats.agents.common import with_cost
 from cats.agents.judge.verifier import judge_deterministic, judge_llm
 from cats.graph.events import publish
-from cats.graph.state import AgentCostEntry, CampaignState
+from cats.graph.state import CampaignState
 from cats.llm.client import get_llm
 
 
@@ -48,16 +49,7 @@ async def run(state: CampaignState) -> CampaignState:
         )
         state.last_verdict_is_deterministic = False
         state.last_verdict_model = llm_result.model
-        state.per_agent_costs.append(
-            AgentCostEntry(
-                role="judge",
-                model=llm_result.model,
-                tokens_in=llm_result.tokens_in,
-                tokens_out=llm_result.tokens_out,
-                usd=llm_result.usd_estimate,
-            )
-        )
-        state.budget_consumed_usd += llm_result.usd_estimate
+        with_cost(state, role="judge", llm_result=llm_result)
 
     state.last_verdict = verdict
     state.last_verdict_rationale = rationale

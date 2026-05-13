@@ -10,8 +10,8 @@ Helpers:
 
 from __future__ import annotations
 
+import asyncio
 import os
-import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,10 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
+# Resolved at module-import time so the async `_ensure_test_database_exists`
+# doesn't do filesystem work on the event loop (ASYNC240).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Test isolation: keep env separate from any local .env values. These have to
 # be set before cats.config is imported.
@@ -55,10 +59,12 @@ os.environ["DATABASE_URL"] = _TEST_DATABASE_URL
 
 
 # Reset the lru_cached settings so the env vars above take effect even if some
-# other test imported cats.config first.
-from cats.config import _load
+# other test imported cats.config first. The import has to live below the
+# `os.environ.setdefault` block above — moving it up would let `cats.config`
+# read the host's .env values before the test isolation overrides land.
+from cats.config import reset_settings_cache  # noqa: E402
 
-_load.cache_clear()
+reset_settings_cache()
 
 
 _TABLES_TO_TRUNCATE = [
@@ -86,9 +92,7 @@ async def _create_test_db_if_missing() -> None:
     server_dsn = urlunparse(parsed._replace(scheme="postgres", path="/postgres"))
     conn = await asyncpg.connect(server_dsn)
     try:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM pg_database WHERE datname = $1", _TEST_DB_NAME
-        )
+        exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", _TEST_DB_NAME)
         if not exists:
             await conn.execute(f'CREATE DATABASE "{_TEST_DB_NAME}"')
     finally:
@@ -102,13 +106,16 @@ async def _ensure_test_database_exists() -> None:
         return
     await _create_test_db_if_missing()
 
-    repo_root = Path(__file__).resolve().parents[2]
-    subprocess.run(
-        ["alembic", "upgrade", "head"],
-        cwd=repo_root,
+    proc = await asyncio.create_subprocess_exec(
+        "alembic",
+        "upgrade",
+        "head",
+        cwd=str(_REPO_ROOT),
         env={**os.environ, "DATABASE_URL": _TEST_DATABASE_URL},
-        check=True,
     )
+    rc = await proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"alembic upgrade head failed with exit code {rc}")
     _ensure_test_database_exists._done = True  # type: ignore[attr-defined]
 
 

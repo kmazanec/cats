@@ -112,6 +112,45 @@ test-unit:
     - if: $CI_COMMIT_BRANCH
 
 # ---------------------------------------------------------------------------
+# Nightly — judge-accuracy eval against the locked answer key v1.
+#
+# R3 DoD: the Judge must be measured against a versioned ground-truth set
+# on a schedule, and the build must fail when accuracy drops below the
+# configured threshold. Configure a GitLab schedule (Project -> CI/CD ->
+# Schedules) that sets CATS_NIGHTLY_EVAL=1; the rule below picks it up.
+#
+# Cost discipline: the runner respects CATS_EVAL_NIGHTLY_BUDGET_USD
+# (default $2.00) and aborts if it crosses the cap mid-run. Set the env
+# var in the schedule's variables if you want a different ceiling.
+# ---------------------------------------------------------------------------
+
+judge-accuracy-nightly:
+  stage: test
+  script:
+    - |
+      docker run --rm \
+        -u "$(id -u):$(id -g)" \
+        -v "$CI_PROJECT_DIR:/work" \
+        -w /work \
+        -e HOME=/work/.home-ci \
+        -e UV_CACHE_DIR=/work/.uv-cache-ci \
+        -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+        -e CATS_EVAL_NIGHTLY_BUDGET_USD="${CATS_EVAL_NIGHTLY_BUDGET_USD:-2.00}" \
+        -e CATS_EVAL_ACCURACY_THRESHOLD="${CATS_EVAL_ACCURACY_THRESHOLD:-0.85}" \
+        ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
+        sh -c '
+          uv sync --all-extras --no-progress &&
+          uv run python -m evals.runner \
+            --category injection \
+            --key-version v1 \
+            --threshold "$CATS_EVAL_ACCURACY_THRESHOLD" \
+            --budget-usd "$CATS_EVAL_NIGHTLY_BUDGET_USD"
+        '
+  rules:
+    - if: $CATS_NIGHTLY_EVAL == "1"
+      when: always
+
+# ---------------------------------------------------------------------------
 # Deploy — main only. Shell runner pulls the new commit and rebuilds the
 # `cats-api` container in place. The brief restart window is acceptable per
 # round 1 scope.

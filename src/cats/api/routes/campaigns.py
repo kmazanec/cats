@@ -27,7 +27,10 @@ from cats.db.repositories.campaign_repo import (
 from cats.db.repositories.project_repo import get_project, list_projects
 from cats.logging import get_logger
 from cats.security.csrf import require_csrf
-from cats.workers.campaign_worker import run_one
+from cats.workers.campaign_worker import (
+    MIN_TECHNIQUES_PER_CAMPAIGN,
+    run_campaign_multi_technique,
+)
 
 log = get_logger(__name__)
 router = APIRouter()
@@ -52,17 +55,19 @@ def _chrome_ctx(principal: Principal) -> dict[str, Any]:
 
 
 async def _dispatch_run(*, campaign_id: UUID, run_id: UUID, project_version_id: UUID) -> None:
-    """Run the graph end-to-end. Errors are caught so the background task
-    doesn't crash the app loop; the Run row carries the error state."""
+    """R3: drive a multi-technique campaign. The first Run uses the
+    already-created ``run_id``; the worker creates additional Runs for
+    the remaining techniques in the dispatcher's rotation. Errors are
+    caught per-Run so the background task doesn't crash the app loop."""
     try:
-        await run_one(
+        await run_campaign_multi_technique(
             campaign_id=campaign_id,
-            run_id=run_id,
+            first_run_id=run_id,
             project_version_id=project_version_id,
-            smoke_mode=False,
+            num_techniques=MIN_TECHNIQUES_PER_CAMPAIGN,
         )
     except Exception as exc:
-        log.exception("campaign.run_failed", run_id=str(run_id), error=repr(exc))
+        log.exception("campaign.dispatch_failed", run_id=str(run_id), error=repr(exc))
 
 
 @router.get("")

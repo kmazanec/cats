@@ -12,7 +12,9 @@ but no Finding/Report is created.
 
 from __future__ import annotations
 
+from cats.agents.common import with_cost
 from cats.agents.documentation.writer import write_report
+from cats.categories import taxonomy
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
 from cats.db.repositories.rubric_repo import ensure_rubric_version
@@ -25,7 +27,7 @@ from cats.db.repositories.run_repo import (
     upsert_finding,
 )
 from cats.graph.events import publish
-from cats.graph.state import AgentCostEntry, CampaignState
+from cats.graph.state import CampaignState
 from cats.llm.client import get_llm
 
 
@@ -112,6 +114,7 @@ async def run(state: CampaignState) -> CampaignState:
         finding_id = None
         report_id = None
         if state.last_verdict == "pass":
+            label = taxonomy.lookup(category, state.selected_technique)
             finding_id = await upsert_finding(
                 session,
                 run_id=state.run_id,
@@ -120,8 +123,8 @@ async def run(state: CampaignState) -> CampaignState:
                 title=state.pending_attack_title or f"[{category}] confirmed",
                 severity="high",
                 summary=state.last_verdict_rationale,
-                atlas_technique_id="AML.T0051" if category == "injection" else None,
-                owasp_llm_id="LLM01" if category == "injection" else None,
+                atlas_technique_id=label.atlas_technique_id,
+                owasp_llm_id=label.owasp_llm_id,
             )
             state.finding_id = finding_id
 
@@ -136,16 +139,7 @@ async def run(state: CampaignState) -> CampaignState:
                     verdict=state.last_verdict,
                     rationale=state.last_verdict_rationale,
                 )
-                state.per_agent_costs.append(
-                    AgentCostEntry(
-                        role="documentation",
-                        model=doc_llm.model,
-                        tokens_in=doc_llm.tokens_in,
-                        tokens_out=doc_llm.tokens_out,
-                        usd=doc_llm.usd_estimate,
-                    )
-                )
-                state.budget_consumed_usd += doc_llm.usd_estimate
+                with_cost(state, role="documentation", llm_result=doc_llm)
             else:
                 body = (
                     f"# [smoke] {state.pending_attack_title}\n\n"
