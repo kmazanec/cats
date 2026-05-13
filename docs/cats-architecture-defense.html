@@ -215,13 +215,96 @@
   #s1 {
     justify-content: space-between;
   }
-  .s1-hero {
+  .s1-top {
     flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 56px;
+    align-items: center;
+    min-height: 0;
+  }
+  .s1-hero {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    max-width: 1100px;
+    min-width: 0;
   }
+  .s1-art {
+    position: relative;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+  }
+  .s1-art .frame {
+    position: relative;
+    width: 100%;
+    max-height: 100%;
+    aspect-ratio: 1536 / 1024;
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    box-shadow:
+      0 0 0 1px rgba(245, 165, 36, 0.06),
+      0 20px 60px -20px rgba(0, 0, 0, 0.7),
+      0 0 80px -30px rgba(245, 165, 36, 0.18);
+    overflow: hidden;
+  }
+  .s1-art .frame::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 55%, rgba(10, 14, 26, 0.55) 100%);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .s1-art .frame::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, transparent 0%, transparent 78%, rgba(10, 14, 26, 0.45) 100%),
+      linear-gradient(90deg, rgba(10, 14, 26, 0.18) 0%, transparent 12%, transparent 88%, rgba(10, 14, 26, 0.18) 100%);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .s1-art img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    z-index: 1;
+  }
+  .s1-art .corner {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--amber);
+    z-index: 3;
+  }
+  .s1-art .corner.tl { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  .s1-art .corner.tr { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+  .s1-art .corner.bl { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+  .s1-art .corner.br { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+  .s1-art .caption {
+    position: absolute;
+    bottom: 12px;
+    left: 16px;
+    right: 16px;
+    z-index: 3;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    pointer-events: none;
+  }
+  .s1-art .caption .right { color: var(--amber); }
   .s1-codename {
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
@@ -244,7 +327,7 @@
   .s1-title {
     font-family: 'JetBrains Mono', monospace;
     font-weight: 700;
-    font-size: clamp(140px, 18vw, 240px);
+    font-size: clamp(110px, 11vw, 180px);
     letter-spacing: -0.04em;
     line-height: 0.86;
     color: var(--ink);
@@ -924,6 +1007,8 @@
     .threats-row { grid-template-columns: 34px 1fr 50px 60px 70px 80px; font-size: 12px; }
     .diagram-wrap.with-side-legend { grid-template-columns: minmax(0, 1fr); gap: 18px; }
     .legend-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 14px; }
+    .s1-top { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+    .s1-art { max-width: 560px; }
   }
 </style>
 </head>
@@ -938,18 +1023,34 @@
       <div class="sysline">Build <span>0001</span> · Env <span>defense</span> · <span>2026-05-11</span></div>
     </div>
 
-    <div class="s1-hero">
-      <div class="s1-codename"><span class="blink"></span>Codename · Threat-Surface Recon</div>
-      <h1 class="s1-title">CATS</h1>
-      <div class="s1-expanded">
-        Copilot <span>·</span> Automated <span>·</span> Tactical <span>·</span> Security
+    <div class="s1-top">
+      <div class="s1-hero">
+        <div class="s1-codename"><span class="blink"></span>Codename · Threat-Surface Recon</div>
+        <h1 class="s1-title">CATS</h1>
+        <div class="s1-expanded">
+          Copilot <span>·</span> Automated <span>·</span> Tactical <span>·</span> Security
+        </div>
+        <p class="s1-tagline">
+          A continuously-running <em>multi-agent adversarial evaluation platform</em>
+          for AI-assisted clinical workflows. Built to hunt vulnerabilities in
+          the OpenEMR Clinical Co-Pilot — and to keep hunting them as the model,
+          the prompts, and the attackers evolve.
+        </p>
       </div>
-      <p class="s1-tagline">
-        A continuously-running <em>multi-agent adversarial evaluation platform</em>
-        for AI-assisted clinical workflows. Built to hunt vulnerabilities in
-        the OpenEMR Clinical Co-Pilot — and to keep hunting them as the model,
-        the prompts, and the attackers evolve.
-      </p>
+
+      <div class="s1-art" aria-hidden="true">
+        <div class="frame">
+          <img src="hero.png" alt="CATS — four agent roles depicted: Orchestrator, Red Team, Judge, Documentation" />
+          <span class="corner tl"></span>
+          <span class="corner tr"></span>
+          <span class="corner bl"></span>
+          <span class="corner br"></span>
+          <div class="caption">
+            <span>FOUR ROLES · ONE PLATFORM</span>
+            <span class="right">▶ 2026-05-12</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="s1-stats">
