@@ -12,6 +12,7 @@ from typing import Literal
 AgentRole = Literal[
     "orchestrator",
     "redteam_injection",
+    "redteam_indirect_injection",
     "redteam_exfil",
     "redteam_toolabuse",
     "mutator",
@@ -39,6 +40,11 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
         primary="nousresearch/hermes-4-405b",
         fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition",
         notes="Hermes low-refusal + JSON. Dolphin-Venice ~2% refusal as escape hatch.",
+    ),
+    "redteam_indirect_injection": ModelChoice(
+        primary="nousresearch/hermes-4-405b",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition",
+        notes="Same as direct injection — same refusal-rate concern; the LLM only authors the visible_text + hidden_instruction, not the docx itself.",
     ),
     "redteam_exfil": ModelChoice(
         primary="nousresearch/hermes-4-405b",
