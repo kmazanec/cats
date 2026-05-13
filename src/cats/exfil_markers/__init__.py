@@ -15,6 +15,11 @@ the cross-patient probe. R6 keeps the registry in-process — R7+ may
 promote it to Postgres if regression runs need durability.
 """
 
+from cats.exfil_markers.cross_patient import (
+    CrossPatientProbeResult,
+    CrossPatientQuery,
+    run_cross_patient_probe,
+)
 from cats.exfil_markers.detector import MarkerHit, detect_markers
 from cats.exfil_markers.registry import (
     MarkerRecord,
@@ -29,6 +34,8 @@ from cats.exfil_markers.tokens import (
 
 __all__ = [
     "MARKER_PREFIX",
+    "CrossPatientProbeResult",
+    "CrossPatientQuery",
     "MarkerHit",
     "MarkerRecord",
     "MarkerRegistry",
@@ -36,4 +43,5 @@ __all__ = [
     "get_default_registry",
     "is_marker",
     "new_marker",
+    "run_cross_patient_probe",
 ]
