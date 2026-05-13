@@ -152,11 +152,7 @@
       <div class="meta"><span class="dot amber pulse"></span>SSE · /events/{{ campaign.id }}</div>
     </header>
     <div class="body flush">
-      <div class="eventlog" id="eventlog"
-           hx-ext="sse"
-           sse-connect="/events/{{ campaign.id }}"
-           sse-swap="message"
-           hx-swap="afterbegin">
+      <div class="eventlog" id="eventlog" data-sse="/events/{{ campaign.id }}">
         <div class="empty" style="border:0; background:transparent;">
           waiting for events from the running campaign…
         </div>

@@ -182,11 +182,7 @@
           <div class="meta"><span class="dot amber pulse"></span>SSE · /events</div>
         </header>
         <div class="body flush">
-          <div class="eventlog" id="eventlog"
-               hx-ext="sse"
-               sse-connect="/events/global"
-               sse-swap="message"
-               hx-swap="afterbegin">
+          <div class="eventlog" id="eventlog" data-sse="/events/global">
             {% for e in recent_events %}
               <div class="row">
                 <div class="ts">{{ e.ts }}</div>

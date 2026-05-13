@@ -36,5 +36,28 @@ class EventBus:
             await pubsub.unsubscribe(channel)
             await pubsub.close()
 
+    async def psubscribe(self, pattern: str) -> AsyncIterator[EventEnvelope]:
+        """Subscribe to every channel matching a glob pattern. Used by the
+        dashboard's live stream to fan in events across all running
+        campaigns at once ('campaign:*'), so the operator sees activity
+        platform-wide without picking a specific run first."""
+        pubsub = self._client.pubsub()
+        await pubsub.psubscribe(pattern)
+        try:
+            async for msg in pubsub.listen():
+                # PSUBSCRIBE yields 'pmessage'; the subscribe confirm is
+                # 'psubscribe' and has no payload — skip it.
+                if msg.get("type") != "pmessage":
+                    continue
+                data = msg.get("data")
+                if isinstance(data, bytes):
+                    data = data.decode()
+                if not isinstance(data, str):
+                    continue
+                yield EventEnvelope.model_validate_json(data)
+        finally:
+            await pubsub.punsubscribe(pattern)
+            await pubsub.close()
+
     async def close(self) -> None:
         await self._client.close()
