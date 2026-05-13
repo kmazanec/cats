@@ -79,7 +79,14 @@ class PlannedCampaign(BaseModel):
 
 
 class CampaignRequestedPayload(BaseModel):
-    """trigger → Orchestrator. A new campaign asks for a plan."""
+    """trigger → Orchestrator. A new campaign asks for a plan.
+
+    ``campaign_id`` is optional for backward compat — when omitted, the
+    Orchestrator creates a new campaign row. When present (the API's
+    flow), the Orchestrator uses the existing campaign rather than
+    creating a duplicate. Trigger sources that don't already own a
+    campaign row (e.g. a future webhook trigger) can still omit it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -89,6 +96,7 @@ class CampaignRequestedPayload(BaseModel):
     budget_usd: float = Field(ge=0.0)
     operator_user_id: UUID | None = None
     name: str = ""
+    campaign_id: UUID | None = None
 
 
 class CampaignPlanProposedPayload(BaseModel):

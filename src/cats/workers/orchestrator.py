@@ -198,20 +198,20 @@ class OrchestratorWorker(Worker):
         session: AsyncSession,
         payload: CampaignRequestedPayload,
     ) -> UUID:
-        """A CampaignRequested may name an existing campaign_id via
-        a row the API created, or — for the stub flow — we create the
-        campaign here. Commit B's plan-approval UI relies on a campaign
-        row existing, so we always upsert one keyed by project_id.
+        """If the envelope names an existing ``campaign_id`` (the API's
+        flow), plan against that campaign. Only when no campaign_id was
+        supplied — webhook / CLI triggers that don't own a row yet —
+        do we materialize one here.
 
-        For Commit A: we just create a fresh campaign per request and
-        return its id. Commit B's API will create the campaign first
-        and pass its id in the payload."""
+        Creating a campaign in both places (API and worker) led to the
+        "campaign detail page shows pending forever" bug: the user's
+        browser tracked the API's campaign row while the bus pipeline
+        ran against the worker's duplicate."""
+        if payload.campaign_id is not None:
+            return payload.campaign_id
+
         from cats.db.repositories.campaign_repo import create_campaign_and_run
 
-        # Re-use create_campaign_and_run to get a campaign + first run
-        # — but the run will be re-created per plan attempt by the Red
-        # Team. The throwaway first run here is harmless; the Red Team
-        # never sees it.
         campaign_id, _run_id, _pv_id = await create_campaign_and_run(
             session,
             name=payload.name or f"r4-stub-{payload.project_id}",

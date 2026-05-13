@@ -133,7 +133,9 @@ def run_campaign(
                 project_version_id=pvid,
                 budget_usd=budget_usd,
                 name=f"cli · {project['name']}",
+                campaign_id=cid,
             ),
+            campaign_id=cid,
             idempotency_key=f"cli:campaign_requested:{cid}",
         )
         async with session_scope() as session:

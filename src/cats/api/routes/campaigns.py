@@ -62,17 +62,20 @@ def _chrome_ctx(principal: Principal) -> dict[str, Any]:
 
 async def _emit_campaign_requested(
     *,
+    campaign_id: UUID,
     project_id: UUID,
     project_version_id: UUID,
     budget_usd: float,
     operator_user_id: UUID | None,
     name: str,
-    request_id: UUID,
 ) -> None:
     """R4: emit a ``CampaignRequested`` envelope onto the Orchestrator's
     inbox. The Orchestrator worker authors a plan, the operator approves
     it, and only then does the Red Team worker fire — none of that work
-    happens in the HTTP request lifetime anymore."""
+    happens in the HTTP request lifetime anymore.
+
+    The API has already created the ``campaigns`` row; the Orchestrator
+    plans against THAT campaign rather than creating a duplicate."""
     bus = Bus()
     envelope = Envelope[CampaignRequestedPayload](
         kind=MessageKind.CAMPAIGN_REQUESTED,
@@ -84,8 +87,10 @@ async def _emit_campaign_requested(
             budget_usd=budget_usd,
             operator_user_id=operator_user_id,
             name=name,
+            campaign_id=campaign_id,
         ),
-        idempotency_key=f"trigger:campaign_requested:{request_id}",
+        campaign_id=campaign_id,
+        idempotency_key=f"trigger:campaign_requested:{campaign_id}",
     )
     async with session_scope() as session:
         await bus.emit(session, envelope)
@@ -147,15 +152,17 @@ async def fire_campaign(
         # (and a throwaway campaign + run). The Orchestrator worker's
         # stub planner will create its own campaign row when it
         # processes the envelope; we just need a valid
-        # project_version_id reference for the envelope.
-        campaign_id, run_id, project_version_id = await create_campaign_and_run(
+        # project_version_id reference for the envelope. The Red Team
+        # worker creates its own per-attempt runs against this campaign;
+        # the row created here is the canonical campaign the Orchestrator
+        # plans against (NOT a duplicate-creating throwaway).
+        campaign_id, _stub_run_id, project_version_id = await create_campaign_and_run(
             session,
             project_id=project_id,
             name=f"trigger · {project['name']}",
             category="injection",
             budget_usd=budget_usd,
         )
-        request_id = campaign_id  # one campaign per request; reused for idempotency
         await write_audit(
             session,
             actor=principal.email,
@@ -165,18 +172,17 @@ async def fire_campaign(
             payload={
                 "budget_usd": budget_usd,
                 "project_id": str(project_id),
-                "stub_run_id": str(run_id),
                 "project_version_id": str(project_version_id),
             },
         )
 
     await _emit_campaign_requested(
+        campaign_id=campaign_id,
         project_id=project_id,
         project_version_id=project_version_id,
         budget_usd=budget_usd,
         operator_user_id=None,
         name=f"trigger · {project['name']}",
-        request_id=request_id,
     )
     return RedirectResponse(url=f"/campaigns/{campaign_id}", status_code=303)
 

@@ -29,13 +29,66 @@ cp .env.example .env
 ## Run everything in Docker (recommended)
 
 ```bash
-docker compose up -d --build   # postgres + redis + api (auto-migrates on boot)
+docker compose up -d --build   # all 7 services — see below
 open http://localhost:8400     # dashboard
 ```
 
+`docker compose up -d` brings up **seven services**: `postgres`, `redis`,
+`api`, and the four R4 worker processes — `orchestrator`, `red_team`,
+`judge`, `documentation`. Campaigns do nothing without those workers
+running, because the API only emits a `CampaignRequested` envelope onto
+the bus; the workers do the actual planning + attacking + judging +
+reporting. If a fired campaign sits at "pending — 0 attacks fired"
+forever, the workers aren't up: run `docker compose ps` to confirm.
+
 The `api` service runs Alembic migrations on startup, hot-reloads from
 `./src`, and seeds the bootstrap admin from `CATS_ADMIN_EMAIL` /
-`CATS_ADMIN_PASSWORD`.
+`CATS_ADMIN_PASSWORD`. Workers also hot-reload from `./src`.
+
+### Operator-facing pages
+
+- `/campaigns` — fire a campaign, see history, drill into runs.
+- `/campaigns/<id>/plan` — **HITL plan-approval page.** The Orchestrator
+  proposes a plan; you approve / edit / reject before any attack fires.
+  Off by default — see `CATS_ORCHESTRATOR_AUTO_APPROVE` below.
+- `/coverage/<project>` — per-category × per-technique coverage matrix
+  with pass/fail/partial counts; tells you whether the model is
+  becoming more or less resilient over time.
+- `/bus` — in-flight bus messages, per-agent inbox depth, dead-letter
+  queue with re-queue.
+- `/findings` — promoted findings + reports.
+- `/healthz` — per-dep + per-worker health JSON (workers report
+  heartbeats every 5s; stale after `2 * visibility_timeout`).
+
+### Engaging the human-in-the-loop plan gate
+
+By default `CATS_ORCHESTRATOR_AUTO_APPROVE=true` — the Orchestrator
+auto-approves its own plan so campaigns fire immediately (preserves
+the R3-era one-click flow). To exercise the approval gate locally:
+
+```bash
+echo "CATS_ORCHESTRATOR_AUTO_APPROVE=false" >> .env
+docker compose up -d --build orchestrator
+```
+
+After the flag flip, every fired campaign stops at "Plan: Pending
+Approval"; click through from `/campaigns/<id>` to the plan page to
+approve, edit, or reject. The same flag should be `false` in
+production (set in the deploy environment, not committed).
+
+### Engaging the real LLM planner
+
+By default the Orchestrator uses a deterministic stub plan (mirrors
+R3's injection rotation). To use the real LLM-driven planner that
+reads coverage / findings / regressions via the tool surface and
+calls Claude Sonnet 4.6:
+
+```bash
+echo "CATS_ORCHESTRATOR_USE_LLM_PLANNER=true" >> .env
+docker compose up -d --build orchestrator
+```
+
+Requires `OPENROUTER_API_KEY`.
 
 ## Run on the host (for fast iteration / debugging)
 
@@ -44,6 +97,11 @@ uv sync --all-extras
 docker compose up -d postgres redis   # just the data plane
 make migrate
 make api                              # FastAPI on :8400
+# In separate terminals (or use `make workers-all`):
+make worker-orchestrator
+make worker-red-team
+make worker-judge
+make worker-documentation
 ```
 
 ## Day-to-day

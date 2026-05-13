@@ -1776,6 +1776,30 @@ Out:
     `agent_messages` + `worker_heartbeats` + stop any leaked
     asyncio tasks) or document `-p no:randomly` as the canonical
     invocation in `tests/README.md` and CI.
+  - **Two operator-visible launch gaps caught post-merge.** First, the
+    README told operators `docker compose up -d --build` brings up
+    "postgres + redis + api" — the wording predates R4 and didn't
+    explain that the four worker services were now part of the
+    default `up`. An operator who already had `api + postgres + redis`
+    running could fire a campaign and watch it sit at "pending — 0
+    attacks fired" forever with no error surfaced. Fix: README's
+    Docker section now says "all 7 services" and explicitly names
+    the four workers, plus calls out the "if your campaign hangs at
+    pending, check `docker compose ps`" failure mode. Second, the
+    API + Orchestrator both called `create_campaign_and_run` on the
+    same `CampaignRequested`, so the API's campaign row (the one the
+    browser was redirected to) and the Orchestrator's campaign row
+    (the one the bus pipeline ran against) were *different*. The
+    user's campaign-detail page showed "pending forever" because the
+    pipeline ran against the orchestrator's duplicate. Fix:
+    `CampaignRequestedPayload` now carries an optional
+    `campaign_id`; the API sets it; the Orchestrator uses it when
+    present and only creates a new campaign for webhook / future
+    triggers that don't own a row yet. The Commit-A self-review
+    flagged this as "observation #1, non-blocking" — landed as a
+    post-merge fix instead. R5+ retros should be opinionated when
+    the reviewer flags a follow-up: either fix in-round or accept
+    the bug ships.
 - What to change for R5:
   - **R5 (.docx indirect injection) lands cleanly on the bus.** The
     new attack-firing path goes through `cats.agents.red_team.executor`;
