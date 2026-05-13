@@ -610,6 +610,39 @@ campaign_plans = Table(
 )
 
 
+campaign_reports = Table(
+    "campaign_reports",
+    metadata,
+    _uuid_pk(),
+    Column(
+        "campaign_id",
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("status", String(20), nullable=False, server_default="pending"),
+    Column("body_markdown", Text, nullable=False, server_default=""),
+    # ``artifacts`` carries the list of visual artifacts the report
+    # generator rendered: ``[{name, kind, path, alt}, ...]`` where path
+    # is relative to the on-disk reports directory. Stored as JSON so
+    # callers can re-render the page without re-running the LLM.
+    Column("artifacts", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("model", String(120), nullable=False, server_default=""),
+    Column("tokens_in", Integer, nullable=False, server_default=text("0")),
+    Column("tokens_out", Integer, nullable=False, server_default=text("0")),
+    Column("usd_estimate", Float, nullable=False, server_default=text("0")),
+    Column("tool_transcript", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("generated_at", DateTime(timezone=True), nullable=True),
+    _ts(),
+    CheckConstraint(
+        "status IN ('pending','generating','completed','failed')",
+        name="ck_campaign_reports_status",
+    ),
+    Index("ix_campaign_reports_campaign_id", "campaign_id"),
+)
+
+
 __all__ = [
     "agent_dead_letters",
     "agent_messages",
@@ -617,6 +650,7 @@ __all__ = [
     "attacks",
     "audit_log",
     "campaign_plans",
+    "campaign_reports",
     "campaigns",
     "documentation_drafts",
     "finding_executions",

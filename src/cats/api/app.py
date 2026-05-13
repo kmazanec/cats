@@ -22,6 +22,7 @@ from cats.api.routes import (
     audit,
     auth_routes,
     bus,
+    campaign_reports,
     campaigns,
     coverage,
     findings,
@@ -183,6 +184,7 @@ def create_app() -> FastAPI:
     app.include_router(audit.router, prefix="/audit", tags=["audit"])
     app.include_router(health.router, prefix="/health", tags=["health"])
     app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+    app.include_router(campaign_reports.router, prefix="/campaigns", tags=["campaign-reports"])
     # R4 Commit B: HITL plan-approval routes live under /campaigns/{id}/plan.
     app.include_router(plans.router, prefix="/campaigns", tags=["plans"])
     app.include_router(findings.router, prefix="/findings", tags=["findings"])
