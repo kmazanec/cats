@@ -92,13 +92,6 @@ class Settings(BaseSettings):
         default=False,
         alias="CATS_ORCHESTRATOR_AUTO_APPROVE",
     )
-    # R4 — when True, the Orchestrator uses the real LLM planner over
-    # the tool surface. When False (default for tests + smoke), it
-    # falls back to the Commit-A deterministic stub plan.
-    orchestrator_use_llm_planner: bool = Field(
-        default=False,
-        alias="CATS_ORCHESTRATOR_USE_LLM_PLANNER",
-    )
 
     # Build / deploy metadata (R1) — populated by the deploy job
     build_sha: str = Field(default="dev", alias="CATS_BUILD_SHA")

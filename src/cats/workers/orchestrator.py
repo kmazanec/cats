@@ -1,22 +1,17 @@
 """Orchestrator worker process.
 
-Consumes ``CampaignRequested`` and emits ``CampaignPlanProposed``. The
-planner used depends on ``settings.orchestrator_use_llm_planner``:
-
-- ``True`` (production) — the real LLM planner over the tool surface
-  (see :mod:`cats.agents.orchestrator.planner`). Plans are
-  rationale-grounded, structurally validated, with a tool-call
-  transcript persisted on the ``campaign_plans`` row.
-- ``False`` (tests, smoke, Commit-A behavior) — the deterministic stub
-  plan that mirrors R3's injection ROTATION. Preserves R3 e2e tests
-  without spinning up LLM credentials.
+Consumes ``CampaignRequested`` and emits ``CampaignPlanProposed``. Plans
+come from the LLM planner over the tool surface (see
+:mod:`cats.agents.orchestrator.planner`) — rationale-grounded,
+structurally validated, with a tool-call transcript persisted on the
+``campaign_plans`` row.
 
 Approval routing depends on ``settings.orchestrator_auto_approve``:
 
-- ``True`` (Commit-A behavior, default) — auto-emit
-  ``CampaignPlanApproved`` so the Red Team fires immediately.
-- ``False`` — wait for the operator to approve via the
-  ``/campaigns/<id>/plan`` page. The page POSTs to the API which
+- ``True`` — auto-emit ``CampaignPlanApproved`` so the Red Team fires
+  immediately. Used by the R4 e2e tests + smoke path.
+- ``False`` (production default) — wait for the operator to approve via
+  the ``/campaigns/<id>/plan`` page. The page POSTs to the API which
   emits ``CampaignPlanApproved`` with the (possibly edited) plan.
 """
 
@@ -30,7 +25,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.agents.orchestrator.planner import PlanStructuralError, propose_plan
-from cats.agents.red_team.injection.dispatcher import ROTATION as INJECTION_ROTATION
 from cats.config import get_settings
 from cats.db.repositories.audit_repo import write_audit
 from cats.graph.events import publish
@@ -41,19 +35,13 @@ from cats.messaging import (
     ClaimedMessage,
     Envelope,
     MessageKind,
-    PlanAttempt,
     PlannedCampaign,
     Worker,
 )
 
-# Stub plan size: same three injection techniques R3 walked in
-# MIN_TECHNIQUES_PER_CAMPAIGN order. Used when the LLM planner is
-# disabled (tests, smoke).
-_STUB_NUM_TECHNIQUES = 3
-
 
 class OrchestratorWorker(Worker):
-    """Orchestrator agent. Commit A: deterministic stub planner."""
+    """Orchestrator agent — drives the LLM planner over the tool surface."""
 
     agent_name = "orchestrator"
     visibility_timeout_seconds = 300  # ARCHITECTURE.md §2.7 (LLM-driven)
@@ -77,50 +65,44 @@ class OrchestratorWorker(Worker):
             kind="campaign_requested",
             campaign_id=campaign_id,
             run_id=None,
-            payload={
-                "planner": ("llm" if settings.orchestrator_use_llm_planner else "stub"),
-                "budget_usd": payload.budget_usd,
-            },
+            payload={"budget_usd": payload.budget_usd},
         )
 
         plan: PlannedCampaign
         tool_transcript: list[dict[str, object]] = []
-        if settings.orchestrator_use_llm_planner:
-            try:
-                proposal = await propose_plan(
-                    project_id=payload.project_id,
-                    project_version_id=payload.project_version_id,
-                    budget_usd=payload.budget_usd,
-                    campaign_id=campaign_id,
-                )
-                plan = proposal.plan
-                # `tool_transcript` carries Pydantic-serialized values
-                # through JSON; cast tightens the type for the envelope.
-                tool_transcript = list(proposal.tool_transcript)
-                self._log.info(
-                    "orchestrator.plan_proposed",
-                    campaign_id=str(campaign_id),
-                    cold_start=proposal.cold_start,
-                    attempt_count=len(plan.attempts),
-                    model=proposal.model,
-                    usd=proposal.cost_usd,
-                )
-            except PlanStructuralError as exc:
-                self._log.exception(
-                    "orchestrator.plan_failed",
-                    campaign_id=str(campaign_id),
-                    error=repr(exc),
-                )
-                await self._mark_plan_failed(session, campaign_id=campaign_id, error=repr(exc))
-                await publish(
-                    kind="plan_failed",
-                    campaign_id=campaign_id,
-                    run_id=None,
-                    payload={"error": repr(exc)[:300]},
-                )
-                return
-        else:
-            plan = self._stub_plan(payload.budget_usd)
+        try:
+            proposal = await propose_plan(
+                project_id=payload.project_id,
+                project_version_id=payload.project_version_id,
+                budget_usd=payload.budget_usd,
+                campaign_id=campaign_id,
+            )
+            plan = proposal.plan
+            # `tool_transcript` carries Pydantic-serialized values
+            # through JSON; cast tightens the type for the envelope.
+            tool_transcript = list(proposal.tool_transcript)
+            self._log.info(
+                "orchestrator.plan_proposed",
+                campaign_id=str(campaign_id),
+                cold_start=proposal.cold_start,
+                attempt_count=len(plan.attempts),
+                model=proposal.model,
+                usd=proposal.cost_usd,
+            )
+        except PlanStructuralError as exc:
+            self._log.exception(
+                "orchestrator.plan_failed",
+                campaign_id=str(campaign_id),
+                error=repr(exc),
+            )
+            await self._mark_plan_failed(session, campaign_id=campaign_id, error=repr(exc))
+            await publish(
+                kind="plan_failed",
+                campaign_id=campaign_id,
+                run_id=None,
+                payload={"error": repr(exc)[:300]},
+            )
+            return
 
         plan_id = await self._record_proposed_plan(
             session,
@@ -140,7 +122,6 @@ class OrchestratorWorker(Worker):
             target_id=plan_id,
             payload={
                 "campaign_id": str(campaign_id),
-                "planner": ("llm" if settings.orchestrator_use_llm_planner else "stub"),
                 "attempt_count": len(plan.attempts),
                 "rationale_excerpt": plan.rationale[:200],
             },
@@ -149,8 +130,8 @@ class OrchestratorWorker(Worker):
 
         # Emit CampaignPlanProposed onto the operator's inbox. The HITL
         # UI consumes this; if `orchestrator_auto_approve` is True the
-        # worker self-approves below to preserve the R3 / Commit-A
-        # behavior for tests + smoke.
+        # worker self-approves below — used by e2e tests + smoke so the
+        # bus pipeline runs without a UI hop.
         await self._bus.emit(
             session,
             Envelope[CampaignPlanProposedPayload](
@@ -189,36 +170,6 @@ class OrchestratorWorker(Worker):
                 project_version_id=payload.project_version_id,
                 trace_id=message.trace_id,
             )
-
-    # ------------------------------------------------------------------
-    # Stub plan
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _stub_plan(budget_usd: float) -> PlannedCampaign:
-        per_attempt = max(0.05, budget_usd / max(1, _STUB_NUM_TECHNIQUES))
-        attempts = [
-            PlanAttempt(
-                category="injection",
-                technique=technique,
-                per_attempt_budget_usd=per_attempt,
-                max_consecutive_partials=2,
-            )
-            for technique in INJECTION_ROTATION[:_STUB_NUM_TECHNIQUES]
-        ]
-        return PlannedCampaign(
-            attempts=attempts,
-            rationale=(
-                "R4 Commit-A stub planner: walks the first three "
-                "injection techniques. The Commit-B LLM planner replaces "
-                "this with grounded reasoning over the coverage / "
-                "findings / regressions tool surface."
-            ),
-            confidence="medium",
-            halt_on_consecutive_fails=3,
-            halt_on_judge_errors=2,
-            budget_usd_cap=budget_usd,
-        )
 
     # ------------------------------------------------------------------
     # Persistence

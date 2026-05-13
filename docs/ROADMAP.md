@@ -1593,10 +1593,10 @@ Out:
       unknown-technique, budget-overflow, halt-out-of-range,
       too-short-rationale, negative-budget refusals plus
       max-attempts truncation.
-- [x] Settings toggles `orchestrator_use_llm_planner` (default off
-      for tests) and `orchestrator_auto_approve` (default on for
-      Commit-A compatibility; production overrides via env var).
-      The stub plan stays in the worker as the test/smoke fallback.
+- [x] Settings toggle `orchestrator_auto_approve` (default off in
+      production so the operator gates every plan; tests + smoke
+      override via `set_settings_for_test` /
+      `CATS_ORCHESTRATOR_AUTO_APPROVE=true` to skip the UI hop).
 - [x] HITL plan approval UI at `/campaigns/<id>/plan`
       (`src/cats/api/routes/plans.py` + `plan_approval.html`):
       editable per-attempt table with category/technique dropdown
@@ -1704,10 +1704,9 @@ Out:
     speed. Cheaper than any architectural-fitness library.
   - **R3 tests still pass against the new topology.** No R3 test
     needed to be deleted or substantially rewritten — the bus is
-    additive; `run_one` still functions for the R3 e2e. The
-    Commit-A stub Orchestrator preserves the multi-technique
-    rotation exactly so the multi-technique campaign test remains
-    valid.
+    additive; `run_one` still functions for the R3 e2e. The Red
+    Team's `INJECTION_ROTATION` is unchanged, so the multi-technique
+    campaign test remains valid.
 - What didn't:
   - **The full pass-path e2e through Documentation didn't make
     Commit A.** The fake OpenEMR transport in `test_r4_bus_e2e.py`
@@ -1742,15 +1741,13 @@ Out:
 
 *Commit B specifics:*
 
-  - **Settings toggles, not branches, gate the new behavior.**
-    `orchestrator_use_llm_planner` and `orchestrator_auto_approve`
-    are independent flags. The R4 e2e test from Commit A still
-    passes verbatim because both default to the Commit-A behavior
-    (stub plan + auto-approve). Production sets
-    `CATS_ORCHESTRATOR_USE_LLM_PLANNER=true` +
-    `CATS_ORCHESTRATOR_AUTO_APPROVE=false` to engage the real flow
-    without code changes. Keeps the diff smaller and the test
-    matrix simpler than a branch-on-environment pattern.
+  - **One setting gates the only behavior worth gating.**
+    `orchestrator_auto_approve` defaults to off so production runs
+    through the HITL approval page; tests + smoke flip it on via
+    `set_settings_for_test` to skip the UI hop and exercise the bus
+    pipeline end-to-end. The LLM planner runs unconditionally — the
+    R4 e2e fixture scripts a deterministic plan response on
+    `FakeLLMClient` so the test stays hermetic.
   - **Hidden-`plan_json` form submission instead of indexed fields.**
     The HITL editor walks the table on submit and serializes the
     plan as a single JSON blob — the server then validates via

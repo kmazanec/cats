@@ -148,10 +148,6 @@ async def fire_campaign(
                     "in the project edit form to authorize attacks."
                 ),
             )
-        # Reuse the existing helper to materialize a project_version_id
-        # (and a throwaway campaign + run). The Orchestrator worker's
-        # stub planner will create its own campaign row when it
-        # processes the envelope; we just need a valid
         # Create the campaign row only — the Red Team worker
         # materializes its own per-attempt runs as it walks the
         # approved plan. Creating a stub run here used to leave a

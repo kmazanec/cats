@@ -87,6 +87,30 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 
     fake = FakeLLMClient()
     fake.register(
+        "orchestrator",
+        lambda _m: json.dumps(
+            {
+                "attempts": [
+                    {
+                        "category": "injection",
+                        "technique": "ignore_previous",
+                        "per_attempt_budget_usd": 0.5,
+                        "max_consecutive_partials": 2,
+                    }
+                ],
+                "rationale": (
+                    "Cold-start plan from list_coverage tool output: no "
+                    "prior coverage for injection.ignore_previous, so "
+                    "this is the highest-value first probe."
+                ),
+                "confidence": "medium",
+                "halt_on_consecutive_fails": 3,
+                "halt_on_judge_errors": 2,
+                "budget_usd_cap": 1.0,
+            }
+        ),
+    )
+    fake.register(
         "redteam_injection",
         lambda _m: json.dumps(
             {
