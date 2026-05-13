@@ -146,6 +146,54 @@
         .forEach((el) => el.remove());
     }
 
+    // De-dupe key for backfilled events: the timeline returns the same
+    // logical events that the live SSE stream will re-emit if the
+    // worker is still running. Build a coarse signature from kind +
+    // run_id + at so we don't duplicate the row when the live stream
+    // catches up to the moment of page load.
+    const seen = new Set();
+    function signatureOf(env) {
+      const at = (env && env.at) || "";
+      const run = (env && env.run_id) || "";
+      const kind = (env && env.kind) || "";
+      return `${kind}|${run}|${at}`;
+    }
+    function rememberEnv(env) {
+      seen.add(signatureOf(env));
+    }
+    function isDuplicate(env) {
+      return seen.has(signatureOf(env));
+    }
+
+    // One-shot historical backfill. The campaign-detail page exposes
+    // /campaigns/<id>/timeline; the global stream has no backing
+    // history endpoint, so we skip backfill there. Backfill is
+    // append-oldest-first; new rows from the live source go to the
+    // top via insertBefore(firstChild), so the final ordering is
+    // newest-at-top across both sources.
+    function maybeBackfill() {
+      const m = url.match(/^\/events\/([0-9a-f-]+)$/i);
+      if (!m) return Promise.resolve();
+      return fetch(`/campaigns/${m[1]}/timeline`, { credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((events) => {
+          if (!Array.isArray(events) || events.length === 0) return;
+          clearPlaceholder();
+          // Oldest-first into the DOM via insertBefore(firstChild):
+          // each new row becomes the new top, so the final visual
+          // ordering is newest-at-top.
+          events.forEach((env) => {
+            rememberEnv(env);
+            const row = renderRow(env);
+            eventlog.insertBefore(row, eventlog.firstChild);
+            while (eventlog.children.length > MAX_ROWS) {
+              eventlog.removeChild(eventlog.lastChild);
+            }
+          });
+        })
+        .catch(() => {});
+    }
+
     // Plan-lifecycle events change so much server-rendered state
     // (status pill, "Pending Approval" CTA, run list, cost rollup)
     // that the simplest reliable refresh is a one-shot page reload
@@ -171,30 +219,38 @@
       }, 250);
     }
 
-    const src = new EventSource(url);
-    src.onmessage = function (e) {
-      let env;
-      try {
-        env = JSON.parse(e.data);
-      } catch (err) {
-        return;
-      }
-      clearPlaceholder();
-      const row = renderRow(env);
-      eventlog.insertBefore(row, eventlog.firstChild);
-      while (eventlog.children.length > MAX_ROWS) {
-        eventlog.removeChild(eventlog.lastChild);
-      }
-      if (env && env.kind && RELOAD_ON.has(env.kind)) {
-        scheduleReload();
-      }
-    };
-    // Don't spam the console on transient reconnects — EventSource
-    // retries on its own.
-    src.onerror = function () {};
+    let src = null;
+    function openLiveStream() {
+      src = new EventSource(url);
+      src.onmessage = function (e) {
+        let env;
+        try {
+          env = JSON.parse(e.data);
+        } catch (err) {
+          return;
+        }
+        if (isDuplicate(env)) return;
+        rememberEnv(env);
+        clearPlaceholder();
+        const row = renderRow(env);
+        eventlog.insertBefore(row, eventlog.firstChild);
+        while (eventlog.children.length > MAX_ROWS) {
+          eventlog.removeChild(eventlog.lastChild);
+        }
+        if (env && env.kind && RELOAD_ON.has(env.kind)) {
+          scheduleReload();
+        }
+      };
+      // Don't spam the console on transient reconnects — EventSource
+      // retries on its own.
+      src.onerror = function () {};
+    }
+
+    maybeBackfill().then(openLiveStream);
+
     // Detach on page unload so we don't leak the connection.
     window.addEventListener("beforeunload", function () {
-      src.close();
+      if (src) src.close();
     });
   }
 

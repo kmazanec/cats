@@ -21,6 +21,7 @@ from cats.db.repositories.campaign_repo import (
     get_campaign_with_project,
     get_execution_full,
     get_run_with_campaign,
+    list_campaign_timeline,
     list_campaigns,
     list_executions_for_run,
     list_executions_full,
@@ -234,6 +235,23 @@ async def campaign_detail(
         }
     )
     return templates.TemplateResponse(request, "campaign_detail.html", ctx)
+
+
+@router.get("/{campaign_id}/timeline")
+async def campaign_timeline(
+    campaign_id: UUID,
+    principal: Principal = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """JSON history of the campaign's events, ordered oldest-first, in
+    the same envelope shape SSE emits. The campaign-detail page fetches
+    this once on load and prepends each row before the live EventSource
+    starts, so the event log survives a page reload."""
+    _ = principal
+    async with session_scope() as session:
+        campaign = await get_campaign_with_project(session, campaign_id=campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        return await list_campaign_timeline(session, campaign_id=campaign_id)
 
 
 @router.get("/{campaign_id}/runs/{run_id}")

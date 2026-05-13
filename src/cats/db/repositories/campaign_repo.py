@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cats.db.schema import (
     attack_executions,
     attacks,
+    campaign_plans,
     campaigns,
     findings,
     judge_verdicts,
@@ -587,6 +588,184 @@ async def list_executions_full(session: AsyncSession, *, run_id: UUID) -> list[d
         )
     ).all()
     return [_execution_row_to_dict(r) for r in rows]
+
+
+async def list_campaign_timeline(
+    session: AsyncSession, *, campaign_id: UUID
+) -> list[dict[str, Any]]:
+    """Replay the campaign's historical events in the same envelope
+    shape the live SSE stream uses. Drives the campaign-detail page's
+    one-shot backfill on page load so the event log survives reloads.
+
+    Sources, oldest-first by timestamp:
+      - campaign_plans rows → plan_proposed / plan_approved
+      - attack_executions rows (joined with attacks for category/technique
+        and judge_verdicts for the verdict) → attack_executed and, when
+        a verdict is recorded, judge_verdict_rendered
+      - runs.ended_at → run_completed
+      - findings → finding_promoted
+
+    Events that have no DB row (the orchestrator's intra-planning
+    chatter, output-filter intermediates) intentionally aren't backfilled
+    — they're transient by design."""
+    events: list[dict[str, Any]] = []
+
+    plan_rows = (
+        await session.execute(
+            select(
+                campaign_plans.c.id,
+                campaign_plans.c.status,
+                campaign_plans.c.created_at,
+                campaign_plans.c.approved_at,
+                campaign_plans.c.proposed_plan,
+            )
+            .where(campaign_plans.c.campaign_id == campaign_id)
+            .order_by(campaign_plans.c.created_at)
+        )
+    ).all()
+    for p in plan_rows:
+        proposed = p.proposed_plan if isinstance(p.proposed_plan, dict) else {}
+        attempts = proposed.get("attempts") if isinstance(proposed, dict) else None
+        events.append(
+            {
+                "kind": "plan_proposed",
+                "campaign_id": str(campaign_id),
+                "run_id": None,
+                "at": p.created_at,
+                "payload": {
+                    "plan_id": str(p.id),
+                    "attempt_count": len(attempts) if isinstance(attempts, list) else 0,
+                },
+            }
+        )
+        if p.approved_at is not None and p.status in ("approved", "edited", "dispatched"):
+            events.append(
+                {
+                    "kind": "plan_approved",
+                    "campaign_id": str(campaign_id),
+                    "run_id": None,
+                    "at": p.approved_at,
+                    "payload": {"plan_id": str(p.id)},
+                }
+            )
+
+    exec_rows = (
+        await session.execute(
+            select(
+                attack_executions.c.id,
+                attack_executions.c.run_id,
+                attack_executions.c.created_at,
+                attack_executions.c.target_status_code,
+                attack_executions.c.target_latency_ms,
+                attack_executions.c.output_filter_verdict,
+                attacks.c.payload.label("attack_payload"),
+                judge_verdicts.c.verdict.label("judge_verdict"),
+                judge_verdicts.c.rationale.label("judge_rationale"),
+                judge_verdicts.c.created_at.label("judge_created_at"),
+            )
+            .select_from(
+                attack_executions.join(runs, attack_executions.c.run_id == runs.c.id)
+                .join(attacks, attack_executions.c.attack_id == attacks.c.id)
+                .outerjoin(
+                    judge_verdicts,
+                    attack_executions.c.judge_verdict_id == judge_verdicts.c.id,
+                )
+            )
+            .where(runs.c.campaign_id == campaign_id)
+            .order_by(attack_executions.c.created_at)
+        )
+    ).all()
+    for e in exec_rows:
+        attack_payload = e.attack_payload if isinstance(e.attack_payload, dict) else {}
+        events.append(
+            {
+                "kind": "attack_executed",
+                "campaign_id": str(campaign_id),
+                "run_id": str(e.run_id),
+                "at": e.created_at,
+                "payload": {
+                    "category": attack_payload.get("category"),
+                    "technique": attack_payload.get("technique"),
+                    "status_code": e.target_status_code,
+                    "latency_ms": e.target_latency_ms,
+                    "filter_verdict": e.output_filter_verdict,
+                },
+            }
+        )
+        if e.judge_verdict is not None:
+            events.append(
+                {
+                    "kind": "judge_verdict_rendered",
+                    "campaign_id": str(campaign_id),
+                    "run_id": str(e.run_id),
+                    "at": e.judge_created_at or e.created_at,
+                    "payload": {
+                        "verdict": e.judge_verdict,
+                        "rationale": e.judge_rationale or "",
+                    },
+                }
+            )
+
+    run_rows = (
+        await session.execute(
+            select(
+                runs.c.id,
+                runs.c.ended_at,
+                runs.c.attacks_fired,
+                runs.c.budget_consumed_usd,
+                runs.c.status,
+            )
+            .where(runs.c.campaign_id == campaign_id)
+            .where(runs.c.ended_at.is_not(None))
+        )
+    ).all()
+    for r in run_rows:
+        events.append(
+            {
+                "kind": "run_completed",
+                "campaign_id": str(campaign_id),
+                "run_id": str(r.id),
+                "at": r.ended_at,
+                "payload": {
+                    "attacks_fired": r.attacks_fired,
+                    "spend_usd": r.budget_consumed_usd,
+                    "status": r.status,
+                },
+            }
+        )
+
+    finding_rows = (
+        await session.execute(
+            select(
+                findings.c.id,
+                findings.c.run_id,
+                findings.c.created_at,
+                findings.c.severity,
+                findings.c.title,
+            )
+            .select_from(findings.join(runs, findings.c.run_id == runs.c.id))
+            .where(runs.c.campaign_id == campaign_id)
+        )
+    ).all()
+    for f in finding_rows:
+        events.append(
+            {
+                "kind": "finding_promoted",
+                "campaign_id": str(campaign_id),
+                "run_id": str(f.run_id),
+                "at": f.created_at,
+                "payload": {
+                    "finding_id": str(f.id),
+                    "severity": f.severity,
+                    "title": f.title,
+                },
+            }
+        )
+
+    events.sort(key=lambda ev: ev["at"])
+    for ev in events:
+        ev["at"] = ev["at"].isoformat() if hasattr(ev["at"], "isoformat") else ev["at"]
+    return events
 
 
 async def get_execution_full(

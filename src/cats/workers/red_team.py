@@ -161,7 +161,9 @@ class RedTeamWorker(Worker):
                         "technique": attempt.technique,
                         "seed_idx": seed_idx,
                         "attack_id": str(result.attack_id),
-                        "output_filter_verdict": result.output_filter_verdict,
+                        "status_code": result.target_status_code,
+                        "latency_ms": result.target_latency_ms,
+                        "filter_verdict": result.output_filter_verdict,
                     },
                 )
                 # Emit AttackEvent to the Judge.
@@ -314,6 +316,22 @@ class RedTeamWorker(Worker):
                 """
             ),
             {"iter": next_iter, "id": payload.attack_id},
+        )
+        # Live UI: the variant attack just fired.
+        await publish(
+            kind="attack_executed",
+            campaign_id=payload.campaign_id,
+            run_id=prior.run_id,
+            payload={
+                "category": str(prior_payload.get("category", "injection")),
+                "technique": str(prior_payload.get("technique", "ignore_previous")),
+                "seed_idx": payload.seed_idx,
+                "iteration": next_iter,
+                "attack_id": str(result.attack_id),
+                "status_code": result.target_status_code,
+                "latency_ms": result.target_latency_ms,
+                "filter_verdict": result.output_filter_verdict,
+            },
         )
         # Emit the next AttackEvent — same seed_idx as the partial we
         # came from; iteration bumps so the idempotency key is unique.

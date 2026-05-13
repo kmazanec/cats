@@ -70,6 +70,8 @@ class AttemptResult:
     payload_user_message: str
     canary: str
     target_response_text: str
+    target_status_code: int
+    target_latency_ms: int
     output_filter_verdict: str
     output_filter_reason: str
     technique: str
@@ -477,6 +479,8 @@ async def execute_attempt(
         payload_user_message=user_message,
         canary=canary,
         target_response_text=target_text,
+        target_status_code=target_status_code,
+        target_latency_ms=target_latency_ms,
         output_filter_verdict=output_filter_verdict,
         output_filter_reason=output_filter_reason,
         technique=technique,
