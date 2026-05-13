@@ -168,6 +168,11 @@ class AttackEventPayload(BaseModel):
     # decode after a worker upgrade.
     target_status_code: int = 0
     target_error: str | None = None
+    # Wall-clock the target took to respond. Lets the Judge flag
+    # cost-amplification / DoS signals (see W3_THREAT_RESEARCH §3.5,
+    # §8.1-8.7) on its `evidence` payload without inventing a new
+    # verdict tier. A full DoS attack family lives in a future round.
+    target_latency_ms: int = 0
 
 
 VerdictKind = Literal["pass", "fail", "partial", "error"]

@@ -321,6 +321,7 @@
       `<td class="run-technique mono">${escapeHtml(tech)}</td>` +
       `<td class="num run-attacks">0</td>` +
       `<td class="num mono run-spend">$0.0000</td>` +
+      `<td class="num mono run-slowest">—</td>` +
       `<td class="num muted">${escapeHtml(ts)}</td>`;
     tbody.insertBefore(tr, tbody.firstChild);
     updateRunsCountMeta();
@@ -360,9 +361,27 @@
     const tr = table.querySelector(`tr[data-run-id="${env.run_id}"]`);
     if (!tr) return;
     const cell = tr.querySelector(".run-attacks");
-    if (!cell) return;
-    const n = parseInt(cell.textContent || "0", 10);
-    cell.textContent = String((isNaN(n) ? 0 : n) + 1);
+    if (cell) {
+      const n = parseInt(cell.textContent || "0", 10);
+      cell.textContent = String((isNaN(n) ? 0 : n) + 1);
+    }
+    // Track the slowest attack so the operator sees cost-amplification
+    // signals at a glance. ≥60s flips the cell amber to match the
+    // server-rendered threshold.
+    const p = env.payload || {};
+    if (p.latency_ms != null) {
+      const slow = tr.querySelector(".run-slowest");
+      if (slow) {
+        const current = parseFloat(slow.dataset.maxMs || "0");
+        const incoming = Number(p.latency_ms);
+        if (!isNaN(incoming) && incoming > current) {
+          slow.dataset.maxMs = String(incoming);
+          slow.textContent = (incoming / 1000).toFixed(1) + "s";
+          if (incoming >= 60000) slow.classList.add("amber");
+          else slow.classList.remove("amber");
+        }
+      }
+    }
   }
 
   function applyMutations(env) {

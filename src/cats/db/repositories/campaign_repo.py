@@ -239,6 +239,20 @@ async def get_campaign_with_project(
 async def list_runs_for_campaign(
     session: AsyncSession, *, campaign_id: UUID
 ) -> list[dict[str, Any]]:
+    # Surface the slowest attack's wall-clock per run so the campaign
+    # detail page flags potential cost-amplification / DoS attempts.
+    # The full DoS attack family is a future round; this is a heads-up
+    # column the operator can read at a glance.
+    from sqlalchemy import func
+
+    max_latency = (
+        select(
+            attack_executions.c.run_id,
+            func.max(attack_executions.c.target_latency_ms).label("max_latency"),
+        )
+        .group_by(attack_executions.c.run_id)
+        .subquery()
+    )
     rows = (
         await session.execute(
             select(
@@ -248,7 +262,9 @@ async def list_runs_for_campaign(
                 runs.c.ended_at,
                 runs.c.attacks_fired,
                 runs.c.budget_consumed_usd,
+                max_latency.c.max_latency,
             )
+            .select_from(runs.outerjoin(max_latency, runs.c.id == max_latency.c.run_id))
             .where(runs.c.campaign_id == campaign_id)
             .order_by(desc(runs.c.created_at))
         )
@@ -261,6 +277,7 @@ async def list_runs_for_campaign(
             "ended_at": r.ended_at,
             "attacks_fired": r.attacks_fired,
             "budget_consumed_usd": r.budget_consumed_usd,
+            "max_target_latency_ms": r.max_latency,
         }
         for r in rows
     ]

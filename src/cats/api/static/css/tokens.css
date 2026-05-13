@@ -470,6 +470,10 @@ h3.title {
 .tbl .mono { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; }
 .tbl td.num { font-family: 'JetBrains Mono', monospace; text-align: right; }
 .tbl td.muted { color: var(--ink-3); }
+/* Used by the "Slowest" column when an attack exceeded the
+   cost-amplification threshold — heads-up that the target burned
+   wall-clock the supervisor didn't budget for. */
+.tbl td.amber { color: var(--amber); }
 
 /* ============================================================================
    Status dots / pills / tags
