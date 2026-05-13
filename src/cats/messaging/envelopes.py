@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class MessageKind(StrEnum):
-    """The six cross-agent message kinds the bus carries."""
+    """The cross-agent message kinds the bus carries."""
 
     CAMPAIGN_REQUESTED = "CampaignRequested"
     CAMPAIGN_PLAN_PROPOSED = "CampaignPlanProposed"
@@ -26,6 +26,11 @@ class MessageKind(StrEnum):
     ATTACK_EVENT = "AttackEvent"
     VERDICT_RENDERED = "VerdictRendered"
     FINDING_PROMOTED = "FindingPromoted"
+    # Operator or platform asks Documentation to (re)render the
+    # campaign-level rollup report. Producer is the Documentation
+    # worker itself (auto-trigger when every run is terminal) or
+    # the POST /campaigns/{id}/report route (manual regenerate).
+    CAMPAIGN_REPORT_REQUESTED = "CampaignReportRequested"
 
 
 AgentName = Literal[
@@ -205,6 +210,34 @@ class VerdictRenderedPayload(BaseModel):
     seed_idx: int = 0
 
 
+class CampaignReportRequestedPayload(BaseModel):
+    """Ask the Documentation worker to (re)render the campaign-level
+    rollup report. Producer is one of:
+
+    - The Documentation worker itself, when handling the last
+      ``VerdictRendered`` of a campaign (auto-trigger).
+    - The POST ``/campaigns/{id}/report`` route (operator-driven
+      regeneration).
+
+    The handler is bounded by the writer's tool-loop turn budget; it
+    extends its bus claim via ``touch_claim`` between LLM turns so a
+    slow LLM doesn't trigger a false redelivery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    payload_version: int = 1
+    campaign_id: UUID
+    # Short string describing why the report was requested, surfaced
+    # in the audit log: ``"auto_terminal"`` (every run reached a
+    # terminal state), ``"manual_regenerate"`` (operator clicked),
+    # etc. Free-form so callers can add new triggers without a schema
+    # bump.
+    reason: str = "auto_terminal"
+    # Operator who requested the regeneration. ``None`` for the
+    # auto-trigger path.
+    requested_by: UUID | None = None
+
+
 class FindingPromotedPayload(BaseModel):
     """Documentation → downstream. Critical-severity findings carry
     ``awaiting_approval=True`` for the R9 human gate; R4 just records
@@ -236,6 +269,7 @@ PayloadT = TypeVar(
     AttackEventPayload,
     VerdictRenderedPayload,
     FindingPromotedPayload,
+    CampaignReportRequestedPayload,
 )
 
 
@@ -269,6 +303,7 @@ CampaignPlanApprovedEnvelope = Envelope[CampaignPlanApprovedPayload]
 AttackEventEnvelope = Envelope[AttackEventPayload]
 VerdictRenderedEnvelope = Envelope[VerdictRenderedPayload]
 FindingPromotedEnvelope = Envelope[FindingPromotedPayload]
+CampaignReportRequestedEnvelope = Envelope[CampaignReportRequestedPayload]
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +318,7 @@ PAYLOAD_FOR_KIND: dict[MessageKind, type[BaseModel]] = {
     MessageKind.ATTACK_EVENT: AttackEventPayload,
     MessageKind.VERDICT_RENDERED: VerdictRenderedPayload,
     MessageKind.FINDING_PROMOTED: FindingPromotedPayload,
+    MessageKind.CAMPAIGN_REPORT_REQUESTED: CampaignReportRequestedPayload,
 }
 
 

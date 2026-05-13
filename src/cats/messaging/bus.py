@@ -239,6 +239,60 @@ class Bus:
             },
         )
 
+    async def touch_claim(
+        self,
+        session: AsyncSession,
+        message_id: UUID,
+        *,
+        worker_id: str,
+        extend_seconds: int,
+    ) -> bool:
+        """Extend ``visible_after`` for a message this worker currently
+        owns. Used by long-running handlers (e.g. the campaign-report
+        writer running an LLM tool loop) to keep their claim alive
+        without bumping the worker-class-wide ``visibility_timeout``.
+
+        The UPDATE filters on ``consumed_by = :worker_id`` so a touch
+        from a worker that has already lost the claim (e.g. the bus
+        redelivered the message because ``visible_after`` elapsed and
+        another worker picked it up) is a no-op. Returns ``True`` if
+        the touch landed, ``False`` if the claim was lost — the
+        handler should treat that as a signal to abort, since another
+        worker is now processing the same message and acking/nacking
+        from this side would corrupt the inbox state.
+
+        Idempotent and safe to call on any cadence (every LLM turn,
+        every N seconds via a background task, etc).
+        """
+        new_visible = datetime.now(UTC) + timedelta(seconds=extend_seconds)
+        row = (
+            await session.execute(
+                text(
+                    """
+                    UPDATE agent_messages
+                    SET visible_after = :new_visible
+                    WHERE id = :id
+                      AND consumed_by = :worker_id
+                      AND consumed_at IS NULL
+                    RETURNING id
+                    """
+                ),
+                {
+                    "id": message_id,
+                    "worker_id": worker_id,
+                    "new_visible": new_visible,
+                },
+            )
+        ).first()
+        if row is None:
+            log.warning(
+                "bus.touch_claim.lost",
+                message_id=str(message_id),
+                worker_id=worker_id,
+            )
+            return False
+        return True
+
     async def dead_letter(
         self,
         session: AsyncSession,

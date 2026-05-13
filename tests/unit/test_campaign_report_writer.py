@@ -237,3 +237,82 @@ async def test_writer_costs_accumulate_across_turns(
     assert result.tokens_in > 0
     assert result.usd_estimate >= 0  # Haiku in fake mode might round to ~0.
     assert result.model
+
+
+@pytest.mark.asyncio
+async def test_writer_calls_on_turn_start_each_turn(
+    monkeypatch: pytest.MonkeyPatch, isolated_reports_dir: Path
+) -> None:
+    """The keep-alive hook fires at the top of every turn so the
+    worker can refresh its bus claim before burning more tokens."""
+    _stub_data(monkeypatch)
+    fake = FakeLLMClient()
+    fake.register_sequence(
+        "documentation",
+        [
+            lambda _m: {
+                "text": "",
+                "tool_calls": [{"name": "data_campaign_summary", "arguments": {}}],
+            },
+            lambda _m: {
+                "text": "",
+                "tool_calls": [{"name": "data_findings", "arguments": {}}],
+            },
+            lambda _m: {
+                "text": "",
+                "tool_calls": [{"name": "finish_report", "arguments": {"body_markdown": "# x"}}],
+            },
+        ],
+    )
+
+    seen_turns: list[int] = []
+
+    async def hook(turn: int) -> bool:
+        seen_turns.append(turn)
+        return True
+
+    await campaign_writer.write_campaign_report(
+        llm=fake,
+        session=None,  # type: ignore[arg-type]
+        campaign_id=uuid4(),
+        on_turn_start=hook,
+    )
+    # Hook fires once per LLM turn, in order, starting at 0.
+    assert seen_turns == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_writer_aborts_when_keep_alive_returns_false(
+    monkeypatch: pytest.MonkeyPatch, isolated_reports_dir: Path
+) -> None:
+    """If the hook returns False (claim lost / cancelled) the writer
+    aborts before burning more LLM cost and the result carries the
+    fallback flag with the abort reason."""
+    _stub_data(monkeypatch)
+    fake = FakeLLMClient()
+    fake.register(
+        "documentation",
+        lambda _m: {
+            "text": "",
+            "tool_calls": [{"name": "data_campaign_summary", "arguments": {}}],
+        },
+    )
+
+    calls = 0
+
+    async def hook(turn: int) -> bool:
+        nonlocal calls
+        calls += 1
+        # Allow turn 0, abort turn 1.
+        return turn == 0
+
+    result = await campaign_writer.write_campaign_report(
+        llm=fake,
+        session=None,  # type: ignore[arg-type]
+        campaign_id=uuid4(),
+        on_turn_start=hook,
+    )
+    assert result.used_fallback is True
+    assert "claim" in result.fallback_reason.lower()
+    # Two hook invocations: one allowed (turn 0), one rejected (turn 1).
+    assert calls == 2

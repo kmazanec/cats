@@ -22,6 +22,7 @@ from cats.messaging.envelopes import (
     AttackEventPayload,
     CampaignPlanApprovedPayload,
     CampaignPlanProposedPayload,
+    CampaignReportRequestedPayload,
     CampaignRequestedPayload,
     Envelope,
     FindingPromotedPayload,
@@ -102,6 +103,11 @@ def _sample_payload_for(kind: MessageKind) -> BaseModel:
             atlas_technique_id="AML.T0051.000",
             owasp_llm_id="LLM01",
         )
+    if kind is MessageKind.CAMPAIGN_REPORT_REQUESTED:
+        return CampaignReportRequestedPayload(
+            campaign_id=cid,
+            reason="auto_terminal",
+        )
     raise AssertionError(f"unhandled kind {kind!r}")
 
 
@@ -167,6 +173,7 @@ def test_payload_model_for_dispatches_each_kind() -> None:
         MessageKind.ATTACK_EVENT: AttackEventPayload,
         MessageKind.VERDICT_RENDERED: VerdictRenderedPayload,
         MessageKind.FINDING_PROMOTED: FindingPromotedPayload,
+        MessageKind.CAMPAIGN_REPORT_REQUESTED: CampaignReportRequestedPayload,
     }
     assert expected == PAYLOAD_FOR_KIND
     for kind, model in expected.items():

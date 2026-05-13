@@ -133,6 +133,20 @@ services:
     container_name: cats-judge
     command: uv run python -m cats.workers.judge
 
+  # Documentation handles two workloads on one inbox:
+  # - per-attack VerdictRendered → write a Finding + report row (fast, <5s)
+  # - CampaignReportRequested → run the LLM tool loop (10-60s, can be longer)
+  # The bus uses ``FOR UPDATE SKIP LOCKED`` so multiple replicas split work
+  # without colliding; a long-running campaign-report message ties up one
+  # replica while the others keep handling verdicts. The long-running
+  # handler calls Worker.touch_claim between LLM turns to keep its bus
+  # claim alive without bumping the worker-class-wide visibility timeout.
+  #
+  # ``container_name`` is omitted so compose mints
+  # ``cats-documentation-1``, ``cats-documentation-2`` … per replica.
+  # Override replica count via the CATS_DOCUMENTATION_REPLICAS env var
+  # (falls back to 2 — one reserved for fast verdicts, one for slow
+  # rollups, in practice the workloads mix freely).
   documentation:
     build: *worker-build
     depends_on: *worker-deps
@@ -141,8 +155,9 @@ services:
     extra_hosts: *worker-extra-hosts
     volumes: *worker-volumes
     restart: unless-stopped
-    container_name: cats-documentation
     command: uv run python -m cats.workers.documentation
+    deploy:
+      replicas: ${CATS_DOCUMENTATION_REPLICAS:-2}
 
 volumes:
   cats_pg:

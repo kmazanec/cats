@@ -1,18 +1,29 @@
 """Documentation worker process.
 
-Consumes ``VerdictRendered(pass | fail | error)`` from the Judge. On
-``pass``, writes a ``Finding`` + ``VulnerabilityReport`` and emits
-``FindingPromoted``. On ``fail``/``error``, nothing to promote — just
-marks the run completed and acks the message; the platform's audit
-trail still has the AttackExecution + JudgeVerdict rows.
+Consumes two message kinds:
 
-After handling any verdict, the worker checks whether the campaign is
-now in a terminal state (all runs reached completed/failed/halted).
-If yes, it triggers the campaign-report writer once (idempotent via
-the unique constraint on ``campaign_reports.campaign_id``). The
-writer runs the Documentation LLM in a tool loop to gather facts +
-render visual artifacts, then persists the markdown + artifact
-metadata.
+1. ``VerdictRendered(pass | fail | error)`` from the Judge. On
+   ``pass``, writes a ``Finding`` + ``VulnerabilityReport`` and emits
+   ``FindingPromoted``. On ``fail``/``error``, marks the run
+   completed; the platform's audit trail still has the
+   AttackExecution + JudgeVerdict rows. After handling the verdict,
+   if every run in the campaign is now terminal the worker emits a
+   ``CAMPAIGN_REPORT_REQUESTED`` envelope so the rollup report
+   generation happens asynchronously instead of blocking the
+   verdict-handler latency.
+
+2. ``CampaignReportRequested`` — runs the campaign-report writer's
+   LLM tool loop, persists the markdown + artifacts via
+   ``campaign_report_repo``, and publishes a
+   ``campaign_report_generated`` SSE event so the UI can swap from
+   the "generating" indicator to the rendered report without a
+   page reload. The handler calls ``self.touch_claim`` between LLM
+   turns so a slow tool loop doesn't trigger a false redelivery.
+
+Run multiple replicas in parallel — the bus's ``FOR UPDATE SKIP
+LOCKED`` guarantees one consumer per message, and the two workloads
+share an inbox so per-attack findings and per-campaign rollups
+balance across the pool.
 
 Critical-severity findings carry ``awaiting_approval=True`` (R9 wires
 the actual gate; R4 just records the row in ``documentation_drafts``).
@@ -45,6 +56,7 @@ from cats.db.schema import attack_executions, attacks, runs
 from cats.graph.events import publish
 from cats.llm.client import get_llm
 from cats.messaging import (
+    CampaignReportRequestedPayload,
     ClaimedMessage,
     Envelope,
     FindingPromotedPayload,
@@ -61,32 +73,41 @@ class DocumentationWorker(Worker):
     visibility_timeout_seconds = 60
 
     async def handle(self, session: AsyncSession, message: ClaimedMessage) -> None:
-        if message.kind is not MessageKind.VERDICT_RENDERED:
-            self._log.error(
-                "documentation.unexpected_kind",
-                kind=message.kind.value,
-                message_id=str(message.message_id),
+        if message.kind is MessageKind.VERDICT_RENDERED:
+            payload = VerdictRenderedPayload.model_validate(message.payload_json)
+            if payload.verdict == "partial":
+                # partial verdicts route to red_team — if one landed
+                # here it's a routing bug; drop it noisily.
+                self._log.warning(
+                    "documentation.partial_misroute",
+                    attack_id=str(payload.attack_id),
+                )
+                return
+            await self._handle_verdict(session, payload, trace_id=message.trace_id)
+            # After the per-run bookkeeping for this verdict, check
+            # whether the campaign as a whole is now terminal. If yes,
+            # enqueue a CAMPAIGN_REPORT_REQUESTED envelope — the rollup
+            # writer runs asynchronously so a slow LLM tool loop
+            # doesn't head-of-line block the verdict-handler latency.
+            await self._maybe_enqueue_campaign_report(
+                session,
+                campaign_id=payload.campaign_id,
+                trace_id=message.trace_id,
             )
             return
-        payload = VerdictRenderedPayload.model_validate(message.payload_json)
-        if payload.verdict == "partial":
-            # partial verdicts route to red_team — if one landed here
-            # it's a routing bug; drop it noisily.
-            self._log.warning(
-                "documentation.partial_misroute",
-                attack_id=str(payload.attack_id),
+        if message.kind is MessageKind.CAMPAIGN_REPORT_REQUESTED:
+            payload_r = CampaignReportRequestedPayload.model_validate(message.payload_json)
+            await self._handle_campaign_report(
+                session,
+                message_id=message.message_id,
+                payload=payload_r,
+                trace_id=message.trace_id,
             )
             return
-        await self._handle_verdict(session, payload, trace_id=message.trace_id)
-        # After the per-run bookkeeping for this verdict, check whether
-        # the campaign as a whole is now terminal. If yes, fire the
-        # rollup report. Skipped on partial (routes back to red_team)
-        # because the campaign hasn't actually finished yet — the
-        # variant loop is still in flight.
-        await self._maybe_generate_campaign_report(
-            session,
-            campaign_id=payload.campaign_id,
-            trace_id=message.trace_id,
+        self._log.error(
+            "documentation.unexpected_kind",
+            kind=message.kind.value,
+            message_id=str(message.message_id),
         )
 
     async def _handle_verdict(
@@ -245,21 +266,24 @@ class DocumentationWorker(Worker):
             payload={"verdict": "pass", "finding_id": str(finding_id)},
         )
 
-    async def _maybe_generate_campaign_report(
+    async def _maybe_enqueue_campaign_report(
         self,
         session: AsyncSession,
         *,
         campaign_id: UUID,
         trace_id: str,
     ) -> None:
-        """If every run in the campaign is in a terminal state, fire
-        the campaign-report writer. Idempotent on ``campaign_id`` via
-        ``campaign_reports.campaign_id`` UNIQUE: a re-arriving verdict
-        for an already-reported campaign just re-stamps the row
-        (UPSERT in ``upsert_pending_report``). Run inside the message
-        handler's session so the LLM tool loop sees the same write
-        scope; the bus's per-message visibility timeout (60s) bounds
-        the worst-case stall."""
+        """If every run in the campaign is in a terminal state, emit a
+        ``CAMPAIGN_REPORT_REQUESTED`` envelope. The writer runs
+        asynchronously in another claim cycle so a slow LLM tool loop
+        doesn't head-of-line block verdict handling.
+
+        Idempotent: the envelope's ``idempotency_key`` is
+        ``documentation:campaign_report:{campaign_id}:auto`` so
+        re-arriving verdicts for an already-reported campaign collapse
+        at insert time. The operator can still trigger a fresh
+        regeneration via POST ``/campaigns/{id}/report`` — that path
+        uses a different idempotency key with a uuid suffix."""
         row = (
             await session.execute(
                 select(
@@ -282,21 +306,78 @@ class DocumentationWorker(Worker):
                 total=total,
             )
             return
-        # Reserve / re-stamp the row. If another worker raced us to this
-        # point the UPSERT is harmless — the writer just regenerates.
+        envelope = Envelope[CampaignReportRequestedPayload](
+            kind=MessageKind.CAMPAIGN_REPORT_REQUESTED,
+            from_agent="documentation",
+            to_agent="documentation",
+            payload=CampaignReportRequestedPayload(
+                campaign_id=campaign_id,
+                reason="auto_terminal",
+            ),
+            trace_id=trace_id,
+            campaign_id=campaign_id,
+            idempotency_key=f"documentation:campaign_report:{campaign_id}:auto",
+        )
+        new_id = await self._bus.emit(session, envelope)
+        if new_id is None:
+            self._log.debug(
+                "campaign_report.auto_already_enqueued",
+                campaign_id=str(campaign_id),
+            )
+        else:
+            self._log.info(
+                "campaign_report.auto_enqueued",
+                campaign_id=str(campaign_id),
+                runs=total,
+            )
+
+    async def _handle_campaign_report(
+        self,
+        session: AsyncSession,
+        *,
+        message_id: UUID,
+        payload: CampaignReportRequestedPayload,
+        trace_id: str,
+    ) -> None:
+        """Run the campaign-report writer. Reserves the row in
+        ``generating`` status up front so the UI shows progress
+        immediately; the LLM tool loop calls ``self.touch_claim``
+        between turns so a slow loop doesn't trigger a false
+        redelivery. On any exception the row flips to ``failed`` and
+        the message acks (no point retrying — the writer will hit the
+        same problem). Operators retry manually via the POST route."""
+        campaign_id = payload.campaign_id
         await upsert_pending_report(session, campaign_id=campaign_id)
+        # Commit the pending status so the operator's polling UI flips
+        # right away. The writer's own work happens on the same
+        # session afterward.
         await session.commit()
 
         self._log.info(
             "campaign_report.generating",
             campaign_id=str(campaign_id),
-            runs=total,
+            reason=payload.reason,
         )
+
+        async def _keep_alive(turn: int) -> bool:
+            # Push the claim out by the worker's visibility timeout on
+            # each LLM turn. A False return aborts the writer — the
+            # handler then commits ``failed`` and acks the message.
+            ok = await self.touch_claim(message_id)
+            if not ok:
+                self._log.warning(
+                    "campaign_report.claim_lost",
+                    campaign_id=str(campaign_id),
+                    turn=turn,
+                )
+            return ok
+
         try:
             result = await write_campaign_report(
                 llm=get_llm(),
                 session=session,
                 campaign_id=campaign_id,
+                on_turn_start=_keep_alive,
             )
         except Exception as exc:
             self._log.exception(
@@ -314,7 +395,7 @@ class DocumentationWorker(Worker):
                 action="campaign_report.failed",
                 target_kind="campaign",
                 target_id=campaign_id,
-                payload={"error": repr(exc)},
+                payload={"error": repr(exc), "reason": payload.reason},
                 trace_id=trace_id or None,
             )
             return
@@ -342,6 +423,7 @@ class DocumentationWorker(Worker):
                 "tokens_out": result.tokens_out,
                 "usd_estimate": result.usd_estimate,
                 "used_fallback": result.used_fallback,
+                "reason": payload.reason,
             },
             trace_id=trace_id or None,
         )

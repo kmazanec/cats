@@ -22,6 +22,7 @@ The tool catalog and the data/render implementations live in
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,12 @@ from cats.agents.documentation import campaign_tools as ct
 from cats.config import get_settings
 from cats.llm.client import LLMClient, ToolCall, ToolSpec
 from cats.logging import get_logger
+
+# Optional async hook the writer calls at the top of every turn. Returning
+# ``False`` aborts the loop — e.g. a worker that has lost its bus claim
+# wants the writer to stop before committing more LLM cost. Returning
+# ``True`` (or ``None``) continues normally.
+KeepAliveHook = Callable[[int], Awaitable[bool | None]]
 
 log = get_logger(__name__)
 
@@ -107,9 +114,17 @@ async def write_campaign_report(
     llm: LLMClient,
     session: AsyncSession,
     campaign_id: UUID,
+    on_turn_start: KeepAliveHook | None = None,
 ) -> CampaignReportResult:
     """Run the writer's tool loop and return the rendered report. The
-    caller persists the result via ``campaign_report_repo``."""
+    caller persists the result via ``campaign_report_repo``.
+
+    ``on_turn_start`` is an optional async callback invoked at the top
+    of every turn with the turn index. Workers pass a hook that calls
+    ``self.touch_claim`` so the bus's visibility timeout doesn't
+    expire while the LLM is mid-tool-loop. Return ``False`` from the
+    hook to abort the loop (claim lost or operator cancelled);
+    ``True``/``None`` continues."""
     settings = get_settings()
     artifacts_root = Path(settings.campaign_reports_dir) / str(campaign_id) / "artifacts"
     artifacts_root.mkdir(parents=True, exist_ok=True)
@@ -130,7 +145,21 @@ async def write_campaign_report(
     ]
 
     max_turns = settings.campaign_report_max_turns
+    aborted = False
     for turn in range(max_turns):
+        # Keep-alive hook: workers extend their bus claim here so a
+        # long LLM call doesn't trigger a false redelivery. A False
+        # return aborts before we burn more tokens.
+        if on_turn_start is not None:
+            ok = await on_turn_start(turn)
+            if ok is False:
+                log.warning(
+                    "campaign_report.aborted_by_hook",
+                    campaign_id=str(campaign_id),
+                    turn=turn,
+                )
+                aborted = True
+                break
         result = await llm.chat(
             role="documentation",
             messages=state.messages,
@@ -214,14 +243,19 @@ async def write_campaign_report(
             break
 
     if state.body_markdown is None:
-        # Hit max turns without finish_report. Fall back so the operator
-        # still sees something — minimal markdown summarizing whatever
-        # data we have already gathered.
-        log.warning(
-            "campaign_report.loop_budget_exhausted",
-            campaign_id=str(campaign_id),
-            turns=max_turns,
-        )
+        # Either we hit max turns without finish_report, or the
+        # keep-alive hook returned False (claim lost / cancelled).
+        # Fall back so the operator still sees something — minimal
+        # markdown summarizing whatever data we have already gathered.
+        if aborted:
+            reason = "writer aborted by keep-alive hook (likely a lost bus claim)"
+        else:
+            reason = f"LLM did not call finish_report within {max_turns} turns"
+            log.warning(
+                "campaign_report.loop_budget_exhausted",
+                campaign_id=str(campaign_id),
+                turns=max_turns,
+            )
         state.body_markdown = await _fallback_minimal_report(session, campaign_id=campaign_id)
         return CampaignReportResult(
             body_markdown=state.body_markdown,
@@ -232,7 +266,7 @@ async def write_campaign_report(
             tokens_out=state.tokens_out,
             usd_estimate=state.usd_estimate,
             used_fallback=True,
-            fallback_reason=f"LLM did not call finish_report within {max_turns} turns",
+            fallback_reason=reason,
         )
 
     return CampaignReportResult(

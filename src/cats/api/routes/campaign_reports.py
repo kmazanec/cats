@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
@@ -29,12 +29,15 @@ from cats.db.engine import session_scope
 from cats.db.repositories.campaign_repo import get_campaign_with_project
 from cats.db.repositories.campaign_report_repo import (
     get_campaign_report,
-    mark_report_completed,
-    mark_report_failed,
     upsert_pending_report,
 )
-from cats.llm.client import get_llm
 from cats.logging import get_logger
+from cats.messaging import (
+    Bus,
+    CampaignReportRequestedPayload,
+    Envelope,
+    MessageKind,
+)
 from cats.security.csrf import require_csrf
 
 router = APIRouter()
@@ -80,63 +83,74 @@ async def view_report(
     return templates.TemplateResponse(request, "campaign_report.html", ctx)
 
 
+@router.get("/{campaign_id}/report/status")
+async def report_status(
+    campaign_id: UUID,
+    principal: Principal = Depends(require_user),
+) -> dict[str, Any]:
+    """Lightweight JSON probe the report page polls for completion in
+    case the SSE stream drops. Returns the row's status (or ``"none"``
+    when no row exists yet) + the artifact count so the client can
+    decide whether to reload."""
+    _ = principal  # auth-gated by Depends
+    async with session_scope() as session:
+        report = await get_campaign_report(session, campaign_id=campaign_id)
+    if report is None:
+        return {"status": "none", "artifacts": 0, "generated_at": None}
+    return {
+        "status": report["status"],
+        "artifacts": len(report.get("artifacts") or []),
+        "generated_at": (
+            report["generated_at"].isoformat() if report.get("generated_at") else None
+        ),
+    }
+
+
 @router.post("/{campaign_id}/report", dependencies=[Depends(require_csrf)])
 async def regenerate_report(
     request: Request,
     campaign_id: UUID,
     principal: Principal = Depends(require_user),
 ) -> Any:
-    """Operator-triggered (re)generation. Runs the writer synchronously
-    inside the request so the operator sees the result on redirect —
-    this is rare (one click) and bounded by the tool-loop turn limit,
-    so a request-scoped tool loop is acceptable. The auto-trigger from
-    the Documentation worker is the volume path."""
+    """Operator-triggered (re)generation. Enqueues a
+    ``CampaignReportRequested`` envelope and redirects immediately;
+    the Documentation worker picks the message off the bus and runs
+    the LLM tool loop. The report page polls / listens on SSE for
+    the writer's completion. This is the right shape for a 10-30s+
+    LLM tool loop — the request returns in under a second so the
+    operator's browser doesn't sit on a spinner.
+
+    Idempotency key carries a uuid suffix so back-to-back manual
+    regenerations each get a fresh message — unlike the auto-trigger
+    path, which collapses on a fixed key so re-arriving verdicts
+    don't pile up duplicate work."""
     async with session_scope() as session:
         campaign = await get_campaign_with_project(session, campaign_id=campaign_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="campaign not found")
         await upsert_pending_report(session, campaign_id=campaign_id)
+
+        bus = Bus()
+        request_uuid = uuid4()
+        envelope = Envelope[CampaignReportRequestedPayload](
+            kind=MessageKind.CAMPAIGN_REPORT_REQUESTED,
+            from_agent="operator",
+            to_agent="documentation",
+            payload=CampaignReportRequestedPayload(
+                campaign_id=campaign_id,
+                reason="manual_regenerate",
+                requested_by=principal.user_id,
+            ),
+            campaign_id=campaign_id,
+            idempotency_key=(f"documentation:campaign_report:{campaign_id}:manual:{request_uuid}"),
+        )
+        await bus.emit(session, envelope)
         await session.commit()
 
-        # Import here to avoid a top-level cycle (worker imports api
-        # context for SSE event publishing in some paths).
-        from cats.agents.documentation.campaign_writer import write_campaign_report
-
-        try:
-            result = await write_campaign_report(
-                llm=get_llm(),
-                session=session,
-                campaign_id=campaign_id,
-            )
-        except Exception as exc:
-            log.exception(
-                "campaign_report.manual_regenerate_failed",
-                campaign_id=str(campaign_id),
-            )
-            await mark_report_failed(
-                session,
-                campaign_id=campaign_id,
-                reason=f"{type(exc).__name__}: {exc}",
-            )
-            await session.commit()
-            return RedirectResponse(url=f"/campaigns/{campaign_id}/report", status_code=303)
-        await mark_report_completed(
-            session,
-            campaign_id=campaign_id,
-            body_markdown=result.body_markdown,
-            artifacts=result.artifacts,
-            model=result.model,
-            tokens_in=result.tokens_in,
-            tokens_out=result.tokens_out,
-            usd_estimate=result.usd_estimate,
-            tool_transcript=result.tool_transcript,
-        )
-
     log.info(
-        "campaign_report.manual_regenerate_ok",
+        "campaign_report.manual_enqueued",
         campaign_id=str(campaign_id),
         actor=principal.email,
-        artifacts=len(result.artifacts),
     )
     return RedirectResponse(url=f"/campaigns/{campaign_id}/report", status_code=303)
 

@@ -402,3 +402,158 @@ async def test_inbox_depth_counts_only_ready_unconsumed_messages() -> None:
     async with session_scope() as session:
         depth_after = await bus.inbox_depth(session, "judge")
     assert depth_after == 2
+
+
+# ---------------------------------------------------------------------------
+# touch_claim — long-running handlers extend their bus claim mid-flight.
+# ---------------------------------------------------------------------------
+
+
+async def test_touch_claim_extends_visible_after_for_current_owner() -> None:
+    """A handler that owns the claim can push ``visible_after`` further
+    into the future without re-entering claim_next. After the touch,
+    another worker still can't claim the row."""
+    bus = Bus()
+    key = f"test:touch:{uuid4()}"
+    env = _make_campaign_requested_envelope(idempotency_key=key, to_agent="judge")
+
+    async with session_scope() as session:
+        await bus.emit(session, env)
+        await session.commit()
+
+    async with session_scope() as session:
+        claimed = await bus.claim_next(
+            session,
+            to_agent="judge",
+            visibility_timeout_seconds=2,  # short for the test
+            worker_id="touch-owner",
+        )
+        await session.commit()
+    assert claimed is not None
+
+    # Read visible_after right after the claim.
+    async with session_scope() as session:
+        before_row = (
+            await session.execute(
+                text("SELECT visible_after FROM agent_messages WHERE id = :id"),
+                {"id": claimed.message_id},
+            )
+        ).first()
+    assert before_row is not None
+    before_visible = before_row.visible_after
+
+    # Touch with an extension well past the original 2s.
+    async with session_scope() as session:
+        ok = await bus.touch_claim(
+            session,
+            claimed.message_id,
+            worker_id="touch-owner",
+            extend_seconds=300,
+        )
+        await session.commit()
+    assert ok is True
+
+    async with session_scope() as session:
+        after_row = (
+            await session.execute(
+                text("SELECT visible_after FROM agent_messages WHERE id = :id"),
+                {"id": claimed.message_id},
+            )
+        ).first()
+    assert after_row is not None
+    assert after_row.visible_after > before_visible
+
+    # A different worker cannot claim it right now (visible_after pushed
+    # 5 min out by the touch).
+    async with session_scope() as session:
+        intruder = await bus.claim_next(
+            session,
+            to_agent="judge",
+            visibility_timeout_seconds=60,
+            worker_id="intruder",
+        )
+        await session.commit()
+    assert intruder is None
+
+
+async def test_touch_claim_returns_false_when_claim_was_lost() -> None:
+    """If a worker's claim has been re-delivered to another worker
+    (visible_after elapsed, second worker claimed), the original
+    owner's touch returns False and is a no-op. This is the signal
+    the handler uses to abort safely without acking work the other
+    worker is now redoing."""
+    bus = Bus()
+    key = f"test:touch_lost:{uuid4()}"
+    env = _make_campaign_requested_envelope(idempotency_key=key, to_agent="judge")
+
+    async with session_scope() as session:
+        await bus.emit(session, env)
+        await session.commit()
+
+    # Worker A claims with a 1s visibility timeout.
+    async with session_scope() as session:
+        a_claim = await bus.claim_next(
+            session,
+            to_agent="judge",
+            visibility_timeout_seconds=1,
+            worker_id="worker-a",
+        )
+        await session.commit()
+    assert a_claim is not None
+
+    # Let the visibility timeout elapse + worker B claims.
+    await asyncio.sleep(1.5)
+    async with session_scope() as session:
+        b_claim = await bus.claim_next(
+            session,
+            to_agent="judge",
+            visibility_timeout_seconds=60,
+            worker_id="worker-b",
+        )
+        await session.commit()
+    assert b_claim is not None
+    assert b_claim.message_id == a_claim.message_id
+
+    # Worker A's touch now fails — B owns it.
+    async with session_scope() as session:
+        ok = await bus.touch_claim(
+            session,
+            a_claim.message_id,
+            worker_id="worker-a",
+            extend_seconds=300,
+        )
+        await session.commit()
+    assert ok is False
+
+
+async def test_touch_claim_is_a_no_op_after_ack() -> None:
+    """Touching an already-acked message returns False — once consumed,
+    the row is terminal and shouldn't be extended."""
+    bus = Bus()
+    key = f"test:touch_acked:{uuid4()}"
+    env = _make_campaign_requested_envelope(idempotency_key=key, to_agent="judge")
+
+    async with session_scope() as session:
+        await bus.emit(session, env)
+        await session.commit()
+
+    async with session_scope() as session:
+        claimed = await bus.claim_next(
+            session,
+            to_agent="judge",
+            visibility_timeout_seconds=60,
+            worker_id="touch-acked",
+        )
+        assert claimed is not None
+        await bus.ack(session, claimed.message_id)
+        await session.commit()
+
+    async with session_scope() as session:
+        ok = await bus.touch_claim(
+            session,
+            claimed.message_id,
+            worker_id="touch-acked",
+            extend_seconds=300,
+        )
+        await session.commit()
+    assert ok is False

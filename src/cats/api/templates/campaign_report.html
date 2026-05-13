@@ -38,8 +38,8 @@
     <div class="panel">
       <header><div class="title">No report yet</div></header>
       <div class="body">
-        <p>This campaign has not been rolled up into a report. Click <em>Generate report</em> above; the writer runs synchronously and typically takes 10–30 seconds.</p>
-        <p class="subtitle">A report is also generated automatically the first time every run in the campaign reaches a terminal state.</p>
+        <p>This campaign has not been rolled up into a report. Click <em>Generate report</em> above — that <strong>queues a background job</strong> on the Documentation worker's inbox; the writer's LLM tool loop runs asynchronously and typically completes in 10–30 seconds. This page will refresh automatically when the writer finishes.</p>
+        <p class="subtitle">A report is also queued automatically the first time every run in the campaign reaches a terminal state.</p>
       </div>
     </div>
   {% elif report.status == 'failed' %}
@@ -47,31 +47,50 @@
       <header><div class="title" style="color: var(--red);">Report generation failed</div></header>
       <div class="body">
         <div class="markdown">{{ body_markdown | markdown }}</div>
-        <p class="subtitle" style="margin-top: 12px;">Click <em>Regenerate</em> above to retry.</p>
+        <p class="subtitle" style="margin-top: 12px;">Click <em>Regenerate</em> above to enqueue a fresh job.</p>
       </div>
     </div>
   {% else %}
-    {% if report.status == 'generating' %}
-      <div class="panel amber">
-        <header><div class="title" style="color: var(--amber);">Report is currently generating…</div></header>
-        <div class="body"><p class="subtitle">Refresh in a few seconds. If this state sticks for over a minute the writer likely failed; regenerate it.</p></div>
+    {% if report.status in ('pending', 'generating') %}
+      <div class="panel" id="generating-banner" data-campaign-id="{{ campaign.id }}" style="border-left: 4px solid var(--amber);">
+        <header>
+          <div class="title" style="color: var(--amber);">
+            <span aria-hidden="true" style="display: inline-block; width: 12px; height: 12px; border: 2px solid var(--amber); border-top-color: transparent; border-radius: 50%; vertical-align: middle; margin-right: 8px; animation: cats-spin 1s linear infinite;"></span>
+            Report generation in progress
+          </div>
+          <div class="meta">
+            queued on the Documentation worker · this page auto-refreshes on completion
+          </div>
+        </header>
+        <div class="body">
+          <p class="subtitle">
+            The writer is running its LLM tool loop on a background worker. The page swaps to the
+            finished report the moment the worker emits
+            <code class="mono">campaign_report_generated</code> on the event stream.
+            If something is wrong with the writer the status will flip to
+            <code class="mono">failed</code> with a reason inline.
+          </p>
+        </div>
       </div>
+      <style>@keyframes cats-spin { to { transform: rotate(360deg); } }</style>
     {% endif %}
 
-    <div class="panel">
-      <header>
-        <div class="title">Rollup narrative</div>
-        <div class="meta">
-          {% if report.model %}{{ report.model }}{% endif %}
-          {% if report.tokens_in or report.tokens_out %} · {{ '{:,}'.format(report.tokens_in + report.tokens_out) }} tokens{% endif %}
-          {% if report.usd_estimate %} · ${{ '%.4f' | format(report.usd_estimate) }}{% endif %}
-          {% if report.artifacts %} · {{ report.artifacts | length }} artifact{{ report.artifacts | length | pluralize }}{% endif %}
+    {% if report.body_markdown %}
+      <div class="panel">
+        <header>
+          <div class="title">Rollup narrative</div>
+          <div class="meta">
+            {% if report.model %}{{ report.model }}{% endif %}
+            {% if report.tokens_in or report.tokens_out %} · {{ '{:,}'.format(report.tokens_in + report.tokens_out) }} tokens{% endif %}
+            {% if report.usd_estimate %} · ${{ '%.4f' | format(report.usd_estimate) }}{% endif %}
+            {% if report.artifacts %} · {{ report.artifacts | length }} artifact{{ report.artifacts | length | pluralize }}{% endif %}
+          </div>
+        </header>
+        <div class="body">
+          <div class="markdown">{{ body_markdown | markdown }}</div>
         </div>
-      </header>
-      <div class="body">
-        <div class="markdown">{{ body_markdown | markdown }}</div>
       </div>
-    </div>
+    {% endif %}
 
     {% if report.artifacts %}
       <div class="panel">
@@ -91,4 +110,64 @@
   {% endif %}
 
 </main>
+
+{# ----- Live wait for the writer's completion ----- #}
+{# When the report row is missing entirely or sitting in pending/generating,#}
+{# subscribe to the per-campaign SSE channel for ``campaign_report_generated`` #}
+{# and reload. Polling fallback every 5s catches the case where SSE drops    #}
+{# (long-lived TCP, proxies, etc) or where the operator opened the page     #}
+{# after the event already fired. #}
+{% if not report or report.status in ('pending', 'generating') %}
+<script>
+(function() {
+  const campaignId = "{{ campaign.id }}";
+  // Snapshot the status the server-rendered page started with — the
+  // poller reloads only when that flips. ``"none"`` is the no-row state.
+  const startStatus = {{ ("'" + report.status + "'") if report else "'none'" }};
+  let triggered = false;
+
+  function refresh() {
+    if (triggered) return;
+    triggered = true;
+    // Small delay so the DB commit lands before the GET re-reads.
+    setTimeout(() => { window.location.reload(); }, 300);
+  }
+
+  // Primary path: SSE. The Documentation worker publishes
+  // ``campaign_report_generated`` the moment the writer commits.
+  try {
+    const es = new EventSource(`/events/${campaignId}`);
+    es.addEventListener("message", function(ev) {
+      try {
+        const env = JSON.parse(ev.data);
+        if (env && env.kind === "campaign_report_generated") {
+          refresh();
+        }
+      } catch (_) { /* malformed frame — keep listening */ }
+    });
+    // No onerror handler — let polling cover dropped SSE silently.
+  } catch (_) {
+    /* No EventSource (very old browser) — polling-only. */
+  }
+
+  // Fallback: poll the JSON status endpoint every 5s. Reloads when the
+  // status moves out of pending/generating/none. Bounded at ~20 min so
+  // a stuck "generating" doesn't poll forever from an abandoned tab.
+  let polls = 0;
+  const maxPolls = 240;
+  const interval = setInterval(async () => {
+    if (triggered || polls++ >= maxPolls) { clearInterval(interval); return; }
+    try {
+      const resp = await fetch(`/campaigns/${campaignId}/report/status`, {
+        headers: { "Accept": "application/json" },
+        cache: "no-store",
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.status !== startStatus) refresh();
+    } catch (_) { /* network blip — keep trying */ }
+  }, 5000);
+})();
+</script>
+{% endif %}
 {% endblock %}

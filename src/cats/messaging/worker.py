@@ -24,6 +24,7 @@ import signal
 import socket
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,6 +86,31 @@ class Worker(abc.ABC):
         """Process one claimed message. Side effects + any new
         envelopes to emit happen in ``session``; the base commits on
         return and rolls back on exception."""
+
+    async def touch_claim(self, message_id: UUID, *, extend_seconds: int | None = None) -> bool:
+        """Extend the visibility timeout on the message this handler
+        is processing. Use it from a long-running handler (e.g. an LLM
+        tool loop) to keep your claim alive without raising the
+        worker class's static ``visibility_timeout_seconds``.
+
+        Returns ``True`` if the touch landed; ``False`` if another
+        worker already stole the claim (handler should abort and let
+        the other worker finish).
+
+        Runs in a *separate* short-lived session because the handler's
+        long-running session has an open transaction — the UPDATE
+        needs to commit immediately so a parallel ``claim_next``
+        sees the new ``visible_after``."""
+        extend = extend_seconds if extend_seconds is not None else self.visibility_timeout_seconds
+        async with session_scope() as touch_session:
+            ok = await self._bus.touch_claim(
+                touch_session,
+                message_id,
+                worker_id=self._worker_id,
+                extend_seconds=extend,
+            )
+            await touch_session.commit()
+            return ok
 
     # ------------------------------------------------------------------
     # Lifecycle
