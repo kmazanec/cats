@@ -192,13 +192,16 @@ class OrchestratorWorker(Worker):
         if payload.campaign_id is not None:
             return payload.campaign_id
 
-        from cats.db.repositories.campaign_repo import create_campaign_and_run
+        from cats.db.repositories.campaign_repo import create_campaign
 
-        campaign_id, _run_id, _pv_id = await create_campaign_and_run(
+        # The Red Team worker materializes its own per-attempt runs as it
+        # walks the approved plan. Don't pre-create a stub run here —
+        # if planning fails, the stub would sit at `pending` forever and
+        # show up on the campaigns list with the wrong status.
+        campaign_id, _pv_id = await create_campaign(
             session,
             name=payload.name or f"r4-stub-{payload.project_id}",
             project_id=payload.project_id,
-            category="injection",
             budget_usd=payload.budget_usd,
         )
         return campaign_id
