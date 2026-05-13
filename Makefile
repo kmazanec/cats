@@ -1,4 +1,4 @@
-.PHONY: help sync dev lint fmt typecheck test test-unit migrate revision smoke api worker worker-orchestrator worker-red-team worker-judge worker-documentation workers-all compose-up compose-down
+.PHONY: help sync dev lint fmt typecheck test test-unit migrate revision smoke api worker worker-orchestrator worker-red-team worker-judge worker-documentation workers-all compose-up compose-down eval eval-orchestrator eval-red-team eval-judge eval-documentation
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' Makefile | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -61,3 +61,18 @@ worker-documentation: ## run the documentation agent locally
 
 workers-all: ## start all four R4 workers under docker compose
 	docker compose up orchestrator red_team judge documentation
+
+eval: ## run all four agent eval suites (no LLM, no DB)
+	uv run python -m evals.suite
+
+eval-orchestrator: ## run the orchestrator eval suite
+	uv run python -m evals.runners.orchestrator
+
+eval-red-team: ## run the red_team eval suite
+	uv run python -m evals.runners.red_team
+
+eval-judge: ## run the judge eval suite (evidence-only by default; add --with-fake-llm)
+	uv run python -m evals.runners.judge
+
+eval-documentation: ## run the documentation eval suite
+	uv run python -m evals.runners.documentation
