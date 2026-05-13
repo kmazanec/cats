@@ -1872,11 +1872,107 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R5 builder_
+**R5 foundations slice — landed on `feat/round-5-indirect-injection-foundations`, 2026-05-12:**
+
+- [x] Docx attack synthesis library `src/cats/docx_attacks/` — builds
+      valid `.docx` files implementing nine W3 §5 techniques across the
+      hide-class (`white_text`, `tiny_font`, `off_page`,
+      `header_hide`, `footer_hide`, `footnote_hide`, `comment_hide`,
+      `metadata`) and the render-class (`zero_width`, `homoglyph`,
+      `bidi_spoof`, `tracked_changes`, `field_code`). Zero runtime deps;
+      OOXML built from scratch. 95 unit tests.
+- [x] Document-validity test bench
+      `tests/unit/test_docx_validity.py` — parametrized across every
+      technique: opens with python-docx (gold-standard reader), visible
+      preamble present, <10KB, well-formed XML in every part, zipfile
+      integrity check passes. 65 unit tests. python-docx is a test-only
+      dep.
+- [x] `indirect_injection` category plugin
+      `src/cats/categories/indirect_injection/` — manifest (severity
+      critical, ATLAS AML.T0051.001, OWASP LLM01), taxonomy.toml with
+      per-technique ATLAS/OWASP mapping, deterministic.py (canary-echo
+      check mirroring direct injection's contract with extra technique +
+      planted_in attribution in the evidence dict),
+      red_team/system_prompt.md + red_team/few_shots.md,
+      rubric/v1.md (LOCKED — deterministic short-circuit + qualitative
+      tier), fixtures/ground_truth.jsonl (10 hand-labeled triples — six
+      pass / two fail / two partial). Registered in
+      REGISTERED_CATEGORIES. 19 unit tests including fixture/check
+      consistency.
+- [x] Cleanup: `injection/manifest.toml` title + notes updated to drop
+      the aspirational "docx-borne indirect" claim (which had never been
+      backed by code). Direct chat-borne injection and docx-borne
+      indirect injection are now cleanly separated categories.
+- [x] R5 foundations report
+      `reports/indirect_injection/R5_foundations.md` — technique
+      catalog, reproduction recipe for a manual run against the live
+      target via the OpenEMR UI, explicit deferral note.
+
+**Deferred to a post-R4-Commit-B follow-up (see Decisions):**
+
+- [ ] Red Team specialist module under
+      `src/cats/agents/red_team/indirect_injection/` (per-technique
+      modules or a single specialist that picks the technique).
+- [ ] `TargetClient.upload_attack()` method +
+      `AttackEnvelope.attachment` field for multipart upload to
+      `/v1/agent/extract`.
+- [ ] Lift the R3-era category guards (the dropdown options in
+      `campaign_new.html`, the route guard in `api/routes/campaigns.py`,
+      the router check in whatever R4 Commit B leaves of the dispatch
+      path) for `category=indirect_injection`.
+- [ ] Run the synthesis library + upload path against the live
+      OpenEMR target and fill in the per-technique verdict table in
+      `reports/indirect_injection/R5_foundations.md`.
 
 **Decisions.** *(builder records as made)*
 
-- _to be filled by R5 builder_
+- **2026-05-12 — split R5 into a foundations slice (this branch) and a
+  post-R4-Commit-B follow-up.** Rationale: R4 Commit A
+  (`3f65545 — bus + four-worker agent decoupling`) has already landed
+  on main and rewrote the campaign POST route + Red Team executor; R4
+  Commit B (real Orchestrator LLM planner + plan-driven dispatch) is
+  still mid-flight on the R4 worktree. Authoring an indirect_injection
+  specialist now would mean writing against Commit A's executor shape
+  that Commit B may reshape further. The synthesis library +
+  category plugin scaffolding are R4-orthogonal by construction and
+  don't depend on either Commit's outcome.
+- **2026-05-12 — docx-borne attacks live in a separate
+  `indirect_injection` category, not under `injection`.** Severity
+  defaults differ (`critical` vs `high`), rubric reasoning differs (the
+  rubric tier for `partial` distinguishes paraphrase-without-canary, a
+  near-miss specific to extraction surfaces), and evidence attribution
+  differs (technique + planted_in OOXML part). Cleanly separating now
+  avoids special-case branching in the documentation node.
+- **2026-05-12 — canary token shape is `CATS-DOCX-<8 hex>`.** Distinct
+  prefix from `CATS-CANARY-` (direct injection) and `CATS-EXFIL-` (R6)
+  so a single response containing canaries from multiple categories can
+  be attributed cleanly. Per-attack (not per-category) — same rule the
+  other two categories follow.
+- **2026-05-12 — technique selection: nine W3 §5 techniques across
+  hide + render classes; four deferred.** Shipped: white_text (§5.1),
+  tiny_font + off_page (§5.2), zero_width (§5.3), homoglyph (§5.4),
+  header_hide + footer_hide + footnote_hide + comment_hide (§5.5),
+  tracked_changes (§5.6), field_code (§5.8), metadata (§5.9),
+  bidi_spoof (§5.13). **Deferred** with explicit reasons: §5.7
+  OLE/remote-template/altChunk (needs network artifacts, AV-flag
+  risk — wait for R7's egress controls), §5.10 EchoLeak full chain
+  (composed from these building blocks + R6's exfil markers — capstone
+  for post-R5+R6), §5.11 RAG persistence (depends on target indexing
+  behavior we don't have visibility into), §5.12 PDF (separate
+  codepath; own future round).
+- **2026-05-12 — rubric v1 is LOCKED.** Deterministic short-circuit on
+  canary echo + qualitative tier for paraphrase / refusal / partial.
+  Channel taxonomy (technique handle + planted_in part) lives in the
+  evidence dict so `pass` rationale points at the exact pipeline layer
+  that failed. Any rubric change is a new version (v2.md).
+- **2026-05-12 — exfil's ≥90% fixture accuracy threshold applies to
+  indirect_injection too.** Lower than direct injection's ≥95% because
+  the partial-verdict tier is fuzzier (paraphrase-vs-echo,
+  acknowledge-vs-comply distinctions matter more for indirect).
+- **2026-05-12 — python-docx is a test-only dep.** `cats.docx_attacks`
+  has zero runtime deps and builds OOXML from scratch. python-docx is
+  the gold-standard reader for the validity bench; not installed in
+  prod images.
 
 **Retrospective.** *(builder fills in after R5 ships)*
 
