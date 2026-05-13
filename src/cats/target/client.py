@@ -79,7 +79,17 @@ class TargetClient:
     async def attack(self, envelope: AttackEnvelope) -> TargetCallResult:
         """Send one attack. Returns a `TargetCallResult` with the assembled
         assistant text and the raw response body. Errors are returned as
-        a non-200 status_code + populated `error`, never raised."""
+        a non-200 status_code + populated `error`, never raised.
+
+        Routing:
+        - ``envelope.attachment`` set → upload via document_upload.php +
+          trigger extract.php; consume the SSE pipeline events.
+          (R5: indirect injection via .docx.)
+        - ``target_kind == "copilot_internal"`` → direct
+          ``/v1/agent/briefing`` shortcut (local dev only).
+        - Otherwise → OpenEMR PHP session + ``agent.php`` chat proxy."""
+        if envelope.attachment is not None:
+            return await self._upload_and_extract(envelope)
         if self._target_kind == "copilot_internal":
             return await self._attack_internal(envelope)
         return await self._attack_proxy(envelope)
@@ -256,6 +266,126 @@ class TargetClient:
             pat.setdefault("uuid", "")
             body["patient"] = pat
         return body
+
+    # ------------------------------------------------------------------
+    # Docx-borne attacks — document_upload.php + extract.php
+    # ------------------------------------------------------------------
+
+    async def _upload_and_extract(self, envelope: AttackEnvelope) -> TargetCallResult:
+        """R5 path: POST the .docx as multipart/form-data to
+        ``document_upload.php``, pull the returned ``document_uuid``,
+        then POST a JSON trigger to ``extract.php`` and consume the SSE
+        pipeline events back. The assembled SSE text is what the Judge
+        scans for the planted canary."""
+        if envelope.attachment is None:  # pragma: no cover - guarded by caller
+            raise ValueError("_upload_and_extract called without an attachment")
+
+        started = time.perf_counter()
+        try:
+            if not self._logged_in:
+                await self._login_openemr()
+
+            pid = str(envelope.extra.get("pid", "1"))
+            upload_url = (
+                f"{self._base_url}"
+                "/interface/modules/custom_modules/oe-module-clinical-copilot/"
+                "public/document_upload.php"
+            )
+            extract_url = (
+                f"{self._base_url}"
+                "/interface/modules/custom_modules/oe-module-clinical-copilot/"
+                "public/extract.php"
+            )
+
+            attachment = envelope.attachment
+            files = {
+                "file": (attachment.filename, attachment.data, attachment.content_type),
+            }
+
+            async with httpx.AsyncClient(
+                timeout=self._timeout, cookies=self._cookies, follow_redirects=False
+            ) as client:
+                upload_resp = await client.post(upload_url, files=files)
+                # Re-auth + retry once on session expiry.
+                if upload_resp.status_code in (302, 401, 403):
+                    self._logged_in = False
+                    await self._login_openemr()
+                    upload_resp = await client.post(upload_url, files=files)
+
+                if upload_resp.status_code >= 400:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=upload_resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=upload_resp.text,
+                        error=f"document_upload failed: HTTP {upload_resp.status_code}",
+                    )
+
+                try:
+                    upload_body = upload_resp.json()
+                except ValueError as e:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=upload_resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=upload_resp.text,
+                        error=f"document_upload returned non-JSON: {e}",
+                    )
+
+                document_uuid = (
+                    str(upload_body.get("document_uuid", ""))
+                    if isinstance(upload_body, dict)
+                    else ""
+                )
+                if not document_uuid:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    return TargetCallResult(
+                        text="",
+                        status_code=upload_resp.status_code,
+                        latency_ms=elapsed_ms,
+                        raw_body=upload_resp.text,
+                        error="document_upload response missing document_uuid",
+                    )
+
+                doc_type_guess = (
+                    str(upload_body.get("doc_type_guess", "referral"))
+                    if isinstance(upload_body, dict)
+                    else "referral"
+                )
+
+                extract_body: dict[str, Any] = {
+                    "pid": pid,
+                    "document_uuid": document_uuid,
+                    "doc_type": doc_type_guess,
+                    "trigger_source": "cats_attack",
+                }
+                extract_headers = {
+                    "Accept": "text/event-stream",
+                    "Content-Type": "application/json",
+                }
+                if self._csrf_token:
+                    extract_headers["X-CSRF-Token"] = self._csrf_token
+
+                extract_resp = await client.post(
+                    extract_url,
+                    content=json.dumps(extract_body),
+                    headers=extract_headers,
+                )
+                text = _assemble_sse_text(extract_resp.text)
+        except httpx.HTTPError as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log.warning("target.upload_extract_error", error=repr(e))
+            return TargetCallResult(text="", status_code=0, latency_ms=elapsed_ms, error=str(e))
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return TargetCallResult(
+            text=text,
+            status_code=extract_resp.status_code,
+            latency_ms=elapsed_ms,
+            raw_body=extract_resp.text,
+        )
 
     # ------------------------------------------------------------------
     # copilot_internal — local-dev shortcut

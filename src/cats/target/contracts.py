@@ -29,16 +29,42 @@ class CopilotResponse(BaseModel):
     error: str | None = None
 
 
+class AttachmentSpec(BaseModel):
+    """A file the attacker wants uploaded as part of an attack envelope.
+
+    Used by docx-borne indirect injection (R5): the Red Team's
+    indirect_injection specialist returns the .docx bytes; the executor
+    wraps them in this spec; the target client POSTs multipart/form-data
+    to OpenEMR's ``document_upload.php`` and then triggers extraction
+    via ``extract.php``. The deterministic check runs against the SSE
+    pipeline events extract.php streams back.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    filename: str
+    content_type: str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    data: bytes
+
+
 class AttackEnvelope(BaseModel):
     """High-level shape the graph passes to the TargetClient. The client
     knows how to translate this into the target's actual HTTP contract
-    (OpenEMR PHP proxy vs. internal /v1/agent/*)."""
+    (chat-style ``agent.php`` proxy vs. docx upload + ``extract.php``
+    pipeline vs. the local-dev ``/v1/agent/*`` shortcut).
+
+    When ``attachment`` is set the target client takes the upload path
+    instead of the chat path. ``user_message`` is then the
+    extraction-trigger prompt (typically a "summarize this document"
+    framing — the exact text depends on what extract.php sends through
+    to the agent)."""
 
     model_config = ConfigDict(frozen=True)
 
     user_message: str
     canary: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
+    attachment: AttachmentSpec | None = None
 
 
 class TargetCallResult(BaseModel):
