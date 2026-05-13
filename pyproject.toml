@@ -22,6 +22,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "jinja2>=3.1",
+    "markdown>=3.7",                        # render vulnerability_reports.body_markdown on finding detail
     "sse-starlette>=2.1",
     "python-multipart>=0.0.12",
     # DB + cache
@@ -50,6 +51,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-redis>=4.6",
+    "types-Markdown>=3.7",
     "anyio>=4.6",
 ]
 

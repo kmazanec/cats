@@ -781,3 +781,91 @@ input:focus, select:focus, textarea:focus {
   .main-top { padding: 14px 20px; flex-wrap: wrap; gap: 12px; }
   .main-top .sysline { font-size: 9.5px; gap: 12px; }
 }
+
+/* ============================================================================
+   Rendered Markdown — vulnerability reports on the finding detail page.
+   Scoped so the dark-theme palette wins; matches the same family as .panel
+   body text. Headings inherit the JetBrains Mono treatment from h*.title
+   so a report reads like the rest of the chrome.
+   ============================================================================ */
+
+.markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+.markdown > * + * { margin-top: 12px; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.markdown h1 { font-size: 22px; margin-top: 22px; }
+.markdown h2 { font-size: 17px; margin-top: 20px; color: var(--amber); }
+.markdown h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--cyan); margin-top: 18px; }
+.markdown h4 { font-size: 13px; color: var(--ink-2); }
+.markdown p { color: var(--ink); }
+.markdown ul, .markdown ol { padding-left: 22px; }
+.markdown li { margin: 4px 0; }
+.markdown li::marker { color: var(--ink-3); }
+.markdown a { color: var(--cyan); text-decoration: none; border-bottom: 1px dotted var(--cyan-soft); }
+.markdown a:hover { color: var(--cyan-2); border-bottom-color: var(--cyan-2); }
+.markdown strong { color: var(--ink); font-weight: 600; }
+.markdown em { color: var(--ink-2); font-style: italic; }
+.markdown code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  padding: 1px 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--amber);
+}
+.markdown pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  padding: 12px 14px;
+  overflow: auto;
+  color: var(--ink);
+}
+.markdown pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.markdown blockquote {
+  border-left: 2px solid var(--cyan);
+  padding: 8px 14px;
+  background: linear-gradient(90deg, var(--cyan-soft) 0%, transparent 60%);
+  color: var(--ink-2);
+  font-style: italic;
+}
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.markdown th, .markdown td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.markdown th {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: var(--bg-3);
+  border-bottom-color: var(--line-2);
+}
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 18px 0;
+}

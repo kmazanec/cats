@@ -298,6 +298,10 @@ async def list_executions_for_run(session: AsyncSession, *, run_id: UUID) -> lis
 async def get_finding_with_report(
     session: AsyncSession, *, finding_id: UUID
 ) -> dict[str, Any] | None:
+    """Finding + report + run/campaign/project context. One query covers
+    the finding header and breadcrumbs; the report lookup stays separate
+    because not every finding has one (reports come from the
+    Documentation agent's promotion path, which is gated)."""
     f_row = (
         await session.execute(
             select(
@@ -311,7 +315,18 @@ async def get_finding_with_report(
                 findings.c.atlas_technique_id,
                 findings.c.owasp_llm_id,
                 findings.c.created_at,
-            ).where(findings.c.id == finding_id)
+                campaigns.c.id.label("campaign_id"),
+                campaigns.c.name.label("campaign_name"),
+                projects.c.id.label("project_id"),
+                projects.c.name.label("project_name"),
+                projects.c.env.label("project_env"),
+            )
+            .select_from(
+                findings.join(runs, findings.c.run_id == runs.c.id)
+                .join(campaigns, runs.c.campaign_id == campaigns.c.id)
+                .join(projects, campaigns.c.project_id == projects.c.id)
+            )
+            .where(findings.c.id == finding_id)
         )
     ).first()
     if f_row is None:
@@ -338,6 +353,11 @@ async def get_finding_with_report(
         "atlas_technique_id": f_row.atlas_technique_id,
         "owasp_llm_id": f_row.owasp_llm_id,
         "created_at": f_row.created_at,
+        "campaign_id": f_row.campaign_id,
+        "campaign_name": f_row.campaign_name,
+        "project_id": f_row.project_id,
+        "project_name": f_row.project_name,
+        "project_env": f_row.project_env,
         "report": {
             "id": r_row.id,
             "title": r_row.title,
@@ -351,6 +371,8 @@ async def get_finding_with_report(
 
 
 async def list_findings(session: AsyncSession, *, limit: int = 200) -> list[dict[str, Any]]:
+    """Findings joined with their Run → Campaign → Project so the triage
+    UI can show *where* each finding came from without N+1 lookups."""
     rows = (
         await session.execute(
             select(
@@ -360,7 +382,18 @@ async def list_findings(session: AsyncSession, *, limit: int = 200) -> list[dict
                 findings.c.severity,
                 findings.c.status,
                 findings.c.title,
+                findings.c.atlas_technique_id,
                 findings.c.created_at,
+                campaigns.c.id.label("campaign_id"),
+                campaigns.c.name.label("campaign_name"),
+                projects.c.id.label("project_id"),
+                projects.c.name.label("project_name"),
+                projects.c.env.label("project_env"),
+            )
+            .select_from(
+                findings.join(runs, findings.c.run_id == runs.c.id)
+                .join(campaigns, runs.c.campaign_id == campaigns.c.id)
+                .join(projects, campaigns.c.project_id == projects.c.id)
             )
             .order_by(desc(findings.c.created_at))
             .limit(limit)
@@ -374,7 +407,13 @@ async def list_findings(session: AsyncSession, *, limit: int = 200) -> list[dict
             "severity": r.severity,
             "status": r.status,
             "title": r.title,
+            "atlas_technique_id": r.atlas_technique_id,
             "created_at": r.created_at,
+            "campaign_id": r.campaign_id,
+            "campaign_name": r.campaign_name,
+            "project_id": r.project_id,
+            "project_name": r.project_name,
+            "project_env": r.project_env,
         }
         for r in rows
     ]

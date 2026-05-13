@@ -37,6 +37,9 @@ def _chrome_ctx(principal: Principal) -> dict[str, Any]:
     }
 
 
+_SEVERITIES = ("critical", "high", "medium", "low", "info")
+
+
 @router.get("")
 async def list_findings_page(
     request: Request,
@@ -44,8 +47,13 @@ async def list_findings_page(
 ) -> Any:
     async with session_scope() as session:
         rows = await repo_list_findings(session, limit=200)
+    tally = {sev: 0 for sev in _SEVERITIES}
+    for f in rows:
+        sev = f.get("severity")
+        if sev in tally:
+            tally[sev] += 1
     ctx = _chrome_ctx(principal)
-    ctx.update({"findings": rows})
+    ctx.update({"findings": rows, "tally": tally})
     return templates.TemplateResponse(request, "findings_list.html", ctx)
 
 

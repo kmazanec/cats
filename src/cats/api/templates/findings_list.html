@@ -3,16 +3,45 @@
 {% block crumb %}Findings{% endblock %}
 
 {% block main %}
-<main class="stack" style="gap: 24px;">
+<main class="stack" style="gap: 32px;">
   <section>
-    <span class="eyebrow">— Findings · {{ findings|length }} total</span>
-    <h1 class="title">Confirmed adversarial findings.</h1>
-    <p class="subtitle">
-      Each row is a Judge-confirmed <code class="mono">pass</code> verdict — the
-      defense failed. Click in for the attack, response, judge rationale, and
-      structured report.
-    </p>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Findings · {{ findings|length }} on record</span>
+        <h1 class="title">Confirmed adversarial findings.</h1>
+        <p class="subtitle">
+          Each row is a Judge-confirmed <code class="mono">pass</code> verdict — the
+          defense failed. Click a finding for the rendered vulnerability report,
+          execution trace, and judge rationale.
+        </p>
+      </div>
+    </div>
   </section>
+
+  {% if findings %}
+    <section class="stat-strip">
+      <div class="stat">
+        <div class="label">Critical</div>
+        <div class="num {{ 'red' if tally.critical else '' }}">{{ tally.critical }}</div>
+        <div class="delta">{% if tally.critical %}requires human approval{% else %}none open{% endif %}</div>
+      </div>
+      <div class="stat">
+        <div class="label">High</div>
+        <div class="num {{ 'amber' if tally.high else '' }}">{{ tally.high }}</div>
+        <div class="delta">{% if tally.high %}elevated triage{% else %}clean{% endif %}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Medium</div>
+        <div class="num {{ 'amber' if tally.medium else '' }}">{{ tally.medium }}</div>
+        <div class="delta">routine review</div>
+      </div>
+      <div class="stat">
+        <div class="label">Low + info</div>
+        <div class="num">{{ tally.low + tally.info }}</div>
+        <div class="delta">{{ tally.low }} low · {{ tally.info }} info</div>
+      </div>
+    </section>
+  {% endif %}
 
   <div class="panel">
     <header>
@@ -26,8 +55,11 @@
             <tr>
               <th style="width: 90px;">Sev</th>
               <th>Title</th>
+              <th style="width: 130px;">Project</th>
               <th style="width: 110px;">Category</th>
-              <th style="width: 100px;">Status</th>
+              <th class="mono" style="width: 110px;">ATLAS</th>
+              <th style="width: 90px;">Status</th>
+              <th style="width: 100px;">Run</th>
               <th class="num" style="width: 130px;">Created</th>
             </tr>
           </thead>
@@ -35,15 +67,25 @@
             {% for f in findings %}
               <tr>
                 <td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td>
-                <td><a class="nav-link" href="/findings/{{ f.id }}">{{ f.title }}</a></td>
+                <td>
+                  <a class="nav-link" href="/findings/{{ f.id }}"
+                     style="{{ 'font-weight: 600;' if f.severity == 'critical' else '' }}">{{ f.title }}</a>
+                </td>
+                <td>
+                  <span class="dot {{ 'red' if f.project_env == 'prod' else 'amber' if f.project_env == 'staging' else 'cyan' }}"></span>{{ f.project_name }}
+                </td>
                 <td class="mono muted">{{ f.category }}</td>
+                <td class="mono muted">{{ f.atlas_technique_id or '—' }}</td>
                 <td>
                   {% if f.status == 'open' %}<span class="dot amber"></span>open
                   {% elif f.status == 'triaged' %}<span class="dot cyan"></span>triaged
                   {% elif f.status == 'fixed' %}<span class="dot green"></span>fixed
+                  {% elif f.status == 'regressed' %}<span class="dot red"></span>regressed
+                  {% elif f.status == 'wont_fix' %}<span class="dot"></span>won't fix
                   {% else %}<span class="dot"></span>{{ f.status }}{% endif %}
                 </td>
-                <td class="num muted">{{ f.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td class="mono"><a class="nav-link" href="/campaigns/{{ f.campaign_id }}/runs/{{ f.run_id }}">{{ (f.run_id|string)[:8] }}</a></td>
+                <td class="num muted mono">{{ f.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
               </tr>
             {% endfor %}
           </tbody>
