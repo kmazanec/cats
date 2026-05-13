@@ -1180,20 +1180,47 @@ retro-paydown + plumbing, then the techniques + mutator + evals + report.
 
 ---
 
-## Round 4 — The Orchestrator decides — and the operator approves
+## Round 4 — The Orchestrator decides, the operator approves, the agents truly decouple
 
-**Goal.** Bring the platform's strategic decision-maker online.
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1 / §2.4 designates
-the Orchestrator as an LLM-driven planner that reads the
-project's coverage / severity / recency state through a tool
-surface and authors a campaign plan a human operator approves
-before any attack fires. R1–R3 shipped without it; R3's
-dispatcher walks a hardcoded rotation and the "Orchestrator"
-graph node is a no-op stub. This round closes that gap.
+**Goal.** Bring the platform's strategic decision-maker online
+**and** complete the architectural shift from a single
+LangGraph pipeline into a genuine multi-agent system. The brief
+is explicit on both pieces: it requires the Orchestrator as a
+real strategic layer ("without this layer, your platform is
+just running attacks randomly"), and it requires a multi-agent
+architecture with distinct trust boundaries and explicit
+hand-off design ("a single-agent or pipeline architecture will
+not satisfy this assignment ... how you design those agents,
+how they communicate, how they hand off work, and how they
+recover from failure are the core engineering decisions of
+this assignment").
 
-This is *the* load-bearing round for the brief's central claim:
-"without this layer, your platform is just running attacks
-randomly. With it, your platform is learning."
+R1–R3 shipped what is honestly a pipeline-with-role-separation:
+one LangGraph, shared `CampaignState`, dispatcher-decides-next.
+R3's dispatcher walks a hardcoded rotation; the "Orchestrator"
+graph node is a no-op stub. This round closes both gaps at
+once, because the architectural changes that bring the
+Orchestrator online (it has to live outside the per-campaign
+graph, it has to read state through a tool surface, it has to
+hand off work to the Red Team across a trust boundary) are the
+same changes that decouple the agents into independent workers.
+
+The new shape, per
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1–§2.7: **four
+agents** (Orchestrator, Red Team, Judge, Documentation), each
+its own async worker process, communicating through a typed
+Postgres-backed message bus (`agent_messages` table), with
+**two human-in-the-loop approval gates** (plan approval before
+the Red Team fires, critical-finding approval before
+Documentation promotes). The Specialists / Mutator / Output
+Filter / Target Caller stay as graph nodes *inside* the Red
+Team agent — they are the Red Team's bounded job, not peer
+agents. R3's existing internal Red Team code carries forward
+largely unchanged; what changes is the orchestration shell
+around it.
+
+This is *the* load-bearing round for the brief's central
+claims about the platform being multi-agent and adaptive.
 
 **Outcome.** A user can:
 
@@ -1218,13 +1245,58 @@ randomly. With it, your platform is learning."
    campaigns as findings land and coverage fills in — the
    under-tested categories rise, the saturated ones fall — and
    read out the Orchestrator's stated reasoning at each step.
+6. Stop and start individual agents independently. Restart the
+   Judge worker without affecting an in-flight Red Team
+   campaign; bring up a second Documentation worker to drain a
+   backlog of `pass` verdicts; take the Orchestrator offline for
+   prompt-tuning without halting the bus. The dashboard shows
+   each agent's inbox depth and processing rate live.
+7. Open the bus view in the dashboard and see every cross-agent
+   message in flight: kind, from, to, payload preview, age,
+   attempts, current state (waiting / consumed / dead-lettered).
+   Replay a dead-lettered message after fixing its cause.
 
 **Scope.**
 
-In:
-- A real Orchestrator agent (LLM-driven, Claude Sonnet 4.6 per
-  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1) that authors a
-  structured `CampaignPlan` per campaign.
+In — **message bus + agent decoupling:**
+
+- A new `agent_messages` table per
+  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.3 schema, with
+  indexes on `(to_agent, visible_after) WHERE consumed_at IS NULL`
+  and a unique constraint on `idempotency_key`. Alembic migration
+  ships with R4.
+- A `cats.messaging` package: typed `Envelope[T]` (Pydantic) for
+  the six message kinds (`CampaignRequested`,
+  `CampaignPlanProposed`, `CampaignPlanApproved`, `AttackEvent`,
+  `VerdictRendered`, `FindingPromoted`), a `Bus` client with
+  `emit` / `claim_next` / `ack` / `nack` / `dead_letter` methods
+  using `FOR UPDATE SKIP LOCKED` semantics, and a `Worker` base
+  class that handles the LISTEN/NOTIFY wake-up + visibility
+  timeout + retry-with-backoff loop.
+- Four worker entry points: `cats.workers.orchestrator`,
+  `cats.workers.red_team`, `cats.workers.judge`,
+  `cats.workers.documentation`. Each launchable as its own
+  process (`uv run python -m cats.workers.<agent>`) and
+  collectively launched by docker-compose for the live
+  deployment.
+- Migration of R3's existing graph-node logic into the right
+  agent boundaries: the Specialists / Mutator / Output Filter /
+  Target Caller move into `cats.agents.red_team` as the Red
+  Team agent's internal graph; the Judge node moves to its own
+  worker that consumes `AttackEvent`; the Documentation node
+  moves to its own worker that consumes `VerdictRendered(pass)`.
+  Existing per-node tests carry forward; the integration tests
+  are rewritten to assert *messages emitted* rather than *graph
+  nodes called*.
+- A bus-view dashboard page at `/bus` showing in-flight
+  messages, per-agent inbox depth, dead-letter queue, and
+  message-flow visualization for a selected campaign.
+
+In — **Orchestrator agent (LLM-driven planner):**
+
+- The Orchestrator worker (LLM-driven, Claude Sonnet 4.6 per
+  [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.1). Consumes
+  `CampaignRequested`; emits `CampaignPlanProposed`.
 - A typed tool surface the Orchestrator calls during planning —
   at minimum `list_coverage`, `list_open_findings`,
   `list_recent_regressions`, `list_attack_categories`,
@@ -1233,20 +1305,34 @@ In:
   pure-DB queries with declared schemas; they are how the
   Orchestrator reads the world.
 - A human-in-the-loop approval gate on every emitted plan.
-  Dispatch fires only after operator approval. Edits and
-  rejections are first-class outcomes, not corner cases.
+  The `CampaignPlanApproved` message is only emitted after the
+  operator approves in the UI. Edits and rejections are
+  first-class outcomes, not corner cases.
 - A coverage view in the dashboard at `/coverage/<project>`
   showing the per-category, per-technique state the
   Orchestrator's tools surface — same substrate, human-readable.
-- R3's dispatcher re-shaped from *picker* to *executor*: the
-  graph runs the plan the Orchestrator emitted, not a hardcoded
-  rotation. `selected_technique` is supplied by the plan.
-- Halt conditions emitted by the plan and enforced by the worker:
-  budget exhausted, N consecutive `fail` verdicts, judge errors.
+- Halt conditions emitted by the plan and enforced by the Red
+  Team worker: budget exhausted, N consecutive `fail` verdicts,
+  judge errors.
 - An eval set for the Orchestrator's planning quality —
   hand-labeled `(observability state, expected plan shape)`
   cases the meta-loop can be measured against. A few dozen at
   R4; bigger as the platform accumulates real history.
+
+In — **Red Team agent reshape:**
+
+- R3's dispatcher re-shaped from *picker* to *executor*: the
+  Red Team consumes `CampaignPlanApproved` envelopes and walks
+  the plan's attempts in order. `selected_technique` is
+  supplied by the plan, not by `ROTATION`.
+- A new `red_team_attempts` table tracking per-`attack_id`
+  iteration counter so the partial-loop is durable across
+  crashes (see [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §2.7).
+- Red Team emits `AttackEvent` envelopes to the Judge's inbox
+  rather than calling a Judge node directly.
+- Red Team consumes `VerdictRendered(partial)` envelopes from
+  the Judge to drive the variant loop, bounded by the plan's
+  `max_consecutive_partials`.
 
 Out:
 - The meta-loop that proposes Orchestrator prompt or tool
@@ -1257,11 +1343,50 @@ Out:
   (R8 territory).
 - Fully autonomous, no-human campaigns. The brief explicitly
   asks "where does your system stop and ask a human"; this
-  round's answer is: at every plan emission.
+  round's answer is: at every plan emission and at every
+  critical-finding promotion (the latter is already R9's scope
+  but the agent boundary that owns it is named here).
 - Multi-project orchestration (one Orchestrator instance
   planning across a fleet of Projects). Out of MVP scope.
+- A real message broker (Kafka / NATS / RabbitMQ).
+  Postgres-as-bus is sufficient for the platform's volume and
+  the brief's needs. Revisit if the platform's daily message
+  rate exceeds ~100k.
+- A fifth agent (Regression Harness). R8's work; the bus
+  schema is designed so a Regression Harness agent can be added
+  later without disrupting the four agents R4 ships.
 
 **Definition of done (in addition to global DoD).**
+
+*Multi-agent + bus:*
+
+- [ ] Four independent worker processes (Orchestrator, Red Team,
+      Judge, Documentation) run concurrently. Stopping any one
+      with `docker compose stop <worker>` does not crash the
+      others; an in-flight campaign's outstanding work backs up
+      on the stopped agent's inbox and resumes when it restarts.
+      Demonstrated with a kill-the-judge-mid-campaign test.
+- [ ] All cross-agent handoffs flow through `agent_messages`.
+      No agent imports another agent's modules to call them
+      directly. The codebase has zero cross-agent function calls;
+      `grep` confirms.
+- [ ] Every envelope's `idempotency_key` is enforced by the
+      DB's unique constraint. Re-emitting the same logical
+      event is a no-op at insert time. Demonstrated with a
+      duplicate-emit test.
+- [ ] Visibility timeouts work: a worker that exits mid-handle
+      leaves its message visible-after-timeout to be re-claimed.
+      Demonstrated with a worker that exits via `os._exit(1)`
+      after claiming a message; a second worker picks it up
+      after the timeout and completes it.
+- [ ] Dead-letter handling works: a message that fails 5 times
+      in a row is dead-lettered; the bus dashboard surfaces it;
+      an operator can re-queue it.
+- [ ] The bus-view dashboard page at `/bus` shows in-flight
+      messages, per-agent inbox depth, and dead-letter queue.
+      Live-updates via Redis pub/sub.
+
+*Orchestrator + HITL plan gate:*
 
 - [ ] A campaign launched with only a target + budget produces
       a coherent plan grounded in the project's actual coverage
@@ -1290,18 +1415,53 @@ Out:
 - [ ] The audit log records every plan emission, the operator
       who approved or edited it, and the diff if there was one.
       No plan reaches dispatch without an audit row.
+
+*Migration completeness:*
+
 - [ ] The R3 dispatcher's `ROTATION` tuple is gone — replaced
       with plan-driven dispatch. A grep for the symbol confirms
       no orphaned references remain.
+- [ ] R3's `run_campaign_multi_technique` is gone — replaced
+      with the Orchestrator → Red Team message handoff.
+- [ ] Every R3 integration test passes against the new
+      decoupled topology (with assertions reshaped from "graph
+      node was called" to "envelope was emitted to inbox").
+- [ ] The `/healthz` endpoint reports per-agent worker health
+      (each worker registers a heartbeat row).
 
 **Risks & blockers.**
 
+- **The bus refactor is invasive.** R3 shipped 114 tests against
+  a single-graph topology. The integration tests in particular
+  call into the graph and assert on the resulting state — those
+  have to be rewritten to assert on emitted envelopes. Budget
+  meaningful time for test migration; treat each rewritten test
+  as fresh authoring rather than mechanical refactor.
+- **Idempotency is easy to forget.** Every consumer must dedupe
+  by `idempotency_key` *and* by checking whether the underlying
+  work already exists. A consumer that just acks on receipt and
+  re-does the work on retry will double-write rows. The
+  `Worker` base class enforces the key check; per-handler
+  consumers still have to do the second check (because only the
+  consumer knows what "this work was already done" means for
+  its envelope kind).
+- **Visibility timeouts are a tuning surface.** Set them too
+  short and slow LLM calls get re-claimed mid-flight; set them
+  too long and a real crash takes minutes to recover. R4 ships
+  with the defaults named in §2.7 (60s for Judge / Docs, 300s
+  for Red Team) but expect to revise from operational data.
+- **Process management.** Four workers + the API + Postgres +
+  Redis is more moving parts than R3. Docker-compose handles
+  local; the deploy pipeline needs updating to launch the
+  workers as separate services with restart policies. The
+  rollback path (R1's documented one-command revert) must
+  exercise the new compose shape before R4 ships.
 - **Prompt and tool surface design.** This round is fundamentally
-  a prompt-engineering and tool-design exercise. A bad
-  Orchestrator prompt produces "plan everything every time" or
-  "plan whatever's first in the schema." Budget real time for
-  iterating on the prompt against the eval set; it is the most
-  load-bearing piece of text in the platform.
+  a prompt-engineering and tool-design exercise on top of the
+  bus work. A bad Orchestrator prompt produces "plan everything
+  every time" or "plan whatever's first in the schema." Budget
+  real time for iterating on the prompt against the eval set;
+  it is the most load-bearing piece of text in the platform.
 - **Cold start.** With no history, the Orchestrator has to do
   something reasonable. The tool surface returns empty lists or
   uniform priors; the prompt has to acknowledge that explicitly
@@ -1330,11 +1490,19 @@ Out:
 - **The Orchestrator becoming a single point of failure.** If
   the planner is wrong, the whole campaign is wrong. The HITL
   gate is the load-bearing mitigation here. The worker also
-  refuses to dispatch a plan that fails structural validation
-  (unknown technique key, budget cap above the campaign cap,
-  contradictory halt conditions); the operator sees the
-  validation failure rather than the platform silently choosing
-  something else.
+  refuses to emit a `CampaignPlanProposed` that fails structural
+  validation (unknown technique key, budget cap above the
+  campaign cap, contradictory halt conditions); the operator
+  sees the validation failure in the UI rather than the
+  platform silently choosing something else.
+- **Round size.** Folding the bus refactor and the Orchestrator
+  agent into one round is the right call (each pulls the other
+  in), but it makes R4 larger than R3 was. Reserve the option
+  to ship in two commits: a "bus + agent decoupling" commit
+  that preserves R3's behavior across the new topology, and a
+  "real Orchestrator + HITL" commit that brings the planner
+  online. The Retrospective should call out whether that split
+  was the right call in hindsight.
 
 **Tasks.** *(builder fills in as completed)*
 

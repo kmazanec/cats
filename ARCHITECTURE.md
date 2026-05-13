@@ -17,67 +17,122 @@
 **CATS — Copilot Automated Tactical Security** is a continuously
 running multi-agent platform that discovers, evaluates, validates,
 and documents adversarial vulnerabilities in the OpenEMR Clinical
-Co-Pilot. It is a separate Python + LangGraph service hosted on
-the same Digital Ocean droplet as its target, with read-only
-access to the target's source and no write access to its repo.
-Targets are modeled as **Projects** so the platform can be pointed
-at local, staging, and production deployments — and at future AI
-features beyond the co-pilot — without changing the platform
-itself.
+Co-Pilot. It is a separate Python service hosted on the same
+Digital Ocean droplet as its target, with read-only access to the
+target's source and no write access to its repo. Targets are
+modeled as **Projects** so the platform can be pointed at local,
+staging, and production deployments — and at future AI features
+beyond the co-pilot — without changing the platform itself.
 
-The platform is **seven distinct agent roles in a LangGraph state
-machine**. The **Orchestrator** plans each campaign with a
-deterministic epsilon-greedy bandit over a coverage × severity ×
-recency policy, with a separate LLM meta-loop that proposes weight
-tunings for human approval. The **Red Team Router** dispatches to
-one of three category specialists — **Injection**, **Exfil**, and
-**ToolAbuse** — each with its own prompt, few-shots, and rubric.
-Specialists run on cost-efficient open-weight models (Hermes 4
-405B, DeepSeek V3.2) and escalate to frontier models only when
-bulk attempts plateau, which keeps cost defensible at the 100K-run
-scale the platform is designed for. A **Mutator** agent produces
-variants of partially-successful attacks. The **Judge** runs
-deterministic post-conditions first (canary tokens, audit-log
-checks) and falls back to an LLM rubric only when mechanical
-signal is inconclusive; it uses a different model family from
-the Red Team and is held to a versioned ground-truth fixture set
-in CI to prevent drift. An **Output Filter** stands between the
-Red Team and the live target, scanning every generated payload
-for unsafe content. The **Documentation Agent** converts confirmed
-exploits into structured vulnerability reports and pauses on
-`critical` severity for explicit human approval — a trust boundary
-the brief explicitly asks be defined.
+The platform is **four independent agents communicating through a
+typed message bus**, not a single graph with role-labeled nodes.
+The four agents are the four with genuinely distinct trust levels
+and lifecycles: a platform-trusted **Orchestrator**, an
+adversarial **Red Team**, an independent **Judge**, and a
+platform-trusted **Documentation Agent**. Each agent runs as its
+own async worker process — startable, stoppable, and scalable
+independently. Hand-offs are typed envelopes on a Postgres-backed
+`agent_messages` bus (`FOR UPDATE SKIP LOCKED` for at-least-once
+delivery, idempotency keys for safe retries, visibility timeouts
+for crash recovery). LangGraph remains as a *within-agent*
+implementation tool — the Red Team's internal specialist →
+Mutator → Output Filter → Target Caller sequence is one of these
+— but the platform's coordination backbone is the bus. The shape
+matches the brief's explicit requirement that a single-agent or
+pipeline architecture does not satisfy the assignment.
 
-Inter-agent communication uses typed LangGraph state for the
-intra-campaign loop, Postgres for durable records (findings,
-reports, regression cases, coverage, audit log), and Redis Pub/Sub
-to push live events to a FastAPI + HTMX dashboard. All LLM calls
-are routed through OpenRouter, which lets model choice live in
-configuration rather than code, and traced to LangSmith for full
-inter-agent observability — the same surface the co-pilot team
-already uses.
+The **Orchestrator** is an LLM-driven planner (Claude Sonnet 4.6),
+not a hand-written rule. It reads the project's coverage,
+severity-weighted open findings, and recent regressions through a
+typed tool surface — `list_coverage`, `list_open_findings`,
+`list_recent_regressions`, `list_attack_categories`,
+`budget_remaining` — and authors a structured `CampaignPlan` with
+a paragraph of rationale grounded in those tool outputs. The plan
+emits to the operator, not directly to the Red Team. This is the
+brief's "without this layer, your platform is just running
+attacks randomly" requirement made concrete: the strategic layer
+reasons over state rather than rotating through a fixed list.
 
-The **regression harness** prevents the "behavior changed, not
-fixed" failure mode by requiring a triple gate to pass before a
-finding is treated as fixed: deterministic post-condition,
-locked-version Judge verdict, and a behavioral fingerprint match
-against a recorded refusal exemplar. Anything that fails any of
-the three is escalated for human triage rather than auto-promoted.
+The **Red Team** consumes approved plans and turns each attempt
+into one `AttackEvent` on the bus. Internally it dispatches to
+the right category specialist (**Injection**, **Exfil**, or
+**ToolAbuse**, each with its own prompt and few-shots),
+runs the **Mutator** when the Judge returns a `partial` verdict,
+scrubs every outbound payload through the **Output Filter**, and
+calls the live target via the **Target Caller**. Specialists run
+on cost-efficient open-weight models (Hermes 4 405B, DeepSeek
+V3.2) and escalate to frontier models only when bulk attempts
+plateau, which keeps cost defensible at the 100K-run scale the
+platform is designed for. The partial-loop is bounded per attack
+and durable across crashes — a per-attack iteration counter
+lives in the Red Team's own DB rows.
 
-CATS runs in three modes routed through the Orchestrator:
-on-demand (engineer-triggered), nightly scheduled, and
-deployment-triggered via CI webhook. The system is forward
+The **Judge** is an independent agent in the strict sense the
+brief requires: a different process, a different model family
+from the Red Team's adversarial models, and zero shared state
+beyond the typed envelopes on the bus. It runs deterministic
+post-conditions first (canary tokens, audit-log checks) and falls
+back to an LLM rubric (Claude Haiku 4.5) only when mechanical
+signal is inconclusive. The rubric is versioned and locked per
+category; CI runs the Judge against a hand-labeled fixture set
+on every push to prevent drift.
+
+The **Documentation Agent** consumes `pass` verdicts and writes
+structured vulnerability reports + Findings to Postgres. On
+`severity: critical` it pauses for **explicit human approval**
+before promotion — the second of two human-in-the-loop gates the
+platform enforces. The first gate is the **plan-approval gate**
+between the Orchestrator and the Red Team: no campaign fires
+without an operator approving (or editing) the Orchestrator's
+plan, with the diff recorded on the audit log. Together these
+gates answer the brief's "where does your system stop and ask a
+human" question explicitly: at strategy and at high-blast-radius
+promotion, but not at every individual attack.
+
+**Failure isolation comes from the bus design.** A crashed Judge
+queues up `AttackEvent` messages until a new worker picks them
+up; a crashed Red Team leaves its per-attack iteration counter
+intact and resumes on restart; the Orchestrator can be taken
+offline for prompt-tuning without affecting in-flight campaigns.
+Within-agent failures (LLM timeouts, transient 5xx) are handled
+by per-node retry inside each agent's LangGraph; cross-agent
+failures are handled by visibility timeouts and dead-lettering
+on the bus. Both layers compose.
+
+**Observability is the substrate the Orchestrator's tools read,
+not just an operator surface.** Coverage tables, open findings,
+recent regressions, and the live event stream are all written
+durably by the Documentation Agent and surfaced both to the
+dashboard (HTMX + Redis pub/sub for live updates) and to the
+Orchestrator's tool surface for planning. Every cross-agent
+envelope carries a LangSmith `trace_id` so a finding can be
+traced back through every agent that produced it.
+
+The **regression harness** (a later round) prevents the "behavior
+changed, not fixed" failure mode by requiring a triple gate to
+pass before a finding is treated as fixed: deterministic
+post-condition, locked-version Judge verdict, and a behavioral
+fingerprint match against a recorded refusal exemplar. Anything
+that fails any of the three is escalated for human triage rather
+than auto-promoted.
+
+CATS supports three trigger modes routed through the
+Orchestrator: on-demand (engineer-triggered), nightly scheduled,
+and deployment-triggered via CI webhook. The system is forward
 compatible with a **dual-mode attack vision** — black-hat (public
 API only) and white-hat (read-only source access through audited
-deterministic tools) — that lets the same agent topology produce
-both realistic-attacker findings and implementation-aware ones,
-with Judge-assigned `exploitability` distinguishing the two.
+deterministic tools) — that lets the same four-agent topology
+produce both realistic-attacker findings and
+implementation-aware ones, with Judge-assigned `exploitability`
+distinguishing the two.
 
-The shape of the platform — Projects abstraction, category plugin
-contract, role-based access control over a documented authority
-to run against prod targets, two-layer output filter on
-adversarial content, family-diverse model assignment across
-agent roles, and a full audit trail — is what makes CATS
+The shape of the platform — four agents with distinct trust
+levels coordinating through a durable typed bus, two
+human-in-the-loop gates at strategy and high-blast-radius
+promotion, a Projects abstraction for multi-target use, a
+category plugin contract for adding new attack families, a
+two-layer output filter on adversarial content, family-diverse
+model assignment, and a full audit trail — is what makes CATS
 defensible to a hospital CISO deciding whether to trust a
 platform that autonomously attacks systems their physicians
 depend on.
@@ -165,64 +220,114 @@ not a fork.
 
 ### 2.1 Agent roster
 
-CATS is a LangGraph state machine with seven distinct agent roles.
-Each role is independently testable and replaceable.
+CATS is a system of **four independent agents** communicating
+through a typed Postgres-backed message bus. Each agent is its
+own async worker process — startable, stoppable, and scalable
+independently — and consumes / produces durable message
+envelopes rather than sharing mutable state across agent
+boundaries. Each agent may run its own internal LangGraph for
+the mechanical work it performs (the Red Team in particular has
+a non-trivial internal graph); LangGraph is a *within-agent*
+implementation tool, not the platform's coordination backbone.
 
 | Agent | Trust level | Model assignment | Job |
 |-------|-------------|------------------|-----|
-| **Orchestrator** | Platform-trusted | Claude Sonnet 4.6 (LLM planner) | Reads the project's coverage / severity / recency state via a tool surface and authors a campaign plan — which categories, which techniques, what budget, when to halt — that a human operator approves before dispatch fires. See §2.4. |
-| **Red Team — Injection** | Adversarial | Hermes 4 405B → Dolphin-Mistral-Venice | Specialist in direct and indirect prompt injection, including docx payloads. |
-| **Red Team — Exfil** | Adversarial | Hermes 4 405B → Claude Sonnet 4.6 (authorized-pentest framing) | Specialist in PHI / cross-patient data exfiltration. Owns canary-token planting protocol. |
-| **Red Team — ToolAbuse** | Adversarial | DeepSeek V3.2 → Hermes 4 | Specialist in tool misuse and authorization bypass. |
-| **Mutator** | Adversarial | DeepSeek V3.2 → Qwen 3.6 Flash | Takes a partially-successful attack and produces N variants. Decoupled from Red Team specialists so they stay focused on strategy, not iteration. |
-| **Output Filter** | Platform-trusted | Deterministic regex + Tier-1 OSS classifier | Scans every Red Team / Mutator payload before it reaches the live target. Quarantines unsafe content. |
-| **Judge** | Independent | Claude Haiku 4.5 (different family from Red Team Tier-2 by policy) | Evaluates each (attack, response) pair against a per-category rubric. Returns `pass \| fail \| partial` plus structured evidence. |
-| **Documentation** | Platform-trusted | Claude Sonnet 4.6 | Converts confirmed exploits into structured vulnerability reports. Files reports; pauses on `critical` severity for human approval. |
+| **Orchestrator** | Platform-trusted, human-gated | Claude Sonnet 4.6 (LLM planner) | Reads the project's coverage / severity / recency state via a tool surface and authors a structured campaign plan — which categories, which techniques, what budget, when to halt — that a human operator approves before any attack fires. See §2.4. |
+| **Red Team** | Adversarial | Per-specialist (see Red Team internals below) | Consumes approved plans from the bus, executes the plan's attempts against the live target, and emits attack events. Internally a LangGraph of specialists + Mutator + Output Filter + Target Caller. Iterates on `partial` verdicts up to the plan's cap. |
+| **Judge** | Independent | Claude Haiku 4.5 (different model family from Red Team adversarial models by policy) | Consumes attack events; evaluates each `(attack, response)` pair against the locked per-category rubric. Returns `pass \| fail \| partial` plus structured evidence. Independent of the Red Team by design: a system that generates attacks and grades them in the same context has a conflict of interest the brief explicitly warns about. See §2.5. |
+| **Documentation** | Platform-trusted, human-gated on critical | Claude Sonnet 4.6 | Consumes `pass` verdicts; writes structured Findings, authors the vulnerability report Markdown, and pauses on `severity: critical` for explicit human approval before promotion. |
 
-**Why three specialist Red Teams instead of one generalist.** Each
-category has a distinct mental model: injection is prompt craft,
-exfil is authorization-boundary probing, tool abuse is API
-parameter games. Specialist prompts and few-shots produce stronger
-attacks per category than one generalist juggling all of them.
-Adding a fourth category (e.g. clinical-misinformation
+**Why four agents instead of seven.** Earlier drafts of this
+architecture diagrammed each specialist + the Mutator + the
+Output Filter + the Target Caller as a peer agent of the
+Orchestrator and Judge. They are not. The specialists, Mutator,
+Output Filter, and Target Caller are **components of the Red
+Team's bounded job** — generate an attack, deliver it through
+the safety filter to the target, hand back a response. Their
+trust level is identical (all adversarial; everything they
+produce is scrubbed by the same Output Filter on the way out of
+the Red Team). They have no independent lifecycle. Promoting
+them to separate agents would have added message-bus hops with
+no isolation gain. The four agents above are the four that
+actually have distinct trust levels, distinct lifecycles, and
+distinct coordination requirements.
+
+#### Red Team internals (graph nodes within one agent)
+
+The Red Team agent's internal LangGraph composes the following
+nodes. These are **not** independent agents on the bus; they are
+the mechanical work the Red Team performs in service of its one
+external responsibility (turn an approved plan into attack
+events).
+
+| Component | Model | Role within the Red Team |
+|-----------|-------|--------------------------|
+| **Specialist — Injection** | Hermes 4 405B → Dolphin-Mistral-Venice | Direct and indirect prompt-injection attack generation, including `.docx` indirect payloads. |
+| **Specialist — Exfil** | Hermes 4 405B → Claude Sonnet 4.6 (authorized-pentest framing) | PHI / cross-patient data-exfiltration attacks. Owns the canary-token planting protocol. |
+| **Specialist — ToolAbuse** | DeepSeek V3.2 → Hermes 4 | Tool misuse and authorization-bypass attacks. |
+| **Mutator** | DeepSeek V3.2 → Qwen 3.6 Flash | When a `VerdictRendered(partial)` message arrives back at the Red Team's inbox, the Mutator produces a variant of the partially-successful attack. Decoupled from the specialists in code so they stay focused on strategic attack design, not mechanical iteration. |
+| **Output Filter** | Deterministic regex + NFKC normalization + Tier-1 OSS classifier | Scans every Specialist / Mutator output before the Target Caller sends it. Quarantines unsafe content. The trust boundary on the Red Team's outbox: nothing leaves the Red Team without passing through here. See §2.6. |
+| **Target Caller** | (no model) | Issues the actual HTTP call to the live target Co-Pilot. Per-Project authentication and rate-limiting. |
+
+**Why three specialist Red Teams instead of one generalist.**
+Each category has a distinct mental model: injection is prompt
+craft, exfil is authorization-boundary probing, tool abuse is
+API parameter games. Specialist prompts and few-shots produce
+stronger attacks per category than one generalist juggling all
+of them. Adding a fourth category (e.g. clinical-misinformation
 propagation) is a new specialist file, not a rewrite of the
-generalist prompt. The orchestration overhead is mitigated by
-keeping all specialists behind one `RedTeamRouter` node so the
-Orchestrator picks a *category*, not an *agent class*.
+generalist prompt. Inside the Red Team graph, a router node
+dispatches to the specialist named in the plan's current
+attempt.
 
-**Why a separate Mutator.** The May-2026 research is explicit that
-successful attacks against LLMs rarely arrive as single static
-payloads — they arrive as a partially-successful attempt and N
-variants of it (see
-[`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md) §1).
-Doing variant generation inside each Red Team specialist conflates
+**Why a separate Mutator (still, even though it's inside the
+Red Team).** The May-2026 research is explicit that successful
+attacks against LLMs rarely arrive as single static payloads —
+they arrive as a partially-successful attempt and N variants of
+it (see [`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md)
+§1). Doing variant generation inside each specialist conflates
 strategic attack design with mechanical iteration. The Mutator
-stays on cheap open-weight models forever and scales independently
-of the specialists.
+stays on cheap open-weight models forever and is invoked only
+when the Judge returns `partial` — explicit feedback that the
+attack was close but not all the way through. The Red Team's
+internal iteration counter (stored per-`attack_id` in its own
+DB rows) bounds the loop at the plan's `max_consecutive_partials`
+cap; a crashed Red Team worker mid-loop is recoverable because
+the counter is durable.
 
 ### 2.2 Agent topology
 
-The diagram below shows *which agent talks to which agent*: the
-dispatch flow from a trigger source through to durable storage.
-The system-level view of *where these agents live* is in §3.
+Two diagrams. The first shows *which agent talks to which*:
+four independent worker processes communicating through a
+typed message bus, with two human-in-the-loop approval gates
+(plan approval and critical-finding approval). The second
+zooms into the Red Team agent's internal LangGraph: the
+mechanical specialist → mutator → filter → target sequence
+that turns one approved plan attempt into one attack event
+emitted back onto the bus. The system-level view of *where
+these agents live* is in §3.
+
+**Diagram A — Four agents around the message bus.** Each box
+is an independent worker process. Each labeled arrow is a typed
+message envelope on the Postgres-backed `agent_messages` table
+(see §2.3). The two human icons mark the HITL approval gates.
 
 <p align="center">
 
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 660" width="100%" role="img" aria-label="CATS agent topology — Orchestrator dispatches to three Red Team specialists plus Mutator, through Output Filter to Target Co-Pilot; response routes to Judge then Documentation, which writes to Postgres and LangSmith">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 700" width="100%" role="img" aria-label="CATS four-agent topology — Orchestrator, Red Team, Judge, and Documentation agents communicating through a typed message bus, with human approval gates on the campaign plan and on critical findings">
   <defs>
     <marker id="atop-arr-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
     <marker id="atop-arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
     <marker id="atop-arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7591"/></marker>
     <marker id="atop-arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+    <marker id="atop-arr-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f472b6"/></marker>
   </defs>
 
-  <!-- self-contained background so the diagram reads the same on light or dark GitHub themes -->
-  <rect x="0" y="0" width="1280" height="660" fill="#0a0e1a"/>
+  <rect x="0" y="0" width="1280" height="700" fill="#0a0e1a"/>
 
-  <!-- subtle grid overlay -->
   <g stroke="#1e2740" stroke-width="0.5" opacity="0.4">
-    <path d="M0,80 H1280 M0,160 H1280 M0,240 H1280 M0,320 H1280 M0,400 H1280 M0,480 H1280 M0,560 H1280"/>
-    <path d="M160,0 V660 M320,0 V660 M480,0 V660 M640,0 V660 M800,0 V660 M960,0 V660 M1120,0 V660"/>
+    <path d="M0,100 H1280 M0,200 H1280 M0,300 H1280 M0,400 H1280 M0,500 H1280 M0,600 H1280"/>
+    <path d="M160,0 V700 M320,0 V700 M480,0 V700 M640,0 V700 M800,0 V700 M960,0 V700 M1120,0 V700"/>
   </g>
 
   <!-- TRIGGER -->
@@ -232,171 +337,395 @@ The system-level view of *where these agents live* is in §3.
     <text x="56" y="82" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">CLI · UI · CI webhook</text>
   </g>
 
+  <!-- MESSAGE BUS (central) -->
+  <g>
+    <rect x="500" y="280" width="280" height="140" rx="4" fill="#161020" stroke="#a78bfa" stroke-width="2"/>
+    <text x="516" y="306" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">MESSAGE BUS</text>
+    <text x="516" y="332" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="600" fill="#e7ecf5">agent_messages</text>
+    <text x="516" y="354" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Postgres · LISTEN/NOTIFY</text>
+    <text x="516" y="372" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">FOR UPDATE SKIP LOCKED</text>
+    <text x="516" y="395" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">typed envelopes</text>
+    <text x="516" y="410" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">durable · audited · replayable</text>
+  </g>
+
   <!-- ORCHESTRATOR -->
   <g>
-    <rect x="340" y="30" width="320" height="80" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
-    <text x="356" y="52" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">PLATFORM · 01</text>
-    <text x="356" y="74" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">ORCHESTRATOR</text>
-    <text x="356" y="92" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">bandit · meta-LLM · Claude Sonnet 4.6</text>
+    <rect x="60" y="180" width="320" height="96" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1.5"/>
+    <text x="76" y="204" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">AGENT · 01 · PLATFORM-TRUSTED</text>
+    <text x="76" y="228" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="600" fill="#e7ecf5">ORCHESTRATOR</text>
+    <text x="76" y="248" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Sonnet 4.6 · LLM planner</text>
+    <text x="76" y="265" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">reads state via tool surface · authors CampaignPlan</text>
   </g>
 
-  <!-- RED TEAM ROUTER -->
+  <!-- HITL Plan gate -->
   <g>
-    <rect x="340" y="158" width="320" height="56" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
-    <text x="356" y="180" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">DISPATCH</text>
-    <text x="356" y="200" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">RED TEAM ROUTER</text>
+    <rect x="60" y="306" width="320" height="58" rx="2" fill="#1a1410" stroke="#f472b6" stroke-width="1.5"/>
+    <text x="76" y="328" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f472b6">HUMAN GATE · 01</text>
+    <text x="76" y="348" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Operator approves plan</text>
+    <text x="76" y="360" font-family="system-ui,-apple-system,sans-serif" font-size="10" fill="#aab3c6">edits or rejects · audited</text>
   </g>
 
-  <!-- Specialist: INJECTION -->
+  <!-- RED TEAM -->
   <g>
-    <rect x="40" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
-    <text x="56" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">ADVERSARY · A</text>
-    <text x="56" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">INJECTION SPECIALIST</text>
-    <text x="56" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Hermes 4 · 405B</text>
-    <text x="56" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">direct · indirect · docx · SPE</text>
-  </g>
-
-  <!-- Specialist: EXFIL -->
-  <g>
-    <rect x="340" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
-    <text x="356" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">ADVERSARY · B</text>
-    <text x="356" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">EXFIL SPECIALIST</text>
-    <text x="356" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Hermes 4 · 405B</text>
-    <text x="356" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">cross-patient · markdown img · canary</text>
-  </g>
-
-  <!-- Specialist: TOOL ABUSE -->
-  <g>
-    <rect x="640" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
-    <text x="656" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">ADVERSARY · C</text>
-    <text x="656" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TOOL ABUSE SPECIALIST</text>
-    <text x="656" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">DeepSeek V3.2</text>
-    <text x="656" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">confused deputy · param pollution · EDoS</text>
-  </g>
-
-  <!-- MUTATOR -->
-  <g>
-    <rect x="940" y="256" width="260" height="90" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
-    <text x="956" y="278" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">VARIANTS</text>
-    <text x="956" y="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">MUTATOR</text>
-    <text x="956" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">DeepSeek V3.2</text>
-    <text x="956" y="336" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">N variants per partial-success</text>
-  </g>
-
-  <!-- TARGET CO-PILOT -->
-  <g>
-    <rect x="40" y="396" width="260" height="68" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
-    <text x="56" y="418" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">EXTERNAL · LIVE</text>
-    <text x="56" y="440" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TARGET CO-PILOT</text>
-    <text x="56" y="456" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">per-project HTTP contract</text>
-  </g>
-
-  <!-- OUTPUT FILTER -->
-  <g>
-    <rect x="340" y="396" width="320" height="68" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
-    <text x="356" y="418" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">SAFETY GATE</text>
-    <text x="356" y="440" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">OUTPUT FILTER</text>
-    <text x="356" y="456" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">regex · NFKC · LLM classifier · quarantine</text>
+    <rect x="60" y="430" width="320" height="120" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1.5"/>
+    <text x="76" y="454" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">AGENT · 02 · ADVERSARIAL</text>
+    <text x="76" y="478" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="600" fill="#e7ecf5">RED TEAM</text>
+    <text x="76" y="498" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">internal LangGraph · see Diagram B</text>
+    <text x="76" y="518" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">specialist · mutator · filter · target caller</text>
+    <text x="76" y="534" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">bounded partial-loop · per-attack counter</text>
   </g>
 
   <!-- JUDGE -->
   <g>
-    <rect x="340" y="510" width="320" height="92" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
-    <text x="356" y="532" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">PLATFORM · 02</text>
-    <text x="356" y="554" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">JUDGE</text>
-    <text x="356" y="572" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Haiku 4.5 · cached rubric</text>
-    <text x="356" y="588" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">deterministic post-condition first</text>
+    <rect x="900" y="180" width="320" height="120" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1.5"/>
+    <text x="916" y="204" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">AGENT · 03 · INDEPENDENT</text>
+    <text x="916" y="228" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="600" fill="#e7ecf5">JUDGE</text>
+    <text x="916" y="248" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Haiku 4.5 · different family by policy</text>
+    <text x="916" y="268" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">deterministic post-condition first</text>
+    <text x="916" y="284" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">then locked-version rubric · cached</text>
   </g>
 
-  <!-- DOC AGENT -->
+  <!-- DOCUMENTATION -->
   <g>
-    <rect x="700" y="510" width="280" height="92" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1"/>
-    <text x="716" y="532" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">PLATFORM · 03</text>
-    <text x="716" y="554" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">DOCUMENTATION</text>
-    <text x="716" y="572" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Sonnet 4.6</text>
-    <text x="716" y="588" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">critical · human approval gate</text>
+    <rect x="900" y="430" width="320" height="96" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1.5"/>
+    <text x="916" y="454" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">AGENT · 04 · PLATFORM-TRUSTED</text>
+    <text x="916" y="478" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="600" fill="#e7ecf5">DOCUMENTATION</text>
+    <text x="916" y="498" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Claude Sonnet 4.6</text>
+    <text x="916" y="516" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">writes Findings + reports · pauses on critical</text>
   </g>
 
-  <!-- POSTGRES + LANGSMITH -->
+  <!-- HITL Critical-finding gate -->
   <g>
-    <rect x="1020" y="510" width="180" height="42" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1"/>
-    <text x="1036" y="528" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">STORE</text>
-    <text x="1036" y="544" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">Postgres</text>
+    <rect x="900" y="552" width="320" height="58" rx="2" fill="#1a1410" stroke="#f472b6" stroke-width="1.5"/>
+    <text x="916" y="574" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f472b6">HUMAN GATE · 02</text>
+    <text x="916" y="594" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">CISO approves critical findings</text>
+    <text x="916" y="606" font-family="system-ui,-apple-system,sans-serif" font-size="10" fill="#aab3c6">before promotion to remediation queue</text>
   </g>
+
+  <!-- TARGET CO-PILOT -->
   <g>
-    <rect x="1020" y="560" width="180" height="42" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1"/>
-    <text x="1036" y="578" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">TRACE</text>
-    <text x="1036" y="594" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">LangSmith</text>
+    <rect x="500" y="560" width="280" height="68" rx="2" fill="#141821" stroke="#6b7591" stroke-width="1"/>
+    <text x="516" y="582" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#6b7591">EXTERNAL · LIVE</text>
+    <text x="516" y="604" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TARGET CO-PILOT</text>
+    <text x="516" y="620" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">reached by Red Team only · never by other agents</text>
   </g>
 
   <!-- EDGES -->
-  <!-- trigger → orchestrator -->
-  <path d="M240,68 L340,68" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-gray)"/>
-  <!-- orch → router -->
-  <path d="M500,110 L500,158" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
-  <!-- router → 3 specialists -->
-  <path d="M420,214 L420,242 L170,242 L170,256" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
-  <path d="M500,214 L500,242 L470,242 L470,256" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
-  <path d="M580,214 L580,242 L770,242 L770,256" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
-  <!-- specialists → mutator -->
-  <path d="M300,300 L340,300" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)" opacity="0.5"/>
-  <path d="M600,300 L640,300" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)" opacity="0.5"/>
-  <path d="M900,300 L940,300" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
-  <!-- mutator → output filter -->
-  <path d="M1070,346 L1070,430 L660,430" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
-  <!-- output filter → target -->
-  <path d="M340,430 L300,430" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
-  <!-- target → judge (response, dashed gray) -->
-  <path d="M170,464 L170,540 L340,540" stroke="#6b7591" stroke-width="1.4" stroke-dasharray="4 3" fill="none" marker-end="url(#atop-arr-gray)"/>
-  <!-- judge → doc -->
-  <path d="M660,554 L700,554" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
-  <!-- doc → postgres / langsmith -->
-  <path d="M980,538 L1020,531" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
-  <path d="M980,568 L1020,581" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
-  <!-- orchestrator reads back (dotted violet) -->
-  <path d="M1110,510 L1110,140 L660,140" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#atop-arr-violet)" opacity="0.7"/>
 
-  <!-- Annotations -->
-  <text x="510" y="134" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">campaign plan</text>
-  <text x="178" y="424" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591" text-anchor="end">attack</text>
-  <text x="222" y="510" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">response</text>
-  <text x="678" y="544" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">verdict</text>
-  <text x="1124" y="332" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591" transform="rotate(-90 1124 332)">coverage · findings · audit</text>
+  <!-- trigger → orchestrator (CampaignRequested) -->
+  <path d="M140,96 L140,180" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-gray)"/>
+  <text x="148" y="142" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">CampaignRequested</text>
+
+  <!-- orchestrator → bus (CampaignPlanProposed) -->
+  <path d="M380,260 L500,310" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
+  <text x="392" y="278" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#38bdf8">CampaignPlanProposed</text>
+
+  <!-- orchestrator → HITL gate -->
+  <path d="M220,276 L220,306" stroke="#f472b6" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-rose)" stroke-dasharray="3 3"/>
+
+  <!-- HITL gate → bus (CampaignPlanApproved) -->
+  <path d="M380,344 L500,360" stroke="#f472b6" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-rose)"/>
+  <text x="388" y="338" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#f472b6">CampaignPlanApproved</text>
+
+  <!-- bus → red team -->
+  <path d="M500,400 L380,460" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
+  <text x="388" y="430" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#a78bfa">approved plan → Red Team inbox</text>
+
+  <!-- red team → target -->
+  <path d="M380,520 L500,580" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <text x="388" y="554" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#f5a524">HTTP attack</text>
+
+  <!-- target → red team (response) -->
+  <path d="M500,608 L380,548" stroke="#6b7591" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-gray)" stroke-dasharray="4 3"/>
+  <text x="392" y="600" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">response</text>
+
+  <!-- red team → bus (AttackEvent) -->
+  <path d="M380,470 L500,340" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-amber)"/>
+  <text x="388" y="405" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#f5a524">AttackEvent</text>
+
+  <!-- bus → judge -->
+  <path d="M780,330 L900,260" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
+  <text x="788" y="280" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#a78bfa">AttackEvent → Judge inbox</text>
+
+  <!-- judge → bus (VerdictRendered) -->
+  <path d="M900,290 L780,360" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)"/>
+  <text x="788" y="324" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#38bdf8">VerdictRendered</text>
+
+  <!-- bus → red team (partial verdict back) -->
+  <path d="M520,420 L380,480" stroke="#a78bfa" stroke-width="1" fill="none" marker-end="url(#atop-arr-violet)" stroke-dasharray="3 3" opacity="0.7"/>
+  <text x="388" y="466" font-family="system-ui,-apple-system,sans-serif" font-size="10" fill="#a78bfa" opacity="0.9">partial → Red Team (variant loop)</text>
+
+  <!-- bus → documentation (pass verdict) -->
+  <path d="M780,400 L900,475" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-violet)"/>
+  <text x="788" y="442" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#a78bfa">pass verdict → Docs inbox</text>
+
+  <!-- documentation → HITL critical -->
+  <path d="M1060,526 L1060,552" stroke="#f472b6" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-rose)" stroke-dasharray="3 3"/>
+
+  <!-- documentation → bus (FindingPromoted) -->
+  <path d="M900,500 L780,400" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#atop-arr-cyan)" opacity="0.7"/>
+  <text x="788" y="492" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#38bdf8" opacity="0.9">FindingPromoted</text>
+
+  <!-- orchestrator reads back from bus (dotted feedback for tool surface) -->
+  <path d="M340,180 L340,140 L500,140 L500,280" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3 4" fill="none" marker-end="url(#atop-arr-violet)" opacity="0.5"/>
+  <text x="348" y="132" font-family="system-ui,-apple-system,sans-serif" font-size="10" fill="#a78bfa" opacity="0.7">tool surface reads coverage · findings · regressions</text>
 
   <!-- Legend -->
-  <g transform="translate(40,620)">
-    <rect x="0" y="0" width="10" height="10" fill="#f5a524"/>
-    <text x="18" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">ADVERSARIAL ROLE</text>
-    <rect x="220" y="0" width="10" height="10" fill="#38bdf8"/>
-    <text x="238" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">PLATFORM ROLE</text>
-    <rect x="430" y="0" width="10" height="10" fill="#a78bfa"/>
-    <text x="448" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">DURABLE STORE / TRACE</text>
-    <rect x="680" y="0" width="10" height="10" fill="#6b7591"/>
-    <text x="698" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">EXTERNAL SURFACE</text>
+  <g transform="translate(40,660)">
+    <rect x="0" y="0" width="10" height="10" fill="#38bdf8"/>
+    <text x="18" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">PLATFORM AGENT</text>
+    <rect x="200" y="0" width="10" height="10" fill="#f5a524"/>
+    <text x="218" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">ADVERSARIAL AGENT</text>
+    <rect x="420" y="0" width="10" height="10" fill="#a78bfa"/>
+    <text x="438" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">MESSAGE BUS / TRACE</text>
+    <rect x="660" y="0" width="10" height="10" fill="#f472b6"/>
+    <text x="678" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">HUMAN GATE</text>
+    <rect x="850" y="0" width="10" height="10" fill="#6b7591"/>
+    <text x="868" y="9" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.2" fill="#6b7591">EXTERNAL SURFACE</text>
   </g>
+</svg>
+
+</p>
+
+**Diagram B — Inside the Red Team agent.** The internal
+LangGraph that turns one approved plan attempt into one
+`AttackEvent` on the bus. Nodes here are *not* agents; they
+have no independent lifecycle and share the Red Team's
+internal `CampaignState`. The diagram shows the partial-loop
+that runs when `VerdictRendered(partial)` lands on the Red
+Team's inbox.
+
+<p align="center">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 540" width="100%" role="img" aria-label="Red Team agent's internal LangGraph — inbox consumer feeds a specialist router, which dispatches to Injection, Exfil, or Tool Abuse specialists; outputs flow through Output Filter and Target Caller; partial verdicts loop through the Mutator">
+  <defs>
+    <marker id="rt-arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
+    <marker id="rt-arr-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+    <marker id="rt-arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7591"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="540" fill="#0a0e1a"/>
+
+  <g stroke="#1e2740" stroke-width="0.5" opacity="0.4">
+    <path d="M0,80 H1280 M0,160 H1280 M0,240 H1280 M0,320 H1280 M0,400 H1280 M0,480 H1280"/>
+    <path d="M160,0 V540 M320,0 V540 M480,0 V540 M640,0 V540 M800,0 V540 M960,0 V540 M1120,0 V540"/>
+  </g>
+
+  <!-- Outer Red Team agent boundary -->
+  <rect x="20" y="20" width="1240" height="500" rx="4" fill="none" stroke="#f5a524" stroke-width="1" stroke-dasharray="6 4" opacity="0.5"/>
+  <text x="36" y="44" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">RED TEAM AGENT · INTERNAL LANGGRAPH</text>
+
+  <!-- INBOX CONSUMER -->
+  <g>
+    <rect x="40" y="80" width="220" height="76" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1.4"/>
+    <text x="56" y="102" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">INBOX</text>
+    <text x="56" y="124" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">consume from bus</text>
+    <text x="56" y="142" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">PlanApproved · Verdict(partial)</text>
+  </g>
+
+  <!-- DISPATCHER -->
+  <g>
+    <rect x="320" y="80" width="240" height="76" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="336" y="102" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">EXECUTE STEP</text>
+    <text x="336" y="124" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">specialist dispatcher</text>
+    <text x="336" y="142" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">pick category from plan attempt</text>
+  </g>
+
+  <!-- Specialist Injection -->
+  <g>
+    <rect x="600" y="40" width="200" height="68" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="616" y="62" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">SPECIALIST · A</text>
+    <text x="616" y="82" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">INJECTION</text>
+    <text x="616" y="98" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Hermes 4 · 405B</text>
+  </g>
+
+  <!-- Specialist Exfil -->
+  <g>
+    <rect x="600" y="118" width="200" height="68" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="616" y="140" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">SPECIALIST · B</text>
+    <text x="616" y="160" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">EXFIL</text>
+    <text x="616" y="176" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">Hermes 4 · 405B</text>
+  </g>
+
+  <!-- Specialist Tool Abuse -->
+  <g>
+    <rect x="600" y="196" width="200" height="68" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="616" y="218" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">SPECIALIST · C</text>
+    <text x="616" y="238" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TOOL ABUSE</text>
+    <text x="616" y="254" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">DeepSeek V3.2</text>
+  </g>
+
+  <!-- MUTATOR (engaged on partial verdict) -->
+  <g>
+    <rect x="600" y="288" width="200" height="68" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="616" y="310" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">VARIANTS</text>
+    <text x="616" y="330" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">MUTATOR</text>
+    <text x="616" y="346" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">engaged on Verdict(partial)</text>
+  </g>
+
+  <!-- OUTPUT FILTER -->
+  <g>
+    <rect x="860" y="120" width="240" height="92" rx="2" fill="#0d1620" stroke="#38bdf8" stroke-width="1.5"/>
+    <text x="876" y="142" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#38bdf8">RED TEAM SAFETY GATE</text>
+    <text x="876" y="166" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">OUTPUT FILTER</text>
+    <text x="876" y="184" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" fill="#6b7591">regex · NFKC · LLM classifier</text>
+    <text x="876" y="200" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">scrubs every outbound payload</text>
+  </g>
+
+  <!-- TARGET CALLER -->
+  <g>
+    <rect x="860" y="232" width="240" height="76" rx="2" fill="#1a1610" stroke="#f5a524" stroke-width="1"/>
+    <text x="876" y="254" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#f5a524">EGRESS</text>
+    <text x="876" y="276" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">TARGET CALLER</text>
+    <text x="876" y="294" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">per-project HTTP contract</text>
+  </g>
+
+  <!-- ITERATION STORE -->
+  <g>
+    <rect x="40" y="280" width="220" height="76" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1.2"/>
+    <text x="56" y="302" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">DURABLE STATE</text>
+    <text x="56" y="324" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">red_team_attempts</text>
+    <text x="56" y="342" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">attack_id · iteration · cap</text>
+  </g>
+
+  <!-- OUTBOX EMITTER -->
+  <g>
+    <rect x="860" y="380" width="240" height="76" rx="2" fill="#161020" stroke="#a78bfa" stroke-width="1.4"/>
+    <text x="876" y="402" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10" letter-spacing="1.8" fill="#a78bfa">OUTBOX</text>
+    <text x="876" y="424" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="600" fill="#e7ecf5">emit to bus</text>
+    <text x="876" y="442" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#aab3c6">AttackEvent → Judge inbox</text>
+  </g>
+
+  <!-- EDGES -->
+
+  <!-- inbox → dispatcher -->
+  <path d="M260,118 L320,118" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-violet)"/>
+
+  <!-- dispatcher → 3 specialists + mutator -->
+  <path d="M560,108 L600,74" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+  <path d="M560,118 L600,152" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+  <path d="M560,128 L600,230" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+  <path d="M560,144 L600,322" stroke="#f5a524" stroke-width="1" fill="none" marker-end="url(#rt-arr-amber)" stroke-dasharray="3 3" opacity="0.7"/>
+  <text x="566" y="332" font-family="system-ui,-apple-system,sans-serif" font-size="10" fill="#f5a524" opacity="0.7">on partial</text>
+
+  <!-- specialists / mutator → output filter -->
+  <path d="M800,74 L860,150" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+  <path d="M800,152 L860,165" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+  <path d="M800,230 L860,180" stroke="#f5a524" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-amber)"/>
+  <path d="M800,322 L860,200" stroke="#f5a524" stroke-width="1" fill="none" marker-end="url(#rt-arr-amber)" stroke-dasharray="3 3" opacity="0.7"/>
+
+  <!-- filter → target caller -->
+  <path d="M980,212 L980,232" stroke="#38bdf8" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-violet)"/>
+
+  <!-- target caller → outbox -->
+  <path d="M980,308 L980,380" stroke="#a78bfa" stroke-width="1.4" fill="none" marker-end="url(#rt-arr-violet)"/>
+  <text x="990" y="350" font-family="system-ui,-apple-system,sans-serif" font-size="10" fill="#6b7591">response captured</text>
+
+  <!-- dispatcher reads iteration store -->
+  <path d="M320,140 L260,300" stroke="#a78bfa" stroke-width="1" fill="none" marker-end="url(#rt-arr-violet)" stroke-dasharray="3 4" opacity="0.5"/>
+  <path d="M260,316 L320,148" stroke="#a78bfa" stroke-width="1" fill="none" marker-end="url(#rt-arr-violet)" stroke-dasharray="3 4" opacity="0.5"/>
+
+  <!-- annotation: bounded loop -->
+  <text x="40" y="490" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">Partial-loop bound: <tspan fill="#aab3c6">plan.max_consecutive_partials</tspan> per attack. Counter durable in <tspan fill="#aab3c6">red_team_attempts</tspan>; crash-safe.</text>
+  <text x="40" y="508" font-family="system-ui,-apple-system,sans-serif" font-size="11" fill="#6b7591">Trust boundary: <tspan fill="#aab3c6">everything in this graph is adversarial</tspan>; nothing leaves the Red Team without passing the Output Filter.</text>
 </svg>
 
 </p>
 
 ### 2.3 Inter-agent communication and state
 
-- **Intra-campaign state.** A typed LangGraph `CampaignState`
-  object carries the current target, the current category, the
-  running attack thread, Judge verdicts, coverage counters, and
-  budget consumed. Agents read and write this state through
-  declared node interfaces; no agent reads a field it does not
-  own without going through a typed accessor.
-- **Durable records.** Postgres holds Projects, Campaigns,
-  AttackEvents, JudgeVerdicts, Findings, VulnerabilityReports,
-  and RegressionCases. Every record carries the LangSmith trace
-  ID so any LLM call that produced it can be replayed.
-- **Live event channel.** Redis Pub/Sub. Each node emits a typed
-  event (`AttackProposed`, `JudgeVerdictRendered`,
-  `FindingPromoted`) on a per-campaign channel. The web UI
-  subscribes for live visualization.
-- **Observability sink.** LangSmith for full LLM traces.
-  Domain-level metrics (campaign cost, coverage, finding counts)
-  land in Postgres and are surfaced by the dashboard.
+Coordination across agents happens through typed, durable
+messages on a Postgres-backed `agent_messages` bus. Each agent
+is otherwise stateless across messages — its only memory across
+restarts is the durable rows it owns and the messages waiting
+in its inbox.
+
+**The bus — `agent_messages` table.** One row per envelope. The
+schema is the contract:
+
+```text
+agent_messages (
+  id              uuid primary key,
+  from_agent      text not null,        -- orchestrator | red_team | judge | documentation
+  to_agent        text not null,        -- same set
+  kind            text not null,        -- see message kinds below
+  payload_json    jsonb not null,       -- typed body, Pydantic-validated on read
+  trace_id        text not null,        -- LangSmith correlation id for the chain
+  campaign_id     uuid,                 -- nullable: bus-level lifecycle messages
+  attack_id       uuid,                 -- nullable: present on AttackEvent / Verdict / Finding
+  idempotency_key text not null,        -- producer-supplied; unique per logical event
+  created_at      timestamptz not null default now(),
+  visible_after   timestamptz not null default now(),  -- delayed delivery / retry backoff
+  consumed_at     timestamptz,          -- set when a worker successfully processes
+  consumed_by     text,                 -- worker pid + host for forensics
+  attempts        int not null default 0,
+  last_error      text                  -- last failed handler exception, if any
+);
+
+create unique index on agent_messages (idempotency_key);
+create index on agent_messages (to_agent, visible_after)
+  where consumed_at is null;
+```
+
+Workers consume with `SELECT … FROM agent_messages WHERE
+to_agent = $1 AND consumed_at IS NULL AND visible_after <= now()
+ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1` — Postgres
+handles the dispatch-to-one-consumer guarantee natively. New
+messages wake idle workers via `LISTEN/NOTIFY` on a per-agent
+channel; workers poll otherwise as a safety net.
+
+**Message kinds (six).** Every cross-agent handoff is one of
+these. Adding a new agent or a new handoff means adding to this
+list and shipping a typed payload schema with it.
+
+| Kind | From → To | Payload (essentials) |
+|------|-----------|----------------------|
+| `CampaignRequested` | trigger → Orchestrator | `project_id`, `budget_usd`, operator id |
+| `CampaignPlanProposed` | Orchestrator → operator (UI) | `plan_json` (ordered attempts + rationale + halt conditions), tool-call transcript |
+| `CampaignPlanApproved` | operator (UI) → Red Team | approved `plan_json`, diff from proposed, approver id |
+| `AttackEvent` | Red Team → Judge | `attack_id`, `category`, `technique`, `payload`, `target_response`, `canary`, iteration counter |
+| `VerdictRendered` | Judge → Red Team (on partial) **and** Judge → Documentation (on pass/fail) | `verdict`, `rationale`, `evidence`, `rubric_version_id` |
+| `FindingPromoted` | Documentation → downstream consumers | `finding_id`, `severity`, `atlas_id`, `owasp_id`, `report_id` |
+
+Payloads are Pydantic models in `cats.messaging.envelopes`;
+producers serialize via `model_dump()`, consumers validate via
+`Envelope[T].model_validate(row.payload_json)`. Schema changes
+get versioned by adding a `payload_version` field and writing a
+migration.
+
+**Within-agent state.** Each agent keeps its own state in tables
+it owns. The Red Team has `red_team_attempts(attack_id,
+iteration, max_iterations, status)`. The Judge has no durable
+state beyond the verdict rows it emits. The Documentation Agent
+has `documentation_drafts(finding_id, status, awaiting_approval)`.
+The Red Team's *internal* graph passes a Pydantic `CampaignState`
+object between its nodes — that object is private to the Red
+Team agent, not a cross-agent contract.
+
+**Durable records (unchanged from earlier rounds).** Postgres
+holds Projects, Campaigns, Runs, Attacks, AttackExecutions,
+JudgeVerdicts, Findings, VulnerabilityReports, and (R8+)
+RegressionCases. Every record carries the LangSmith `trace_id`
+so any LLM call that produced it can be replayed.
+
+**Live event channel (Redis Pub/Sub).** Distinct from the bus.
+The bus is for *durable inter-agent handoffs that must not be
+lost*; Redis pub/sub is for *ephemeral live-UI streaming*. Each
+agent publishes typed events (`OrchestratorThinking`,
+`AttackProposed`, `JudgeVerdictRendered`, `FindingPromoted`)
+on a per-campaign channel for the dashboard's live view. A
+dropped pub/sub event makes the dashboard miss an animation; a
+dropped bus message would lose work, so the two channels are
+intentionally separate.
+
+**Observability sink.** LangSmith for full LLM traces. The
+`trace_id` field on every envelope ties cross-agent message
+chains together: a Finding's `trace_id` resolves to a LangSmith
+chain that includes the Orchestrator's planning call, every
+Red Team specialist call, every Mutator call, the Judge call,
+and the Documentation call. The brief's "trace a vulnerability
+finding back through all the agents that produced it" is the
+load-bearing reason this field is mandatory on every envelope.
 
 ### 2.4 Orchestrator policy
 
@@ -550,6 +879,70 @@ accessible only to admins, never surfaced in the Findings DB or
 vulnerability reports. The Finding still records *that* the attack
 succeeded plus a redacted summary, so the trail of evidence is
 preserved without distributing the unsafe payload.
+
+### 2.7 Failure recovery and message-bus semantics
+
+The brief calls out "how they recover from failure" as one of
+the core engineering decisions of the assignment. The four-agent
+shape gives us per-agent failure isolation; the bus's delivery
+semantics give us crash safety. This section names what each
+agent does when something goes wrong.
+
+**Delivery semantics — at-least-once with idempotency keys.**
+The bus is at-least-once: every emitted envelope will be
+delivered to its consumer at least once, possibly more if a
+worker crashes mid-handle. Consumers are responsible for
+idempotency. Every envelope carries a producer-supplied
+`idempotency_key` (e.g. `judge:verdict:{attack_id}:{iteration}`)
+with a unique index in `agent_messages`; producers that retry
+emit with the same key, so duplicates collapse at insert time.
+Consumers also dedupe at handle time by checking whether the
+work the envelope describes is already done (e.g. "is there
+already a JudgeVerdict row for this attack_id + rubric_version?
+if so, ack and return").
+
+**Visibility timeouts.** When a worker claims a message
+(`SELECT … FOR UPDATE SKIP LOCKED`) it sets `visible_after =
+now() + timeout` rather than `consumed_at`. If the worker
+finishes, it sets `consumed_at = now()`. If the worker crashes,
+the row becomes visible again after the timeout and another
+worker picks it up. Default timeout: 60s for Judge / Documentation,
+300s for Red Team (LLM-driven specialists can take longer).
+The `attempts` column increments on each claim.
+
+**Dead-lettering.** A message that fails handle 5 times in a
+row gets `visible_after` pushed far in the future and is logged
+to a dead-letter table. The dashboard surfaces dead-letters per
+agent; an operator inspects, fixes the underlying issue (bad
+schema, missing rubric, model outage), and either deletes the
+dead row or re-queues it.
+
+**Per-agent failure modes.**
+
+| Agent | If it crashes | If it gets stuck | If its model is down |
+|-------|---------------|------------------|----------------------|
+| **Orchestrator** | Inbox queues up `CampaignRequested` messages. A new worker picks up where the last one left off. Plans-in-flight that hadn't yet emitted `CampaignPlanProposed` are re-planned (idempotent on `campaign_id`). | Visibility timeout returns the message after 60s; second worker re-tries. After 5 failures, dead-letter; operator paged. | Orchestrator emits a `plan_failed` message with the model error; the operator sees the failed plan in the UI with a re-try button. The Red Team is not affected. |
+| **Red Team** | Mid-attempt state lives in `red_team_attempts` (per-attack iteration counter). New worker reads the row, resumes from the next iteration. The Output Filter and Target Caller are stateless within an attempt. | Visibility timeout = 300s. After 5 failures, the plan attempt is marked failed and the next attempt in the plan runs. | Specialist fallback model kicks in per `ARCHITECTURE.md` §4.1. If the entire family is down, the attempt fails fast with `provider_down` and the plan continues with the next attempt. |
+| **Judge** | Inbox queues up `AttackEvent` messages. A new Judge worker picks them up. Each verdict is idempotent on `(attack_id, rubric_version_id)`. | Visibility timeout = 60s. If the deterministic short-circuit succeeds, no LLM call is needed; if the LLM is what hung, a re-try at the visibility boundary catches it. | Verdict falls back from LLM to a deterministic-only result with `confidence: low`; the Documentation Agent annotates the resulting Finding as "judged without LLM, manual review recommended." |
+| **Documentation** | Drafts in `documentation_drafts` carry the in-flight state. New worker resumes — the LLM call for the report body is the only step with real cost; idempotent on `finding_id`. | Visibility timeout = 60s. Critical findings sitting at the human-gate are not "stuck" — they are waiting on operator action, which is a different state. | Report body is written as a minimal template instead; Finding still promoted, with `report_status: degraded` so the operator knows to author the body manually. |
+
+**Cascading failures the bus protects against.** A common
+failure mode in single-graph designs is "one stuck node hangs
+the entire pipeline." The bus design makes this impossible by
+construction: the Red Team can crash without affecting the
+Judge's ability to process the verdicts already on its inbox;
+the Judge can fall over without preventing the Orchestrator
+from authoring the *next* campaign's plan; the Documentation
+Agent can be offline for hours without anything else blocking.
+A blocked agent shows up as a growing inbox row count in the
+dashboard, not as a system-wide stall.
+
+**What the bus does NOT protect against.** Bad plans, bad
+attacks, bad verdicts. The bus delivers messages reliably; it
+does not judge the content. The Judge integrity story (§2.5),
+the Output Filter (§2.6), the locked rubric versioning, and
+the human-in-the-loop gates exist precisely because the bus is
+content-agnostic.
 
 ---
 
@@ -1021,6 +1414,15 @@ deterministic-scanner + LLM-classifier design and the quarantine
 policy.
 
 ### 6.3 Failure modes and recovery
+
+This section covers **within-agent** failure handling — what
+the Red Team's internal LangGraph does when one of its nodes
+fails mid-attempt. The **cross-agent** failure story
+(message-bus delivery semantics, per-agent crash recovery,
+dead-lettering) is in §2.7. The two layers compose: a failed
+LLM call inside a Red Team specialist triggers the within-graph
+retry described here; a crashed Red Team worker mid-attempt
+triggers the cross-agent visibility-timeout described in §2.7.
 
 **LangGraph checkpointing** is enabled per node. State is
 persisted on every node transition.

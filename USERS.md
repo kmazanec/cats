@@ -168,20 +168,26 @@ reorder, change a budget), or reject it back to the
 Orchestrator. The diff between the proposed plan and the
 approved plan is recorded against the engineer in the audit log.
 
-Once approved, the campaign dispatches. The [`Red Team
-Router`](./ARCHITECTURE.md#21-agent-roster) executes the plan's
-attempts — it is the *executor*, not the *picker* — invoking
-each specialist named in the plan; the specialist generates
-attacks; the
-[`Mutator`](./ARCHITECTURE.md#21-agent-roster) iterates on
-partial successes; the
-[`Judge`](./ARCHITECTURE.md#25-judge-integrity) verifies; the
-[`Documentation
-Agent`](./ARCHITECTURE.md#21-agent-roster) writes findings to
-Postgres. The engineer watches the live dashboard, sees the
-current attempt and verdict, sees the running cost, and stops
-the campaign early if the signal is clear before the budget
-exhausts.
+Once approved, the platform's four agents take over — each its
+own independent worker reading typed messages off the
+[`agent_messages`](./ARCHITECTURE.md#23-inter-agent-communication-and-state)
+bus. The approved plan lands on the
+[`Red Team`](./ARCHITECTURE.md#21-agent-roster)'s inbox; the
+Red Team works through the plan's attempts (its specialists
+generate, its Mutator iterates on partials, its Output Filter
+scrubs every outbound payload), emitting an `AttackEvent` per
+attempt onto the bus. The
+[`Judge`](./ARCHITECTURE.md#25-judge-integrity) — an
+independent agent, not part of the Red Team — picks up each
+`AttackEvent` and emits a `VerdictRendered` message back: a
+`partial` verdict returns to the Red Team for a variant cycle;
+a `pass` or `fail` verdict flows to the
+[`Documentation`](./ARCHITECTURE.md#21-agent-roster) agent,
+which writes the Finding and (on `critical` severity) waits at
+a second human gate before promoting. The engineer watches the
+live dashboard, sees each message in flight, sees the running
+cost, and stops the campaign early if the signal is clear
+before the budget exhausts.
 
 **Why automation here, and why the human gate.** Generating
 thousands of attack variants across categories, evaluating each
