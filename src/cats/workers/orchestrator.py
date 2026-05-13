@@ -120,9 +120,7 @@ class OrchestratorWorker(Worker):
             target_id=plan_id,
             payload={
                 "campaign_id": str(campaign_id),
-                "planner": (
-                    "llm" if settings.orchestrator_use_llm_planner else "stub"
-                ),
+                "planner": ("llm" if settings.orchestrator_use_llm_planner else "stub"),
                 "attempt_count": len(plan.attempts),
                 "rationale_excerpt": plan.rationale[:200],
             },
