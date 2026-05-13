@@ -93,14 +93,14 @@ def run_campaign(
     from cats.db.engine import session_scope
     from cats.db.repositories.campaign_repo import create_campaign_and_run
     from cats.db.repositories.project_repo import get_project
-    from cats.workers.campaign_worker import (
-        MIN_TECHNIQUES_PER_CAMPAIGN,
-        run_campaign_multi_technique,
+    from cats.messaging import (
+        CampaignRequestedPayload,
+        Envelope,
+        MessageKind,
     )
+    from cats.messaging.bus import Bus
 
-    if category != "injection":
-        typer.echo(f"R2 ships injection only (got {category!r})")
-        raise typer.Exit(code=2)
+    _ = category  # R4: legacy CLI surface; Orchestrator picks
 
     async def _go() -> int:
         pid = UUID(project_id)
@@ -115,28 +115,34 @@ def run_campaign(
             cid, rid, pvid = await create_campaign_and_run(
                 session,
                 project_id=pid,
-                name=f"cli · {category}",
-                category=category,
+                name=f"cli · {project['name']}",
+                category="injection",
                 budget_usd=budget_usd,
                 trigger="on_demand",
             )
-        typer.echo(f"dispatched campaign={cid} first_run={rid}")
-        states = await run_campaign_multi_technique(
-            campaign_id=cid,
-            first_run_id=rid,
-            project_version_id=pvid,
-            num_techniques=MIN_TECHNIQUES_PER_CAMPAIGN,
-            selected_category=category,
+        # R4: emit CampaignRequested onto the Orchestrator's inbox. The
+        # Orchestrator worker authors a plan; the operator (or the
+        # auto-approve setting) approves; the Red Team executes.
+        bus = Bus()
+        envelope = Envelope[CampaignRequestedPayload](
+            kind=MessageKind.CAMPAIGN_REQUESTED,
+            from_agent="trigger",
+            to_agent="orchestrator",
+            payload=CampaignRequestedPayload(
+                project_id=pid,
+                project_version_id=pvid,
+                budget_usd=budget_usd,
+                name=f"cli · {project['name']}",
+            ),
+            idempotency_key=f"cli:campaign_requested:{cid}",
         )
-        for s in states:
-            typer.echo(
-                f"run={s.run_id} technique={s.selected_technique} "
-                f"verdict={s.last_verdict} attacks_fired={s.attacks_fired} "
-                f"usd={s.budget_consumed_usd:.4f} finding={s.finding_id}"
-            )
-        total = sum(s.budget_consumed_usd for s in states)
-        techs = sorted({t for s in states for t in s.techniques_attempted})
-        typer.echo(f"campaign complete — techniques={techs} total_usd={total:.4f}")
+        async with session_scope() as session:
+            await bus.emit(session, envelope)
+            await session.commit()
+        typer.echo(
+            f"requested campaign={cid} stub_run={rid} — Orchestrator worker "
+            "will plan next; ensure workers are running."
+        )
         return 0
 
     code = asyncio.run(_go())

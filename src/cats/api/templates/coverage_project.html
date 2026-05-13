@@ -1,0 +1,71 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Coverage · {{ project.name }}{% endblock %}
+{% block crumb %}Coverage · {{ project.name }}{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px;">
+  <section>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Coverage · auto-refresh 10s · lookback {{ lookback_days }}d</span>
+        <h1 class="title">{{ project.name }}</h1>
+        <p class="subtitle">
+          <code class="mono">{{ project.base_url }}</code> ·
+          env <code class="mono">{{ project.env }}</code> ·
+          attacks
+          {% if project.allow_run_against %}
+            <span class="dot green"></span>allowed
+          {% else %}
+            <span class="dot"></span>denied
+          {% endif %}
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        <a class="btn ghost" href="/coverage">← all projects</a>
+      </div>
+    </div>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Coverage matrix · last {{ lookback_days }} days</div>
+      <div class="meta">green = defending · red = succumbing · grey = untested</div>
+    </header>
+    <div class="body"
+         id="coverage-matrix"
+         hx-get="/coverage/{{ project_id }}/matrix?lookback_days={{ lookback_days }}"
+         hx-trigger="load, every 10s"
+         hx-swap="innerHTML">
+      <div class="muted mono" style="font-size: 12px;">loading…</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Open findings</div>
+      <div class="meta">severity desc · age asc</div>
+    </header>
+    <div class="body flush"
+         id="coverage-findings"
+         hx-get="/coverage/{{ project_id }}/findings"
+         hx-trigger="load, every 10s"
+         hx-swap="innerHTML">
+      <div class="muted mono" style="font-size: 12px; padding: 12px;">loading…</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Recent regressions</div>
+      <div class="meta">last 14 days · status='regressed'</div>
+    </header>
+    <div class="body flush"
+         id="coverage-regressions"
+         hx-get="/coverage/{{ project_id }}/regressions"
+         hx-trigger="load, every 10s"
+         hx-swap="innerHTML">
+      <div class="muted mono" style="font-size: 12px; padding: 12px;">loading…</div>
+    </div>
+  </div>
+</main>
+{% endblock %}

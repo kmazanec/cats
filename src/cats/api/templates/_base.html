@@ -51,6 +51,11 @@
         <a href="/bus" class="{% if active == 'bus' %}active{% endif %}">
           <span class="nav-ico">⇄</span><span>Bus</span>
         </a>
+        {% if principal %}
+          <a href="/coverage" class="{% if active == 'coverage' %}active{% endif %}">
+            <span class="nav-ico">▦</span><span>Coverage</span>
+          </a>
+        {% endif %}
         <a href="/health" class="{% if active == 'health' %}active{% endif %}">
           <span class="nav-ico">♥</span><span>Health</span>
         </a>

@@ -1568,16 +1568,14 @@ Out:
 - [x] Lint + mypy --strict clean across all 138 source files
       (`make lint` green). 162/162 tests pass.
 
-*Commit B — Orchestrator + HITL plan gate (work-in-progress; some
-artifacts pre-staged for the planner):*
+*Commit B — Orchestrator + HITL plan gate:*
 
 - [x] Orchestrator tool surface — five typed DB tools
       (`list_coverage`, `list_open_findings`,
       `list_recent_regressions`, `list_attack_categories`,
       `budget_remaining`) under
       `src/cats/agents/orchestrator/tools.py` plus `TOOL_DESCRIPTORS`
-      export and 17 unit tests. Pre-staged in Commit A so the planner
-      author can iterate without re-grounding.
+      export and 17 unit tests.
 - [x] `evals/orchestrator/v1/` answer key — 12 hand-labeled
       `(observability_state, expected_plan_shape)` cases covering
       cold-start, saturated category, open critical finding, recent
@@ -1587,15 +1585,56 @@ artifacts pre-staged for the planner):*
       plan covers ≥2 of top-3 expected categories; rationale rubric
       is 5 yes/no checks. Runner is `evals.orchestrator.v1.runner`
       with a stub planner that passes 12/12 sanity.
-- [ ] Real LLM planner that consumes the tool surface (replaces
-      Commit A stub).
-- [ ] HITL plan approval UI + diff-vs-proposed + audit logging.
-- [ ] `/coverage/<project>` dashboard backed by the same DB queries
-      the tool surface uses.
-- [ ] Adaptive-behavior synthetic-history integration test (10
-      simulated campaigns; saturated drops, finding-bearing rises).
-- [ ] Delete R3 `INJECTION_ROTATION` / `run_campaign_multi_technique`
-      remnants once the real planner replaces them.
+- [x] Real LLM planner (`src/cats/agents/orchestrator/planner.py`)
+      — calls all five tools, builds a structured prompt with the
+      tool outputs + descriptors, asks Claude Sonnet 4.6 for one
+      JSON plan, parses + structurally validates. Cold-start path
+      explicit. `_validate_plan` covered by 11 unit tests including
+      unknown-technique, budget-overflow, halt-out-of-range,
+      too-short-rationale, negative-budget refusals plus
+      max-attempts truncation.
+- [x] Settings toggles `orchestrator_use_llm_planner` (default off
+      for tests) and `orchestrator_auto_approve` (default on for
+      Commit-A compatibility; production overrides via env var).
+      The stub plan stays in the worker as the test/smoke fallback.
+- [x] HITL plan approval UI at `/campaigns/<id>/plan`
+      (`src/cats/api/routes/plans.py` + `plan_approval.html`):
+      editable per-attempt table with category/technique dropdown
+      driven by the catalog, per-attempt budget + max-partials
+      inputs, up/down/remove buttons, Add Attempt template-driven
+      adder, top-level halt + budget caps. Hidden-`plan_json`
+      submission pattern; server validates via
+      `PlannedCampaign.model_validate` (Pydantic structural
+      validation). Approve / Reject / Retry endpoints all
+      operator-gated + CSRF + audit-logged. Diff vs proposed is
+      computed and persisted on `campaign_plans.diff_summary` and
+      on the audit row. Campaign-detail page now shows a
+      "Plan: Pending Approval / approved / rejected / failed" pill
+      linking to the plan page.
+- [x] `/coverage/<project>` dashboard
+      (`src/cats/api/routes/coverage.py` + four templates) backed
+      by the same DB tool surface the Orchestrator uses. Three
+      HTMX-polling partials: per-category × per-technique matrix
+      (color-coded green/red/grey by pass-vs-fail tone, stale tag
+      after 30 days), open-findings panel, recent-regressions
+      panel. `?lookback_days=N` query param threaded through
+      partials.
+- [x] Adaptive-behavior synthetic-history integration test
+      (`tests/integration/test_orchestrator_adaptive.py`) — seeds
+      DB state to simulate ten consecutive campaigns; runs the
+      planner with a scripted FakeLLMClient that parses the
+      prompt's metadata block and applies real heuristics (top-3
+      by `open_findings*10 + regressions*5 - saturation`). Six
+      assertions including cold-start at iter 1, saturation
+      pushing injection out, finding-driven category rises, and
+      rationale-mentions-category checks. Runs in ~1.2s.
+- [x] Delete R3 `run_campaign_multi_technique` +
+      `MIN_TECHNIQUES_PER_CAMPAIGN`. The legacy `campaign_worker`
+      module still exposes `run_one` (smoke path + R3 e2e test
+      coverage); the multi-technique driver and its integration
+      test are removed. `test_multi_technique_campaign.py` is
+      deleted; the campaigns API + CLI emit `CampaignRequested`
+      onto the bus instead.
 
 **Decisions.** *(builder records as made)*
 
@@ -1691,11 +1730,52 @@ artifacts pre-staged for the planner):*
     object to call it. Works, but the seam isn't as clean as I'd
     have written it from scratch. Note in Commit B's notes if the
     Mutator gets touched.
-  - **The two-commit split landed only Commit A in this round
-    invocation.** The real LLM planner + HITL UI + `/coverage` page
-    + adaptive-behavior eval will need their own session. The
-    artifacts pre-staged (tool surface, eval set) make Commit B
-    significantly faster than starting cold.
+  - **The two-commit split worked exactly as planned.** Commit A
+    landed first (50 files, ~6.9k +) with all 162+1 tests green and
+    one self-review round; Commit B added the real LLM planner +
+    HITL UI + `/coverage` page + adaptive test on top in the same
+    session. Three subagents ran in parallel on Commit B's
+    independent surfaces (plan UI, coverage dashboard, adaptive
+    test), reducing wall-clock significantly. The pre-staged tool
+    surface and eval-set from Commit A meant Commit B's planner
+    author had no grounding work to redo.
+
+*Commit B specifics:*
+
+  - **Settings toggles, not branches, gate the new behavior.**
+    `orchestrator_use_llm_planner` and `orchestrator_auto_approve`
+    are independent flags. The R4 e2e test from Commit A still
+    passes verbatim because both default to the Commit-A behavior
+    (stub plan + auto-approve). Production sets
+    `CATS_ORCHESTRATOR_USE_LLM_PLANNER=true` +
+    `CATS_ORCHESTRATOR_AUTO_APPROVE=false` to engage the real flow
+    without code changes. Keeps the diff smaller and the test
+    matrix simpler than a branch-on-environment pattern.
+  - **Hidden-`plan_json` form submission instead of indexed fields.**
+    The HITL editor walks the table on submit and serializes the
+    plan as a single JSON blob — the server then validates via
+    `PlannedCampaign.model_validate`, getting Pydantic's whole
+    structural-validation surface for free. Cheaper than the
+    flat-form-array alternative and reuses the same envelope
+    contract the worker emits.
+  - **Adaptive test seeds via repository functions, not raw SQL.**
+    The Commit-A retrospective asked for this. The subagent did
+    use repos (`upsert_attack`, `record_execution`, `record_verdict`,
+    `upsert_finding`) plus a few SQLAlchemy `insert(campaigns/runs)`
+    where the repos don't expose the field shape — but no raw
+    text-block SQL inserts. Validates the tool-surface contract
+    against real DB shapes.
+  - **Test ordering remains fragile.** Running the full suite with
+    `pytest -p no:randomly` is 172/172. With the default random
+    plugin, occasional cross-test interference shows up in the bus
+    tests (visibility-timeout reclaim) and in the projects-CRUD
+    tests when run after the messaging-worker tests. The
+    workers' LISTEN/NOTIFY connections + the per-test engine reset
+    are the suspected interaction. R5 should either land an
+    explicit per-test bus cleanup fixture (truncate
+    `agent_messages` + `worker_heartbeats` + stop any leaked
+    asyncio tasks) or document `-p no:randomly` as the canonical
+    invocation in `tests/README.md` and CI.
 - What to change for R5:
   - **R5 (.docx indirect injection) lands cleanly on the bus.** The
     new attack-firing path goes through `cats.agents.red_team.executor`;

@@ -1,0 +1,41 @@
+{# HTMX partial: open findings for the project, sorted in the route. #}
+{% if rows %}
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th style="width: 100px;">Severity</th>
+        <th style="width: 130px;">Category</th>
+        <th>Title</th>
+        <th class="mono" style="width: 130px;">Signature</th>
+        <th class="num" style="width: 80px;">Age</th>
+        <th style="width: 110px;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td>
+            {% if r.severity == 'critical' %}
+              <span class="dot red"></span><strong>critical</strong>
+            {% elif r.severity == 'high' %}
+              <span class="dot red"></span>high
+            {% elif r.severity == 'medium' %}
+              <span class="dot amber"></span>medium
+            {% elif r.severity == 'low' %}
+              <span class="dot"></span>low
+            {% else %}
+              <span class="dot"></span><span class="muted">info</span>
+            {% endif %}
+          </td>
+          <td class="mono">{{ r.category }}</td>
+          <td>{{ r.title }}</td>
+          <td class="mono muted" style="font-size: 11px;">{{ r.signature[:24] }}</td>
+          <td class="num mono muted">{{ r.age_days }}d</td>
+          <td><a class="btn ghost" href="/findings/{{ r.finding_id }}">open</a></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <div class="empty" style="padding: 18px;">no open findings for this project</div>
+{% endif %}

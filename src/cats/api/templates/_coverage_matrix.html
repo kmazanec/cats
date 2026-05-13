@@ -1,0 +1,83 @@
+{# HTMX partial: per-(category, technique) coverage matrix.
+
+   Layout: one block per registered category, with a horizontal row of
+   technique cells. Each cell encodes attempts + pass/fail/partial split
+   + freshness, coloured by whether the model is defending or
+   succumbing. Cells with zero attempts are muted grey ("untested"),
+   the answer-the-brief signal. #}
+{% if categories %}
+  <div class="stack" style="gap: 18px;">
+    {% for cat in categories %}
+      <div>
+        <div class="row between" style="align-items: baseline; margin-bottom: 6px;">
+          <div>
+            <strong class="mono">{{ cat.category }}</strong>
+            <span class="muted" style="font-size: 12px;">· {{ cat.title }}</span>
+          </div>
+          <div class="muted mono" style="font-size: 11px;">
+            sev floor <code>{{ cat.severity_default }}</code>
+            {% if cat.atlas_technique_id %}· ATLAS <code>{{ cat.atlas_technique_id }}</code>{% endif %}
+            {% if cat.owasp_llm_id %}· OWASP <code>{{ cat.owasp_llm_id }}</code>{% endif %}
+          </div>
+        </div>
+        <div class="row" style="gap: 8px; flex-wrap: wrap;">
+          {% for cell in cat.cells %}
+            <div style="
+              flex: 1 1 180px;
+              min-width: 180px;
+              padding: 10px 12px;
+              border-radius: 4px;
+              border: 1px solid
+                {% if cell.tone == 'green' %}var(--c-green, #4ade80)
+                {% elif cell.tone == 'red' %}var(--c-red, #f87171)
+                {% elif cell.tone == 'amber' %}var(--c-amber, #fbbf24)
+                {% else %}var(--c-dim, #2a2a2a){% endif %};
+              background:
+                {% if cell.tone == 'green' %}rgba(74, 222, 128, 0.10)
+                {% elif cell.tone == 'red' %}rgba(248, 113, 113, 0.10)
+                {% elif cell.tone == 'amber' %}rgba(251, 191, 36, 0.10)
+                {% else %}var(--c-panel-2, #1a1a1a){% endif %};
+            ">
+              <div class="row between" style="align-items: baseline;">
+                <div class="mono" style="font-size: 12px;">{{ cell.technique }}</div>
+                <div class="num mono" style="font-size: 12px;">
+                  {% if cell.attempts == 0 %}
+                    <span class="muted">untested</span>
+                  {% else %}
+                    {{ cell.attempts }}<span class="muted" style="font-size: 11px;"> att</span>
+                  {% endif %}
+                </div>
+              </div>
+              {% if cell.attempts > 0 %}
+                <div class="row" style="gap: 10px; margin-top: 6px; font-size: 11px;">
+                  <span class="mono"><span class="dot green"></span>{{ cell.pass }}</span>
+                  <span class="mono"><span class="dot red"></span>{{ cell.fail }}</span>
+                  <span class="mono"><span class="dot amber"></span>{{ cell.partial }}</span>
+                </div>
+                <div class="row between" style="margin-top: 6px; font-size: 11px;">
+                  <span class="muted mono">⏱ {{ cell.age }} ago</span>
+                  {% if cell.stale %}
+                    <span class="muted mono" title="last tested > {{ stale_days }}d ago">stale</span>
+                  {% endif %}
+                </div>
+              {% else %}
+                <div class="muted mono" style="font-size: 11px; margin-top: 6px;">
+                  no attempts in window
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+  <div class="muted mono" style="font-size: 11px; margin-top: 14px;">
+    lookback {{ lookback_days }}d ·
+    tone: pass &gt; fail+partial → green; fail+partial &gt; pass → red;
+    tied → amber; zero attempts → grey
+  </div>
+{% else %}
+  <div class="empty" style="padding: 18px;">
+    no categories registered (this would mean cats.categories is empty)
+  </div>
+{% endif %}

@@ -1,0 +1,63 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Coverage{% endblock %}
+{% block crumb %}Coverage{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px;">
+  <section>
+    <span class="eyebrow">— Coverage · {{ projects|length }} project(s)</span>
+    <h1 class="title">Which targets have we tested, and how well are they holding up?</h1>
+    <p class="subtitle">
+      Pick a project to see its per-category, per-technique attack-coverage
+      matrix, current open findings, and recent regressions. The same data
+      the Orchestrator's tool surface reads, rendered for humans.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Registered projects</div>
+      <div class="meta">click a row to drill in</div>
+    </header>
+    <div class="body flush">
+      {% if projects %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th style="width: 90px;">Env</th>
+              <th>Base URL</th>
+              <th style="width: 110px;">Run-against?</th>
+              <th class="num" style="width: 110px;">Registered</th>
+              <th style="width: 140px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in projects %}
+              <tr>
+                <td><strong>{{ p.name }}</strong>{% if p.description %}<div class="muted" style="font-size: 12px;">{{ p.description }}</div>{% endif %}</td>
+                <td><span class="dot {{ 'red' if p.env == 'prod' else 'amber' if p.env == 'staging' else 'cyan' }}"></span>{{ p.env }}</td>
+                <td class="mono muted">{{ p.base_url }}</td>
+                <td>
+                  {% if p.allow_run_against %}
+                    <span class="dot green"></span>allowed
+                  {% else %}
+                    <span class="dot"></span>denied
+                  {% endif %}
+                </td>
+                <td class="num muted">{{ p.created_at.strftime('%Y-%m-%d') }}</td>
+                <td><a class="btn ghost" href="/coverage/{{ p.id }}">view coverage</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">
+          no projects registered yet
+          <span class="hint"><a class="nav-link" href="/projects">register a project</a> first</span>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</main>
+{% endblock %}

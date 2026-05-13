@@ -187,6 +187,8 @@ async def campaign_detail(
     campaign_id: UUID,
     principal: Principal = Depends(require_user),
 ) -> Any:
+    from sqlalchemy import text as _text
+
     async with session_scope() as session:
         campaign = await get_campaign_with_project(session, campaign_id=campaign_id)
         if campaign is None:
@@ -200,6 +202,22 @@ async def campaign_detail(
         if latest_run is not None:
             findings = await list_findings_for_run(session, run_id=latest_run["id"])
             executions = await list_executions_for_run(session, run_id=latest_run["id"])
+        # R4 Commit B: surface the latest plan row's status on the detail
+        # page so an awaiting-approval campaign is one click from the editor.
+        plan_status_row = (
+            await session.execute(
+                _text(
+                    """
+                    SELECT status FROM campaign_plans
+                    WHERE campaign_id = :cid
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"cid": campaign_id},
+            )
+        ).first()
+        latest_plan_status = plan_status_row.status if plan_status_row else None
 
     ctx = _chrome_ctx(principal)
     ctx.update(
@@ -210,6 +228,7 @@ async def campaign_detail(
             "findings": findings,
             "executions": executions,
             "cost_by_agent": _cost_by_agent(executions),
+            "latest_plan_status": latest_plan_status,
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         }
     )

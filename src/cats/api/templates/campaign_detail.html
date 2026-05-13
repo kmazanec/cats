@@ -20,6 +20,15 @@
         </p>
       </div>
       <div class="row" style="gap: 10px;">
+        {% if latest_plan_status == 'proposed' %}
+          <a class="pill amber" href="/campaigns/{{ campaign.id }}/plan">plan: pending approval →</a>
+        {% elif latest_plan_status == 'failed' %}
+          <a class="pill red" href="/campaigns/{{ campaign.id }}/plan">plan: failed →</a>
+        {% elif latest_plan_status == 'rejected' %}
+          <a class="pill red" href="/campaigns/{{ campaign.id }}/plan">plan: rejected</a>
+        {% elif latest_plan_status in ('approved', 'edited', 'dispatched') %}
+          <a class="pill green" href="/campaigns/{{ campaign.id }}/plan">plan: {{ latest_plan_status }}</a>
+        {% endif %}
         {% if latest_run and latest_run.status == 'running' %}
           <span class="pill amber">running</span>
         {% elif latest_run and latest_run.status == 'completed' %}

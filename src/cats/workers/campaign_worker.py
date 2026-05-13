@@ -1,17 +1,18 @@
-"""Campaign worker. Builds the graph, hydrates the initial state with
-project credentials, and drives it for one run.
+"""Legacy R3 campaign worker — used only by the smoke CLI and the
+R3-shaped e2e tests that drive one Run end-to-end via the LangGraph.
 
-``run_one`` runs the graph end-to-end for a single attack (one Run).
-``run_campaign_multi_technique`` is the R3 driver that issues several
-Runs against one Campaign, each pinned to a different injection
-technique from :data:`MIN_TECHNIQUES_PER_CAMPAIGN`.
+R4's bus-mediated worker pipeline lives in
+:mod:`cats.workers.{orchestrator,red_team,judge,documentation}`. Do
+NOT reach for this module in new code; it stays because:
 
-- Smoke mode: in-memory checkpointer, no Postgres saver, skips
-  credential lookup. Used by ``cats smoke``.
-- Real runs: AsyncPostgresSaver, project credentials loaded from
-  ``projects`` table and decrypted. Resume from the last checkpoint is
-  automatic — same ``thread_id`` on a second call picks up where the
-  previous attempt left off.
+1. ``cats smoke`` exercises the in-memory-checkpointer graph without
+   spinning up the bus — useful as a no-Redis, no-LLM sanity check.
+2. The R3 ``test_campaign_e2e`` covers the domain pass-path through
+   ``run_one`` so changes to the graph nodes still surface there.
+
+R3's ``run_campaign_multi_technique`` driver was removed in R4 —
+the four-worker bus pipeline replaces it. Multi-technique campaigns
+are now driven by the Orchestrator's ``CampaignPlan``.
 """
 
 from __future__ import annotations
@@ -22,22 +23,14 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from cats.agents.red_team.injection.dispatcher import ROTATION as INJECTION_ROTATION
 from cats.db.engine import session_scope
-from cats.db.repositories.campaign_repo import create_run_in_campaign
-from cats.db.repositories.run_repo import mark_run_failed, mark_run_running
+from cats.db.repositories.run_repo import mark_run_running
 from cats.db.schema import project_versions, projects
 from cats.graph.build import build_graph
 from cats.graph.checkpointer import postgres_checkpointer
 from cats.graph.state import CampaignState
 from cats.logging import get_logger
 from cats.security.crypto import decrypt
-
-# R3 DoD: "a single campaign visibly exercises multiple distinct
-# techniques." Set to 3 — enough to demonstrate the family-of-attacks
-# behavior without burning the budget on every fire. Configurable per
-# campaign via the ``num_techniques`` arg.
-MIN_TECHNIQUES_PER_CAMPAIGN: int = 3
 
 log = get_logger(__name__)
 
@@ -127,74 +120,6 @@ async def run_one(
     if isinstance(result, CampaignState):
         return result
     return CampaignState.model_validate(result)
-
-
-async def run_campaign_multi_technique(
-    *,
-    campaign_id: UUID,
-    first_run_id: UUID,
-    project_version_id: UUID,
-    num_techniques: int = MIN_TECHNIQUES_PER_CAMPAIGN,
-    selected_category: str = "injection",
-) -> list[CampaignState]:
-    """R3 — issue ``num_techniques`` consecutive Runs against the
-    campaign, each pinned to a different technique from the dispatcher's
-    rotation. The first Run uses ``first_run_id`` (already created by
-    the caller); subsequent Runs are created here.
-
-    Returns the list of final states (one per Run). Errors in any one
-    Run are logged but don't halt the campaign — the caller can inspect
-    ``state.halted_reason`` per state.
-
-    Only injection is multi-technique right now; other categories run
-    a single Run (R2 behavior preserved).
-    """
-    rotation = INJECTION_ROTATION if selected_category == "injection" else ("",)
-    techniques = list(rotation[: max(1, num_techniques)])
-
-    states: list[CampaignState] = []
-    for idx, technique in enumerate(techniques):
-        if idx == 0:
-            run_id = first_run_id
-        else:
-            async with session_scope() as session:
-                run_id = await create_run_in_campaign(
-                    session,
-                    campaign_id=campaign_id,
-                    project_version_id=project_version_id,
-                )
-
-        try:
-            state = await run_one(
-                campaign_id=campaign_id,
-                run_id=run_id,
-                project_version_id=project_version_id,
-                smoke_mode=False,
-                selected_category=selected_category,
-                selected_technique=technique,
-            )
-            states.append(state)
-        except Exception as exc:
-            log.exception(
-                "campaign.run_failed",
-                campaign_id=str(campaign_id),
-                run_id=str(run_id),
-                technique=technique,
-                error=repr(exc),
-            )
-            # Stamp the Run as failed so the dashboard / detail page
-            # doesn't show it stuck at 'running' forever. Swallow any
-            # DB error here — the original exception is what matters.
-            try:
-                async with session_scope() as session:
-                    await mark_run_failed(session, run_id=run_id)
-            except Exception as mark_exc:
-                log.warning(
-                    "campaign.mark_failed_errored",
-                    run_id=str(run_id),
-                    error=repr(mark_exc),
-                )
-    return states
 
 
 def main() -> None:

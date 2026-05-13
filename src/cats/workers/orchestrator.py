@@ -1,16 +1,23 @@
 """Orchestrator worker process.
 
-R4 Commit A — *stub planner.* Consumes ``CampaignRequested`` and
-emits a deterministic ``CampaignPlanProposed`` whose plan mirrors
-R3's injection ROTATION. The stub also writes the ``campaign_plans``
-row and immediately emits a matching ``CampaignPlanApproved`` so the
-new four-worker topology preserves R3's end-to-end behavior. The
-human-in-the-loop gate is NOT exercised in Commit A — the Commit B
-follow-up replaces this body with the real LLM-driven planner and
-moves approval to the operator UI.
+Consumes ``CampaignRequested`` and emits ``CampaignPlanProposed``. The
+planner used depends on ``settings.orchestrator_use_llm_planner``:
 
-The contract this stub establishes (what kinds it consumes / emits,
-what shape the plan has) is what Commit B's planner will preserve.
+- ``True`` (production) — the real LLM planner over the tool surface
+  (see :mod:`cats.agents.orchestrator.planner`). Plans are
+  rationale-grounded, structurally validated, with a tool-call
+  transcript persisted on the ``campaign_plans`` row.
+- ``False`` (tests, smoke, Commit-A behavior) — the deterministic stub
+  plan that mirrors R3's injection ROTATION. Preserves R3 e2e tests
+  without spinning up LLM credentials.
+
+Approval routing depends on ``settings.orchestrator_auto_approve``:
+
+- ``True`` (Commit-A behavior, default) — auto-emit
+  ``CampaignPlanApproved`` so the Red Team fires immediately.
+- ``False`` — wait for the operator to approve via the
+  ``/campaigns/<id>/plan`` page. The page POSTs to the API which
+  emits ``CampaignPlanApproved`` with the (possibly edited) plan.
 """
 
 from __future__ import annotations
@@ -22,7 +29,10 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cats.agents.orchestrator.planner import PlanStructuralError, propose_plan
 from cats.agents.red_team.injection.dispatcher import ROTATION as INJECTION_ROTATION
+from cats.config import get_settings
+from cats.db.repositories.audit_repo import write_audit
 from cats.messaging import (
     CampaignPlanApprovedPayload,
     CampaignPlanProposedPayload,
@@ -35,9 +45,9 @@ from cats.messaging import (
     Worker,
 )
 
-# Commit-A stub plan: same three injection techniques R3 walked in
-# MIN_TECHNIQUES_PER_CAMPAIGN order. Commit B replaces this with an
-# LLM tool-call planning loop.
+# Stub plan size: same three injection techniques R3 walked in
+# MIN_TECHNIQUES_PER_CAMPAIGN order. Used when the LLM planner is
+# disabled (tests, smoke).
 _STUB_NUM_TECHNIQUES = 3
 
 
@@ -56,13 +66,73 @@ class OrchestratorWorker(Worker):
             )
             return
         payload = CampaignRequestedPayload.model_validate(message.payload_json)
+        settings = get_settings()
         campaign_id = await self._ensure_campaign_for_request(session, payload)
-        plan = self._stub_plan(payload.budget_usd)
-        plan_id = await self._record_proposed_plan(session, campaign_id=campaign_id, plan=plan)
 
-        # Emit the proposed plan. The operator UI consumes this kind
-        # from the `operator` inbox (Commit B); Commit A skips that
-        # by also self-approving below.
+        plan: PlannedCampaign
+        tool_transcript: list[dict[str, object]] = []
+        if settings.orchestrator_use_llm_planner:
+            try:
+                proposal = await propose_plan(
+                    project_id=payload.project_id,
+                    project_version_id=payload.project_version_id,
+                    budget_usd=payload.budget_usd,
+                    campaign_id=campaign_id,
+                )
+                plan = proposal.plan
+                # `tool_transcript` carries Pydantic-serialized values
+                # through JSON; cast tightens the type for the envelope.
+                tool_transcript = list(proposal.tool_transcript)
+                self._log.info(
+                    "orchestrator.plan_proposed",
+                    campaign_id=str(campaign_id),
+                    cold_start=proposal.cold_start,
+                    attempt_count=len(plan.attempts),
+                    model=proposal.model,
+                    usd=proposal.cost_usd,
+                )
+            except PlanStructuralError as exc:
+                self._log.exception(
+                    "orchestrator.plan_failed",
+                    campaign_id=str(campaign_id),
+                    error=repr(exc),
+                )
+                await self._mark_plan_failed(session, campaign_id=campaign_id, error=repr(exc))
+                return
+        else:
+            plan = self._stub_plan(payload.budget_usd)
+
+        plan_id = await self._record_proposed_plan(
+            session,
+            campaign_id=campaign_id,
+            plan=plan,
+            tool_transcript=tool_transcript,
+        )
+
+        # Audit-log every plan emission per the R4 DoD. The actor is
+        # the platform here; the *operator's* approval lands its own
+        # audit row when the HITL UI POSTs to /approve.
+        await write_audit(
+            session,
+            actor="cats.platform.orchestrator",
+            action="campaign.plan.proposed",
+            target_kind="campaign_plan",
+            target_id=plan_id,
+            payload={
+                "campaign_id": str(campaign_id),
+                "planner": (
+                    "llm" if settings.orchestrator_use_llm_planner else "stub"
+                ),
+                "attempt_count": len(plan.attempts),
+                "rationale_excerpt": plan.rationale[:200],
+            },
+            trace_id=message.trace_id or None,
+        )
+
+        # Emit CampaignPlanProposed onto the operator's inbox. The HITL
+        # UI consumes this; if `orchestrator_auto_approve` is True the
+        # worker self-approves below to preserve the R3 / Commit-A
+        # behavior for tests + smoke.
         await self._bus.emit(
             session,
             Envelope[CampaignPlanProposedPayload](
@@ -72,7 +142,7 @@ class OrchestratorWorker(Worker):
                 payload=CampaignPlanProposedPayload(
                     campaign_id=campaign_id,
                     plan=plan,
-                    tool_transcript=[],
+                    tool_transcript=tool_transcript,
                     plan_id=plan_id,
                 ),
                 trace_id=message.trace_id,
@@ -81,16 +151,15 @@ class OrchestratorWorker(Worker):
             ),
         )
 
-        # Commit-A passthrough: auto-approve the proposed plan so
-        # Red Team gets work immediately. Commit B removes this.
-        await self._auto_approve(
-            session,
-            campaign_id=campaign_id,
-            plan=plan,
-            plan_id=plan_id,
-            project_version_id=payload.project_version_id,
-            trace_id=message.trace_id,
-        )
+        if settings.orchestrator_auto_approve:
+            await self._auto_approve(
+                session,
+                campaign_id=campaign_id,
+                plan=plan,
+                plan_id=plan_id,
+                project_version_id=payload.project_version_id,
+                trace_id=message.trace_id,
+            )
 
     # ------------------------------------------------------------------
     # Stub plan
@@ -160,14 +229,17 @@ class OrchestratorWorker(Worker):
         *,
         campaign_id: UUID,
         plan: PlannedCampaign,
+        tool_transcript: list[dict[str, object]] | None = None,
     ) -> UUID:
         row = (
             await session.execute(
                 text(
                     """
                     INSERT INTO campaign_plans
-                        (campaign_id, status, proposed_plan, rationale)
-                    VALUES (:cid, 'proposed', CAST(:plan AS jsonb), :rationale)
+                        (campaign_id, status, proposed_plan, rationale,
+                         tool_transcript)
+                    VALUES (:cid, 'proposed', CAST(:plan AS jsonb), :rationale,
+                            CAST(:transcript AS jsonb))
                     RETURNING id
                     """
                 ),
@@ -175,12 +247,38 @@ class OrchestratorWorker(Worker):
                     "cid": campaign_id,
                     "plan": json.dumps(plan.model_dump(mode="json")),
                     "rationale": plan.rationale,
+                    "transcript": json.dumps(tool_transcript or [], default=str),
                 },
             )
         ).first()
         if row is None:
             raise RuntimeError("failed to insert campaign_plans row")
         return UUID(str(row.id))
+
+    async def _mark_plan_failed(
+        self,
+        session: AsyncSession,
+        *,
+        campaign_id: UUID,
+        error: str,
+    ) -> None:
+        """The LLM planner failed structural validation (or the LLM call
+        itself failed). Persist a ``failed`` row so the operator UI
+        surfaces the error and offers a retry."""
+        await session.execute(
+            text(
+                """
+                INSERT INTO campaign_plans
+                    (campaign_id, status, proposed_plan, rationale)
+                VALUES (:cid, 'failed', CAST(:plan AS jsonb), :err)
+                """
+            ),
+            {
+                "cid": campaign_id,
+                "plan": json.dumps({"error": error[:2000]}),
+                "err": error[:2000],
+            },
+        )
 
     async def _auto_approve(
         self,
@@ -214,7 +312,7 @@ class OrchestratorWorker(Worker):
                     campaign_id=campaign_id,
                     plan=plan,
                     proposed_plan=plan,
-                    diff_summary={"auto_approved": True, "commit_a_stub": True},
+                    diff_summary={"auto_approved": True},
                     approver_user_id=None,
                     plan_id=plan_id,
                     project_version_id=project_version_id,

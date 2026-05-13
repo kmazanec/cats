@@ -1,0 +1,439 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Plan · {{ campaign.name }}{% endblock %}
+{% block crumb %}Campaign · {{ campaign.name }} / Plan{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+  <section>
+    <div class="row" style="gap: 10px; margin-bottom: 6px;">
+      <a class="nav-link" href="/campaigns/{{ campaign.id }}">← back to campaign</a>
+    </div>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Plan · {{ (campaign.id|string)[:8] }}</span>
+        <h1 class="title">Plan approval · {{ campaign.name }}</h1>
+        <p class="subtitle">
+          Target <strong>{{ campaign.project_name }}</strong> · env
+          <code class="mono">{{ campaign.project_env }}</code>
+          {% if plan_row %} · plan
+          <code class="mono">{{ (plan_row.id|string)[:8] }}</code>
+          · status <code class="mono">{{ plan_row.status }}</code>{% endif %}
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        {% if plan_row %}
+          {% if plan_row.status == 'proposed' %}
+            <span class="pill amber">awaiting approval</span>
+          {% elif plan_row.status == 'approved' %}
+            <span class="pill green">approved</span>
+          {% elif plan_row.status == 'edited' %}
+            <span class="pill green">edited &amp; approved</span>
+          {% elif plan_row.status == 'rejected' %}
+            <span class="pill red">rejected</span>
+          {% elif plan_row.status == 'failed' %}
+            <span class="pill red">plan failed</span>
+          {% elif plan_row.status == 'dispatched' %}
+            <span class="pill">dispatched</span>
+          {% else %}
+            <span class="pill">{{ plan_row.status }}</span>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  {% if request.query_params.get('notice') == 'already-approved' %}
+    <div class="panel">
+      <div class="body" style="font-size: 13px; color: var(--ink-2);">
+        This plan was already approved (auto-approval is enabled on this
+        deployment). The Red Team has the envelope; no further action
+        needed.
+      </div>
+    </div>
+  {% endif %}
+
+  {% if plan_row is none %}
+    <div class="panel">
+      <header>
+        <div class="title">Waiting on the Orchestrator</div>
+        <div class="meta">no campaign_plans row yet</div>
+      </header>
+      <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+        The Orchestrator hasn't published a plan for this campaign yet.
+        Reload in a moment — the worker picks up
+        <code class="mono">CampaignRequested</code> envelopes off the
+        bus and writes the proposed plan when it finishes.
+      </div>
+    </div>
+  {% elif plan_row.status == 'failed' %}
+    <div class="panel">
+      <header>
+        <div class="title">Plan generation failed</div>
+        <div class="meta">structural validation or LLM error</div>
+      </header>
+      <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+        <pre class="mono" style="white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 4px;">{{ plan_row.rationale }}</pre>
+        {% if principal.role in ('operator', 'senior_operator', 'admin') %}
+          <form method="post" action="/campaigns/{{ campaign.id }}/plan/retry" style="margin-top: 14px;">
+            {{ csrf_input(request) | safe }}
+            <button class="btn" type="submit">retry plan</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  {% elif plan_row.status == 'rejected' %}
+    <div class="panel">
+      <header>
+        <div class="title">Plan rejected</div>
+        <div class="meta">no envelope dispatched</div>
+      </header>
+      <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+        Reason:
+        <pre class="mono" style="white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 4px;">{{ plan_row.diff_summary.get('reject_reason') or '(none provided)' }}</pre>
+      </div>
+    </div>
+  {% else %}
+    {# proposed / approved / edited / dispatched #}
+    <div class="panel">
+      <header>
+        <div class="title">Rationale</div>
+        <div class="meta">Orchestrator's stated reasoning</div>
+      </header>
+      <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+        {% if plan_row.rationale %}
+          <p style="white-space: pre-wrap;">{{ plan_row.rationale }}</p>
+        {% else %}
+          <span class="muted">(no rationale recorded)</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if plan_row.tool_transcript %}
+      <div class="panel">
+        <header>
+          <div class="title">Tool transcript</div>
+          <div class="meta">{{ plan_row.tool_transcript|length }} call{{ plan_row.tool_transcript|length|pluralize }}</div>
+        </header>
+        <div class="body" style="font-size: 12px;">
+          {% for call in plan_row.tool_transcript %}
+            <details style="margin-bottom: 8px;">
+              <summary class="mono">
+                {{ loop.index }}. {{ call.get('name') or call.get('tool') or 'tool' }}
+              </summary>
+              <pre class="mono" style="white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 4px; margin-top: 6px;">{{ call|tojson(indent=2) }}</pre>
+            </details>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+
+    {% if plan_row.status in ('approved', 'edited', 'dispatched') %}
+      {# Read-only view of the approved plan, plus diff if edits were made. #}
+      <div class="panel">
+        <header>
+          <div class="title">Approved plan</div>
+          <div class="meta">{{ plan_row.approved_plan.get('attempts', [])|length }} attempt{{ plan_row.approved_plan.get('attempts', [])|length|pluralize }}</div>
+        </header>
+        <div class="body flush">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Category</th>
+                <th>Technique</th>
+                <th class="num">Per-attempt $</th>
+                <th class="num">Max partials</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for a in plan_row.approved_plan.get('attempts', []) %}
+                <tr>
+                  <td class="mono muted">{{ loop.index }}</td>
+                  <td class="mono">{{ a.category }}</td>
+                  <td class="mono">{{ a.technique }}</td>
+                  <td class="num mono">${{ '%.2f'|format(a.per_attempt_budget_usd) }}</td>
+                  <td class="num">{{ a.max_consecutive_partials }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {% set diff = plan_row.diff_summary %}
+      {% if diff and (diff.get('added') or diff.get('removed') or diff.get('reordered') or diff.get('budget_changes')) %}
+        <div class="panel">
+          <header>
+            <div class="title">Diff vs proposed</div>
+            <div class="meta">edits the operator made before approving</div>
+          </header>
+          <div class="body" style="font-size: 13px;">
+            {% if diff.get('added') %}
+              <div style="margin-bottom: 8px;">
+                <strong class="green">added:</strong>
+                <ul style="margin: 4px 0 0 18px;">
+                  {% for x in diff.added %}
+                    <li class="mono">{{ x.category }} / {{ x.technique }} @ #{{ x.index }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+            {% if diff.get('removed') %}
+              <div style="margin-bottom: 8px;">
+                <strong class="red">removed:</strong>
+                <ul style="margin: 4px 0 0 18px;">
+                  {% for x in diff.removed %}
+                    <li class="mono">{{ x.category }} / {{ x.technique }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+            {% if diff.get('reordered') %}
+              <div style="margin-bottom: 8px;">
+                <strong class="amber">reordered:</strong> the surviving attempts appear in a different order.
+              </div>
+            {% endif %}
+            {% if diff.get('budget_changes') %}
+              <div style="margin-bottom: 8px;">
+                <strong>budget / halt changes:</strong>
+                <pre class="mono" style="white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 4px; margin-top: 4px;">{{ diff.budget_changes|tojson(indent=2) }}</pre>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+    {% else %}
+      {# proposed: render the editable form. #}
+      {% set proposed = plan_row.proposed_plan %}
+      <div class="panel">
+        <header>
+          <div class="title">Plan editor</div>
+          <div class="meta">edit / reorder / drop attempts, then approve</div>
+        </header>
+        <div class="body">
+          <form id="plan-form"
+                method="post"
+                action="/campaigns/{{ campaign.id }}/plan/approve"
+                class="stack"
+                style="gap: 18px;">
+            {{ csrf_input(request) | safe }}
+            <input type="hidden" name="plan_json" id="plan_json" value="" />
+
+            <div class="grid cols-3" style="gap: 14px;">
+              <label class="field">
+                <span class="l">Halt on N consecutive fails</span>
+                <input class="mono" type="number" id="halt_fails"
+                       min="1" max="20" step="1"
+                       value="{{ proposed.get('halt_on_consecutive_fails', 3) }}" />
+              </label>
+              <label class="field">
+                <span class="l">Halt on N judge errors</span>
+                <input class="mono" type="number" id="halt_judge_errors"
+                       min="1" max="10" step="1"
+                       value="{{ proposed.get('halt_on_judge_errors', 2) }}" />
+              </label>
+              <label class="field">
+                <span class="l">Budget cap (USD)</span>
+                <input class="mono" type="number" id="budget_usd_cap"
+                       min="0" step="0.01"
+                       value="{{ '%.2f'|format(proposed.get('budget_usd_cap', 5.0)) }}" />
+              </label>
+            </div>
+
+            <div>
+              <div class="row between" style="margin-bottom: 8px;">
+                <strong>Attempts</strong>
+                <button type="button" class="btn ghost" id="add-attempt">+ add attempt</button>
+              </div>
+              <table class="tbl" id="attempts-table">
+                <thead>
+                  <tr>
+                    <th style="width: 30px;">#</th>
+                    <th>Category / Technique</th>
+                    <th class="num" style="width: 130px;">Per-attempt $</th>
+                    <th class="num" style="width: 120px;">Max partials</th>
+                    <th style="width: 110px;"></th>
+                  </tr>
+                </thead>
+                <tbody id="attempts-tbody">
+                  {% for a in proposed.get('attempts', []) %}
+                    <tr data-attempt-row="1">
+                      <td class="mono muted row-index"></td>
+                      <td>
+                        <select class="attempt-pair" required>
+                          {% for pair in catalog_pairs %}
+                            <option value="{{ pair.category }}|{{ pair.technique }}"
+                              {% if pair.category == a.category and pair.technique == a.technique %}selected{% endif %}>
+                              {{ pair.label }}
+                            </option>
+                          {% endfor %}
+                        </select>
+                      </td>
+                      <td class="num">
+                        <input class="mono attempt-budget" type="number"
+                               min="0" step="0.01"
+                               value="{{ '%.2f'|format(a.per_attempt_budget_usd) }}" />
+                      </td>
+                      <td class="num">
+                        <input class="mono attempt-partials" type="number"
+                               min="0" max="10" step="1"
+                               value="{{ a.max_consecutive_partials }}" />
+                      </td>
+                      <td>
+                        <button type="button" class="btn ghost row-up">↑</button>
+                        <button type="button" class="btn ghost row-down">↓</button>
+                        <button type="button" class="btn ghost row-remove">✕</button>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              <div id="no-attempts-warning" class="muted" style="margin-top: 8px; display: none;">
+                no attempts — add at least one before approving.
+              </div>
+            </div>
+
+            <div class="row between" style="margin-top: 6px;">
+              <div class="mono muted" style="font-size: 11px;">
+                edits are diffed against the proposed plan and recorded on the audit log
+              </div>
+              <div class="row" style="gap: 10px;">
+                <button type="button" class="btn ghost" id="show-reject">reject…</button>
+                <button class="btn" type="submit" id="approve-btn">approve &amp; dispatch</button>
+              </div>
+            </div>
+          </form>
+
+          <form id="reject-form"
+                method="post"
+                action="/campaigns/{{ campaign.id }}/plan/reject"
+                class="stack"
+                style="gap: 10px; margin-top: 18px; display: none;">
+            {{ csrf_input(request) | safe }}
+            <label class="field">
+              <span class="l">Reject reason (optional)</span>
+              <textarea name="reject_reason" rows="3"
+                        placeholder="why the plan doesn't fit (recorded on the audit log)"></textarea>
+            </label>
+            <div class="row" style="gap: 10px; justify-content: flex-end;">
+              <button type="button" class="btn ghost" id="cancel-reject">cancel</button>
+              <button class="btn" type="submit">reject plan</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <template id="attempt-row-template">
+        <tr data-attempt-row="1">
+          <td class="mono muted row-index"></td>
+          <td>
+            <select class="attempt-pair" required>
+              {% for pair in catalog_pairs %}
+                <option value="{{ pair.category }}|{{ pair.technique }}">{{ pair.label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td class="num">
+            <input class="mono attempt-budget" type="number" min="0" step="0.01" value="0.50" />
+          </td>
+          <td class="num">
+            <input class="mono attempt-partials" type="number" min="0" max="10" step="1" value="2" />
+          </td>
+          <td>
+            <button type="button" class="btn ghost row-up">↑</button>
+            <button type="button" class="btn ghost row-down">↓</button>
+            <button type="button" class="btn ghost row-remove">✕</button>
+          </td>
+        </tr>
+      </template>
+    {% endif %}
+  {% endif %}
+</main>
+{% endblock %}
+
+{% block scripts %}
+{% if plan_row and plan_row.status == 'proposed' %}
+<script>
+(function () {
+  const tbody = document.getElementById('attempts-tbody');
+  const template = document.getElementById('attempt-row-template');
+  const form = document.getElementById('plan-form');
+  const noAttemptsWarning = document.getElementById('no-attempts-warning');
+
+  function reindex() {
+    const rows = tbody.querySelectorAll('tr[data-attempt-row]');
+    rows.forEach((row, i) => {
+      row.querySelector('.row-index').textContent = (i + 1);
+    });
+    noAttemptsWarning.style.display = rows.length === 0 ? '' : 'none';
+  }
+
+  function bindRow(row) {
+    row.querySelector('.row-remove').addEventListener('click', () => {
+      row.remove();
+      reindex();
+    });
+    row.querySelector('.row-up').addEventListener('click', () => {
+      const prev = row.previousElementSibling;
+      if (prev) tbody.insertBefore(row, prev);
+      reindex();
+    });
+    row.querySelector('.row-down').addEventListener('click', () => {
+      const next = row.nextElementSibling;
+      if (next) tbody.insertBefore(next, row);
+      reindex();
+    });
+  }
+
+  tbody.querySelectorAll('tr[data-attempt-row]').forEach(bindRow);
+  reindex();
+
+  document.getElementById('add-attempt').addEventListener('click', () => {
+    const node = template.content.firstElementChild.cloneNode(true);
+    tbody.appendChild(node);
+    bindRow(node);
+    reindex();
+  });
+
+  // Reject panel toggling
+  const rejectForm = document.getElementById('reject-form');
+  document.getElementById('show-reject').addEventListener('click', () => {
+    rejectForm.style.display = '';
+  });
+  document.getElementById('cancel-reject').addEventListener('click', () => {
+    rejectForm.style.display = 'none';
+  });
+
+  // Serialize the form to plan_json on submit
+  form.addEventListener('submit', (ev) => {
+    const attempts = [];
+    tbody.querySelectorAll('tr[data-attempt-row]').forEach((row) => {
+      const pairRaw = row.querySelector('.attempt-pair').value || '';
+      const [category, technique] = pairRaw.split('|');
+      attempts.push({
+        category: category || '',
+        technique: technique || '',
+        per_attempt_budget_usd: parseFloat(row.querySelector('.attempt-budget').value || '0'),
+        max_consecutive_partials: parseInt(row.querySelector('.attempt-partials').value || '0', 10),
+      });
+    });
+    if (attempts.length === 0) {
+      ev.preventDefault();
+      noAttemptsWarning.style.display = '';
+      return;
+    }
+    const plan = {
+      payload_version: 1,
+      attempts: attempts,
+      rationale: {{ proposed.get('rationale', '')|tojson }},
+      confidence: {{ proposed.get('confidence', '')|tojson }},
+      halt_on_consecutive_fails: parseInt(document.getElementById('halt_fails').value || '3', 10),
+      halt_on_judge_errors: parseInt(document.getElementById('halt_judge_errors').value || '2', 10),
+      budget_usd_cap: parseFloat(document.getElementById('budget_usd_cap').value || '0'),
+    };
+    document.getElementById('plan_json').value = JSON.stringify(plan);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}
