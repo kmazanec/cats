@@ -24,8 +24,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.agents.red_team.executor import MutatorContext, execute_attempt
+from cats.db.engine import session_scope
 from cats.db.repositories.campaign_repo import create_run_in_campaign
-from cats.db.repositories.run_repo import mark_run_running
+from cats.db.repositories.run_repo import mark_run_running, sweep_orphaned_running_runs
 from cats.graph.events import publish
 from cats.messaging import (
     AttackEventPayload,
@@ -44,6 +45,24 @@ class RedTeamWorker(Worker):
 
     agent_name = "red_team"
     visibility_timeout_seconds = 300  # ARCHITECTURE.md §2.7
+
+    async def run(self) -> None:
+        # `_handle_plan_approved` walks the plan inside a single
+        # message-handler invocation and isn't checkpointed, so a
+        # container restart mid-walk leaves any runs it had already
+        # marked `running` orphaned at that status forever. Sweep them
+        # before entering the main loop. Safe because this worker is
+        # the only writer of `runs.status='running'` and only one
+        # replica is deployed.
+        async with session_scope() as session:
+            swept = await sweep_orphaned_running_runs(session)
+        if swept:
+            self._log.info(
+                "red_team.orphan_sweep",
+                swept_run_ids=[str(r) for r in swept],
+                count=len(swept),
+            )
+        await super().run()
 
     async def handle(self, session: AsyncSession, message: ClaimedMessage) -> None:
         if message.kind is MessageKind.CAMPAIGN_PLAN_APPROVED:

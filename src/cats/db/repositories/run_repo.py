@@ -259,3 +259,21 @@ async def mark_run_failed(session: AsyncSession, *, run_id: UUID) -> None:
     await session.execute(
         update(runs).where(runs.c.id == run_id).values(status="failed", ended_at=_utcnow())
     )
+
+
+async def sweep_orphaned_running_runs(session: AsyncSession) -> list[UUID]:
+    """Mark every Run still at ``status='running'`` as failed.
+
+    Called from the Red Team worker's startup hook. Runs only enter
+    ``running`` from inside ``RedTeamWorker._handle_plan_approved``;
+    that handler isn't checkpointed, so a container restart mid-loop
+    orphans whatever runs were in flight. Sweeping at boot stops them
+    from sitting in the UI forever. Returns the IDs swept so the
+    caller can log them."""
+    result = await session.execute(
+        update(runs)
+        .where(runs.c.status == "running")
+        .values(status="failed", ended_at=_utcnow())
+        .returning(runs.c.id)
+    )
+    return [row[0] for row in result.all()]
