@@ -1,0 +1,117 @@
+{% extends "_base.html" %}
+{% block title %}CATS · New campaign{% endblock %}
+{% block crumb %}Campaigns / New{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+
+  <section>
+    <div class="row" style="gap: 10px; margin-bottom: 6px;">
+      <a class="nav-link" href="/campaigns">all campaigns</a>
+    </div>
+    <span class="eyebrow">— Queue a new campaign</span>
+    <h1 class="title">Fire an adversarial run.</h1>
+    <p class="subtitle">
+      Pick the target project, set a budget cap, choose the attack category. The
+      run dispatches as a background task; you'll land on its detail page where
+      events stream live as the agents act.
+    </p>
+  </section>
+
+  <div class="grid cols-12-7-5">
+    <div class="panel">
+      <header>
+        <div class="title">Run parameters</div>
+        <div class="meta">budget shown before run</div>
+      </header>
+      <div class="body">
+        <form action="/campaigns"
+              method="post"
+              class="stack"
+              style="gap: 18px;">
+          {{ csrf_input(request) | safe }}
+
+          <label class="field">
+            <span class="l">Project (target)</span>
+            <select name="project_id" required>
+              {% if not projects %}
+                <option value="" disabled selected>no projects registered</option>
+              {% endif %}
+              {% for p in projects %}
+                <option value="{{ p.id }}">{{ p.name }} · {{ p.env }} · {{ p.base_url }}</option>
+              {% endfor %}
+            </select>
+          </label>
+
+          <div class="grid cols-2" style="gap: 14px;">
+            <label class="field">
+              <span class="l">Mode</span>
+              <select name="mode">
+                <option value="blackhat">blackhat</option>
+                <option value="whitehat" disabled>whitehat · post-MVP</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="l">Budget (USD)</span>
+              <input class="mono" type="text" name="budget_usd" value="5.00" required />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="l">Attack category</span>
+            <select name="category" required>
+              <option value="injection" selected>injection</option>
+              <option value="exfil" disabled>exfil · post-R2</option>
+              <option value="tool_abuse" disabled>tool_abuse · post-R2</option>
+            </select>
+          </label>
+
+          <div class="row between" style="margin-top: 6px;">
+            <div class="mono" style="font-size: 11px; color: var(--ink-3); letter-spacing: 0.12em;">
+              est · 150 attacks · ~$4.20 · 6m wall
+            </div>
+            <div class="row" style="gap: 10px;">
+              <a class="btn ghost" href="/campaigns">cancel</a>
+              <button class="btn" type="submit"
+                {% if not projects %}disabled title="register a project first"{% endif %}>
+                <span class="ch">▸</span>fire campaign
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="panel cy">
+        <header>
+          <div class="title">What happens next</div>
+          <div class="meta">background dispatch</div>
+        </header>
+        <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+          <ol style="padding-left: 18px; display: flex; flex-direction: column; gap: 8px;">
+            <li>CATS creates a Campaign + Run row and authorizes the project's latest version.</li>
+            <li>The orchestrator graph spins up Red Team + Mutator agents to probe the target.</li>
+            <li>The Judge promotes successful exploits to Findings as they're verified.</li>
+            <li>You land on the campaign detail page — events stream live via SSE.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="panel">
+        <header>
+          <div class="title">Safety</div>
+          <div class="meta">trust boundaries</div>
+        </header>
+        <div class="body" style="font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+          A campaign will only fire against projects with
+          <code class="mono">allow_run_against</code> = true. The output filter
+          gates adversarial content before any judge sees it. All runs are
+          audit-logged under your operator email.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+{% endblock %}

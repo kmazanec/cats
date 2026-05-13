@@ -82,6 +82,71 @@ async def create_campaign_and_run(
     return campaign_id, run_id, project_version_id
 
 
+async def list_campaigns(
+    session: AsyncSession, *, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Return campaigns (newest first) joined with their target project and
+    a one-row summary of the most-recent run (status, attacks, spend)."""
+    latest_run = (
+        select(
+            runs.c.campaign_id,
+            runs.c.id.label("run_id"),
+            runs.c.status,
+            runs.c.attacks_fired,
+            runs.c.budget_consumed_usd,
+            runs.c.started_at,
+        )
+        .order_by(runs.c.campaign_id, desc(runs.c.created_at))
+        .distinct(runs.c.campaign_id)
+        .subquery()
+    )
+    stmt = (
+        select(
+            campaigns.c.id,
+            campaigns.c.name,
+            campaigns.c.mode,
+            campaigns.c.trigger,
+            campaigns.c.budget,
+            campaigns.c.created_at,
+            projects.c.id.label("project_id"),
+            projects.c.name.label("project_name"),
+            projects.c.env.label("project_env"),
+            latest_run.c.run_id,
+            latest_run.c.status,
+            latest_run.c.attacks_fired,
+            latest_run.c.budget_consumed_usd,
+            latest_run.c.started_at,
+        )
+        .select_from(
+            campaigns
+            .join(projects, campaigns.c.project_id == projects.c.id)
+            .outerjoin(latest_run, campaigns.c.id == latest_run.c.campaign_id)
+        )
+        .order_by(desc(campaigns.c.created_at))
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "mode": r.mode,
+            "trigger": r.trigger,
+            "budget": r.budget,
+            "created_at": r.created_at,
+            "project_id": r.project_id,
+            "project_name": r.project_name,
+            "project_env": r.project_env,
+            "run_id": r.run_id,
+            "run_status": r.status,
+            "attacks_fired": r.attacks_fired,
+            "budget_consumed_usd": r.budget_consumed_usd,
+            "started_at": r.started_at,
+        }
+        for r in rows
+    ]
+
+
 async def get_campaign_with_project(
     session: AsyncSession, *, campaign_id: UUID
 ) -> dict[str, Any] | None:

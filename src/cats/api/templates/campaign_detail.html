@@ -5,14 +5,32 @@
 {% block main %}
 <main class="stack" style="gap: 32px;">
   <section>
-    <span class="eyebrow">— Campaign · {{ campaign.id }}</span>
-    <h1 class="title">{{ campaign.name }}</h1>
-    <p class="subtitle">
-      Target <strong>{{ campaign.project_name }}</strong> · env
-      <code class="mono">{{ campaign.project_env }}</code> · trigger
-      <code class="mono">{{ campaign.trigger }}</code> · fired
-      {{ campaign.created_at.strftime('%Y-%m-%d %H:%M') }}
-    </p>
+    <div class="row" style="gap: 10px; margin-bottom: 6px;">
+      <a class="nav-link" href="/campaigns">all campaigns</a>
+    </div>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Campaign · {{ (campaign.id|string)[:8] }}</span>
+        <h1 class="title">{{ campaign.name }}</h1>
+        <p class="subtitle">
+          Target <strong>{{ campaign.project_name }}</strong> · env
+          <code class="mono">{{ campaign.project_env }}</code> · trigger
+          <code class="mono">{{ campaign.trigger }}</code> · fired
+          {{ campaign.created_at.strftime('%Y-%m-%d %H:%M') }}
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        {% if latest_run and latest_run.status == 'running' %}
+          <span class="pill amber">running</span>
+        {% elif latest_run and latest_run.status == 'completed' %}
+          <span class="pill green">completed</span>
+        {% elif latest_run and latest_run.status == 'failed' %}
+          <span class="pill red">failed</span>
+        {% elif latest_run %}
+          <span class="pill">{{ latest_run.status }}</span>
+        {% endif %}
+      </div>
+    </div>
   </section>
 
   <section class="grid cols-2" style="gap: 18px;">

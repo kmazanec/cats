@@ -14,59 +14,105 @@
 </head>
 <body>
 
-<div class="page" id="page">
+<div class="app-shell">
 
-  <header class="chrome-top">
-    <div class="brand">
+  <aside class="sidebar">
+    <a href="/" class="brand" style="text-decoration: none;">
       <span class="brand-dot" aria-hidden="true"></span>
-      <span>CATS · Adversarial Eval Platform</span>
-    </div>
-    <nav>
-      <a href="/" class="{% if active == 'home' %}active{% endif %}">Overview</a>
-      <a href="/projects" class="{% if active == 'projects' %}active{% endif %}">Projects</a>
-      <a href="/campaigns" class="{% if active == 'campaigns' %}active{% endif %}">Campaigns</a>
-      <a href="/findings" class="{% if active == 'findings' %}active{% endif %}">Findings</a>
-      <a href="/audit" class="{% if active == 'audit' %}active{% endif %}">Audit</a>
-      <a href="/health" class="{% if active == 'health' %}active{% endif %}">Health</a>
-      {% if principal and principal.role == 'admin' %}
-        <a href="/users" class="{% if active == 'users' %}active{% endif %}">Users</a>
-      {% endif %}
-      <a href="/docs">API</a>
-    </nav>
-    <div class="sysline">
-      <span><span class="k">env</span> {{ env_tag }}</span>
-      <span><span class="k">build</span>
-        {% if build_pipeline_url %}<a href="{{ build_pipeline_url }}" class="nav-link">{{ build_tag }}</a>{% else %}{{ build_tag }}{% endif %}
+      <span>
+        <span class="brand-name">CATS</span>
+        <span class="brand-sub">Adversarial Eval</span>
       </span>
-      <span><span class="k">ts</span> {{ now_utc }}</span>
-      {% if principal %}
-        <span><span class="k">{{ principal.role }}</span> {{ principal.email }}</span>
-        <form action="/logout" method="post" style="display:inline;">
-          {{ csrf_input(request) | safe }}
-          <button type="submit" class="nav-link" style="background:none;border:0;cursor:pointer;color:inherit;font:inherit;letter-spacing:inherit;">sign out</button>
-        </form>
-      {% else %}
-        <span><a class="nav-link" href="/login">sign in</a></span>
-      {% endif %}
-    </div>
-  </header>
+    </a>
 
-  {% block main %}{% endblock %}
+    <div class="nav-group">
+      <nav class="nav-list">
+        <a href="/" class="{% if active == 'home' %}active{% endif %}">
+          <span class="nav-ico">◇</span><span>Dashboard</span>
+        </a>
+        <a href="/campaigns" class="{% if active == 'campaigns' %}active{% endif %}">
+          <span class="nav-ico">▸</span><span>Campaigns</span>
+        </a>
+        <a href="/findings" class="{% if active == 'findings' %}active{% endif %}">
+          <span class="nav-ico">!</span><span>Findings</span>
+        </a>
+        <a href="/projects" class="{% if active == 'projects' %}active{% endif %}">
+          <span class="nav-ico">□</span><span>Projects</span>
+        </a>
+      </nav>
+    </div>
+
+    <div class="nav-group">
+      <div class="group-label">System</div>
+      <nav class="nav-list">
+        <a href="/audit" class="{% if active == 'audit' %}active{% endif %}">
+          <span class="nav-ico">≡</span><span>Audit</span>
+        </a>
+        <a href="/health" class="{% if active == 'health' %}active{% endif %}">
+          <span class="nav-ico">♥</span><span>Health</span>
+        </a>
+        {% if principal and principal.role == 'admin' %}
+          <a href="/users" class="{% if active == 'users' %}active{% endif %}">
+            <span class="nav-ico">@</span><span>Users</span>
+          </a>
+        {% endif %}
+        <a href="/docs">
+          <span class="nav-ico">{ }</span><span>API</span>
+        </a>
+      </nav>
+    </div>
+
+    <div class="sidebar-footer">
+      {% if principal %}
+        <div class="user-row">
+          <div class="user">
+            <span class="role">{{ principal.role }}</span>
+            <span class="email">{{ principal.email }}</span>
+          </div>
+          <form action="/logout" method="post" style="display:inline;">
+            {{ csrf_input(request) | safe }}
+            <button type="submit" class="signout">sign out</button>
+          </form>
+        </div>
+      {% else %}
+        <div class="user-row">
+          <a class="nav-link" href="/login">sign in</a>
+        </div>
+      {% endif %}
+
+      <div class="sysmeta">
+        <div class="row"><span class="k">env</span><span class="v">{{ env_tag }}</span></div>
+        <div class="row">
+          <span class="k">build</span>
+          <span class="v">
+            {% if build_pipeline_url %}<a href="{{ build_pipeline_url }}" style="color:inherit;">{{ build_tag }}</a>{% else %}{{ build_tag }}{% endif %}
+          </span>
+        </div>
+        <div class="row"><span class="k">db</span><span class="v {{ 'green' if db_status == 'ok' else 'red' }}">{{ db_status }}</span></div>
+        <div class="row"><span class="k">redis</span><span class="v {{ 'green' if redis_status == 'ok' else 'red' }}">{{ redis_status }}</span></div>
+        <div class="row"><span class="k">openrouter</span><span class="v {{ 'green' if openrouter_status == 'configured' else 'amber' }}">{{ openrouter_status }}</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main-area">
+    <div class="main-top">
+      <div class="crumbs">
+        <span class="crumb">CATS</span>
+        <span class="sep">/</span>
+        <span class="crumb now">{% block crumb %}Dashboard{% endblock %}</span>
+      </div>
+      <div class="sysline">
+        <span><span class="k">ts</span> <span class="v">{{ now_utc }}</span></span>
+      </div>
+    </div>
+
+    <div class="page">
+      {% block main %}{% endblock %}
+    </div>
+  </div>
 
 </div>
-
-<footer class="chrome-bottom" id="chrome-bottom">
-  <div class="left">
-    <span class="crumb">CATS</span>
-    <span class="sep">/</span>
-    <span class="crumb">{% block crumb %}Overview{% endblock %}</span>
-  </div>
-  <div class="right">
-    <span><span class="k">db</span> <span class="v">{{ db_status }}</span></span>
-    <span><span class="k">redis</span> <span class="v">{{ redis_status }}</span></span>
-    <span><span class="k">openrouter</span> <span class="v">{{ openrouter_status }}</span></span>
-  </div>
-</footer>
 
 {% block scripts %}{% endblock %}
 </body>

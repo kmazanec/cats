@@ -19,11 +19,12 @@ from cats.db.repositories.audit_repo import write_audit
 from cats.db.repositories.campaign_repo import (
     create_campaign_and_run,
     get_campaign_with_project,
+    list_campaigns,
     list_executions_for_run,
     list_findings_for_run,
     list_runs_for_campaign,
 )
-from cats.db.repositories.project_repo import get_project
+from cats.db.repositories.project_repo import get_project, list_projects
 from cats.logging import get_logger
 from cats.security.csrf import require_csrf
 from cats.workers.campaign_worker import run_one
@@ -62,6 +63,30 @@ async def _dispatch_run(*, campaign_id: UUID, run_id: UUID, project_version_id: 
         )
     except Exception as exc:
         log.exception("campaign.run_failed", run_id=str(run_id), error=repr(exc))
+
+
+@router.get("")
+async def campaigns_list_page(
+    request: Request,
+    principal: Principal = Depends(require_user),
+) -> Any:
+    async with session_scope() as session:
+        rows = await list_campaigns(session, limit=200)
+    ctx = _chrome_ctx(principal)
+    ctx["campaigns"] = rows
+    return templates.TemplateResponse(request, "campaigns_list.html", ctx)
+
+
+@router.get("/new")
+async def new_campaign_form(
+    request: Request,
+    principal: Principal = Depends(require_role("operator")),
+) -> Any:
+    async with session_scope() as session:
+        projects_view = await list_projects(session)
+    ctx = _chrome_ctx(principal)
+    ctx["projects"] = projects_view
+    return templates.TemplateResponse(request, "campaign_new.html", ctx)
 
 
 @router.post("", dependencies=[Depends(require_csrf)])

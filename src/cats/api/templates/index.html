@@ -1,15 +1,15 @@
 {% extends "_base.html" %}
-{% block title %}CATS · Overview{% endblock %}
-{% block crumb %}Overview{% endblock %}
+{% block title %}CATS · Dashboard{% endblock %}
+{% block crumb %}Dashboard{% endblock %}
 
 {% block main %}
 <main class="stack" style="gap: 32px;">
 
-  {# =========================== HEADER + ACTION ============================ #}
+  {# =========================== HEADER ============================ #}
   <section>
     <div class="row between" style="align-items: flex-end;">
       <div>
-        <span class="eyebrow">— Operator Overview · {{ now_iso }}</span>
+        <span class="eyebrow">— Operator Dashboard · {{ now_iso }}</span>
         <h1 class="title">Adversarial posture for the OpenEMR Clinical Co-Pilot.</h1>
         <p class="subtitle">
           {{ overview.attacks_24h }} attacks fired in the last 24h across
@@ -19,7 +19,7 @@
       </div>
       <div class="row" style="gap: 10px;">
         <a class="btn ghost" href="/findings"><span class="ch">[</span>triage<span class="ch">]</span></a>
-        <a class="btn" href="#fire"><span class="ch">▸</span>fire campaign</a>
+        <a class="btn" href="/campaigns/new"><span class="ch">▸</span>new campaign</a>
       </div>
     </div>
   </section>
@@ -140,7 +140,7 @@
       <div class="panel cy">
         <header>
           <div class="title">Active runs</div>
-          <div class="meta">{{ active_runs|length }} running</div>
+          <div class="meta"><a class="nav-link" href="/campaigns">all campaigns</a></div>
         </header>
         <div class="body flush">
           {% if active_runs %}
@@ -202,71 +202,6 @@
               </div>
             {% endif %}
           </div>
-        </div>
-      </div>
-
-      {# --- Fire-campaign quick action --- #}
-      <div class="panel" id="fire">
-        <header>
-          <div class="title">Fire campaign</div>
-          <div class="meta">budget shown before run</div>
-        </header>
-        <div class="body">
-          <form hx-post="/campaigns"
-                hx-swap="outerHTML"
-                hx-headers='{"X-CSRF-Token": "{{ request.state.csrf_token }}"}'
-                hx-on::response-error="
-                  let msg = event.detail.xhr.responseText;
-                  try { msg = JSON.parse(msg).detail || msg; } catch (e) {}
-                  const slot = this.querySelector('[data-fire-error]');
-                  slot.textContent = msg;
-                  slot.hidden = false;
-                "
-                hx-on::before-request="
-                  const slot = this.querySelector('[data-fire-error]');
-                  slot.hidden = true;
-                  slot.textContent = '';
-                "
-                class="stack" style="gap: 14px;">
-            {{ csrf_input(request) | safe }}
-            <div class="empty" data-fire-error hidden
-                 style="border-color: var(--red); color: var(--red);"></div>
-            <label class="field">
-              <span class="l">Project</span>
-              <select name="project_id" required>
-                {% for p in projects %}
-                  <option value="{{ p.id }}">{{ p.name }} · {{ p.env }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <div class="grid cols-2" style="gap: 12px;">
-              <label class="field">
-                <span class="l">Mode</span>
-                <select name="mode">
-                  <option value="blackhat">blackhat</option>
-                  <option value="whitehat" disabled>whitehat · post-MVP</option>
-                </select>
-              </label>
-              <label class="field">
-                <span class="l">Budget (USD)</span>
-                <input class="mono" type="text" name="budget_usd" value="5.00" />
-              </label>
-            </div>
-            <label class="field">
-              <span class="l">Categories</span>
-              <div class="row" style="gap: 18px;">
-                <label class="row" style="gap: 6px;"><input type="checkbox" name="cat" value="injection" checked /> <span class="mono" style="font-size:12px;">injection</span></label>
-                <label class="row" style="gap: 6px;"><input type="checkbox" name="cat" value="exfil" checked /> <span class="mono" style="font-size:12px;">exfil</span></label>
-                <label class="row" style="gap: 6px;"><input type="checkbox" name="cat" value="tool_abuse" checked /> <span class="mono" style="font-size:12px;">tool_abuse</span></label>
-              </div>
-            </label>
-            <div class="row between" style="margin-top: 4px;">
-              <div class="mono" style="font-size: 11px; color: var(--ink-3); letter-spacing: 0.12em;">
-                est · 150 attacks · $4.20 · 6m wall
-              </div>
-              <button class="btn" type="submit"><span class="ch">▸</span>fire</button>
-            </div>
-          </form>
         </div>
       </div>
 

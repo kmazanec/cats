@@ -1,0 +1,87 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Campaigns{% endblock %}
+{% block crumb %}Campaigns{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+
+  <section>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Campaigns · {{ campaigns|length }} on record</span>
+        <h1 class="title">Every campaign CATS has fired.</h1>
+        <p class="subtitle">
+          One campaign = one authorized adversarial run against a target project.
+          Pick one to watch live or review its results, or queue a fresh run.
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        {% if principal.role in ('operator','senior_operator','admin') %}
+          <a class="btn" href="/campaigns/new"><span class="ch">▸</span>new campaign</a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">All campaigns</div>
+      <div class="meta">newest first · {{ campaigns|length }} shown</div>
+    </header>
+    <div class="body flush">
+      {% if campaigns %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th style="width: 140px;">Project</th>
+              <th style="width: 80px;">Env</th>
+              <th style="width: 100px;">Status</th>
+              <th class="num" style="width: 90px;">Attacks</th>
+              <th class="num" style="width: 100px;">Spend</th>
+              <th class="num" style="width: 130px;">Fired</th>
+              <th style="width: 80px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in campaigns %}
+              <tr>
+                <td>
+                  <strong>{{ c.name }}</strong>
+                  <div class="muted mono" style="font-size: 11px;">{{ c.mode }} · {{ c.trigger }}</div>
+                </td>
+                <td>{{ c.project_name }}</td>
+                <td>
+                  <span class="dot {{ 'red' if c.project_env == 'prod' else 'amber' if c.project_env == 'staging' else 'cyan' }}"></span>{{ c.project_env }}
+                </td>
+                <td>
+                  {% if c.run_status == 'running' %}<span class="dot amber pulse"></span>running
+                  {% elif c.run_status == 'pending' %}<span class="dot cyan"></span>pending
+                  {% elif c.run_status == 'completed' %}<span class="dot green"></span>completed
+                  {% elif c.run_status == 'failed' %}<span class="dot red"></span>failed
+                  {% elif c.run_status %}<span class="dot"></span>{{ c.run_status }}
+                  {% else %}<span class="dot"></span>—{% endif %}
+                </td>
+                <td class="num">{{ c.attacks_fired or 0 }}</td>
+                <td class="num mono">${{ '%.2f'|format(c.budget_consumed_usd or 0.0) }}</td>
+                <td class="num muted mono">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td><a class="nav-link" href="/campaigns/{{ c.id }}">open</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">
+          no campaigns yet
+          {% if principal.role in ('operator','senior_operator','admin') %}
+            <span class="hint"><a class="nav-link" href="/campaigns/new">queue your first campaign</a></span>
+          {% else %}
+            <span class="hint">an operator can queue the first campaign</span>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+</main>
+{% endblock %}
