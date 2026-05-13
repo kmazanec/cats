@@ -235,3 +235,14 @@ async def mark_run_completed(
             budget_consumed_usd=budget_consumed_usd,
         )
     )
+
+
+async def mark_run_failed(session: AsyncSession, *, run_id: UUID) -> None:
+    """Mark a Run as failed and stamp ended_at. Used by the worker's
+    exception path so a crashed dispatch doesn't leave the Run stuck at
+    'running' in the UI forever."""
+    await session.execute(
+        update(runs)
+        .where(runs.c.id == run_id)
+        .values(status="failed", ended_at=_utcnow())
+    )

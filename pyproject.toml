@@ -12,6 +12,7 @@ dependencies = [
     "langgraph>=0.2.60",
     "langgraph-checkpoint>=4.0.0",          # CVE-2026-27794 fix
     "langgraph-checkpoint-postgres>=2.0.0", # NOT sqlite — CVE-2025-67644
+    "psycopg[binary]>=3.2",                 # langgraph's AsyncPostgresSaver imports psycopg; binary wheel bundles libpq so the slim image doesn't need apt libpq5
     "langsmith>=0.2.0",
     "langchain-openai>=0.2.0",              # used as the OpenRouter client (OpenAI-compatible)
     # Models / validation

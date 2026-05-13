@@ -25,7 +25,7 @@ from sqlalchemy import select
 from cats.agents.red_team.injection.dispatcher import ROTATION as INJECTION_ROTATION
 from cats.db.engine import session_scope
 from cats.db.repositories.campaign_repo import create_run_in_campaign
-from cats.db.repositories.run_repo import mark_run_running
+from cats.db.repositories.run_repo import mark_run_failed, mark_run_running
 from cats.db.schema import project_versions, projects
 from cats.graph.build import build_graph
 from cats.graph.checkpointer import postgres_checkpointer
@@ -182,6 +182,18 @@ async def run_campaign_multi_technique(
                 technique=technique,
                 error=repr(exc),
             )
+            # Stamp the Run as failed so the dashboard / detail page
+            # doesn't show it stuck at 'running' forever. Swallow any
+            # DB error here — the original exception is what matters.
+            try:
+                async with session_scope() as session:
+                    await mark_run_failed(session, run_id=run_id)
+            except Exception as mark_exc:
+                log.warning(
+                    "campaign.mark_failed_errored",
+                    run_id=str(run_id),
+                    error=repr(mark_exc),
+                )
     return states
 
 
