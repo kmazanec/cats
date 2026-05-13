@@ -1,0 +1,60 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Message bus{% endblock %}
+{% block crumb %}Message bus{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 24px;">
+  <section>
+    <span class="eyebrow">— Bus · Postgres-backed · auto-refresh 3s</span>
+    <h1 class="title">What the agents are saying to each other.</h1>
+    <p class="subtitle">
+      The four agents (orchestrator, red_team, judge, documentation) talk via
+      typed envelopes on <code class="mono">agent_messages</code>. This page
+      surfaces inbox depth, recent in-flight rows, and the dead-letter queue.
+      Re-queue is operator-gated; every re-queue writes to the audit log.
+    </p>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Inbox depth · per agent</div>
+      <div class="meta">ready-to-claim messages, by destination</div>
+    </header>
+    <div class="body"
+         id="bus-inbox-depth"
+         hx-get="/bus/inbox-depth"
+         hx-trigger="load, every 3s"
+         hx-swap="innerHTML">
+      <div class="muted mono" style="font-size: 12px;">loading…</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Dead-letter queue</div>
+      <div class="meta">messages that exhausted retries · operator re-queue</div>
+    </header>
+    <div class="body flush"
+         id="bus-dead-letters"
+         hx-get="/bus/dead-letters"
+         hx-trigger="load, every 3s"
+         hx-swap="innerHTML">
+      <div class="muted mono" style="font-size: 12px; padding: 12px;">loading…</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <header>
+      <div class="title">Recent messages</div>
+      <div class="meta">newest first · last 100</div>
+    </header>
+    <div class="body flush"
+         id="bus-inflight"
+         hx-get="/bus/inflight"
+         hx-trigger="load, every 3s"
+         hx-swap="innerHTML">
+      <div class="muted mono" style="font-size: 12px; padding: 12px;">loading…</div>
+    </div>
+  </div>
+</main>
+{% endblock %}

@@ -29,17 +29,20 @@ from cats.db.repositories.campaign_repo import (
 )
 from cats.db.repositories.project_repo import get_project, list_projects
 from cats.logging import get_logger
-from cats.security.csrf import require_csrf
-from cats.workers.campaign_worker import (
-    MIN_TECHNIQUES_PER_CAMPAIGN,
-    run_campaign_multi_technique,
+from cats.messaging import (
+    CampaignRequestedPayload,
+    Envelope,
+    MessageKind,
 )
+from cats.messaging.bus import Bus
+from cats.security.csrf import require_csrf
 
 log = get_logger(__name__)
 router = APIRouter()
 
-# Strong refs to in-flight background dispatches so asyncio doesn't GC
-# them before they complete (see RUF006 / asyncio.create_task contract).
+# R3-era background task set kept for backwards compatibility with
+# legacy code paths. R4's dispatch flow is bus-mediated and does NOT
+# spawn asyncio tasks — the Orchestrator worker handles CampaignRequested.
 _BG_TASKS: set[asyncio.Task[None]] = set()
 
 
@@ -57,20 +60,36 @@ def _chrome_ctx(principal: Principal) -> dict[str, Any]:
     }
 
 
-async def _dispatch_run(*, campaign_id: UUID, run_id: UUID, project_version_id: UUID) -> None:
-    """R3: drive a multi-technique campaign. The first Run uses the
-    already-created ``run_id``; the worker creates additional Runs for
-    the remaining techniques in the dispatcher's rotation. Errors are
-    caught per-Run so the background task doesn't crash the app loop."""
-    try:
-        await run_campaign_multi_technique(
-            campaign_id=campaign_id,
-            first_run_id=run_id,
+async def _emit_campaign_requested(
+    *,
+    project_id: UUID,
+    project_version_id: UUID,
+    budget_usd: float,
+    operator_user_id: UUID | None,
+    name: str,
+    request_id: UUID,
+) -> None:
+    """R4: emit a ``CampaignRequested`` envelope onto the Orchestrator's
+    inbox. The Orchestrator worker authors a plan, the operator approves
+    it, and only then does the Red Team worker fire — none of that work
+    happens in the HTTP request lifetime anymore."""
+    bus = Bus()
+    envelope = Envelope[CampaignRequestedPayload](
+        kind=MessageKind.CAMPAIGN_REQUESTED,
+        from_agent="trigger",
+        to_agent="orchestrator",
+        payload=CampaignRequestedPayload(
+            project_id=project_id,
             project_version_id=project_version_id,
-            num_techniques=MIN_TECHNIQUES_PER_CAMPAIGN,
-        )
-    except Exception as exc:
-        log.exception("campaign.dispatch_failed", run_id=str(run_id), error=repr(exc))
+            budget_usd=budget_usd,
+            operator_user_id=operator_user_id,
+            name=name,
+        ),
+        idempotency_key=f"trigger:campaign_requested:{request_id}",
+    )
+    async with session_scope() as session:
+        await bus.emit(session, envelope)
+        await session.commit()
 
 
 @router.get("")
@@ -101,16 +120,17 @@ async def new_campaign_form(
 async def fire_campaign(
     request: Request,
     project_id: Annotated[UUID, Form()],
-    category: Annotated[str, Form()] = "injection",
     budget_usd: Annotated[float, Form()] = 5.0,
+    category: Annotated[str, Form()] = "",  # R4: ignored; Orchestrator picks
     principal: Principal = Depends(require_role("operator")),
 ) -> Any:
+    """R4: the route emits a ``CampaignRequested`` onto the
+    Orchestrator's inbox. The Orchestrator authors a plan; the operator
+    approves it; the Red Team executes. The legacy ``category`` form
+    field is accepted but ignored — kept so R3 tests/fixtures keep
+    parsing without immediate breakage."""
     _ = request
-    if category != "injection":
-        raise HTTPException(
-            status_code=400,
-            detail=f"R2 ships injection only (got {category!r})",
-        )
+    _ = category  # R4: Orchestrator picks; legacy field still parsed
     async with session_scope() as session:
         project = await get_project(session, project_id)
         if project is None:
@@ -123,39 +143,41 @@ async def fire_campaign(
                     "in the project edit form to authorize attacks."
                 ),
             )
+        # Reuse the existing helper to materialize a project_version_id
+        # (and a throwaway campaign + run). The Orchestrator worker's
+        # stub planner will create its own campaign row when it
+        # processes the envelope; we just need a valid
+        # project_version_id reference for the envelope.
         campaign_id, run_id, project_version_id = await create_campaign_and_run(
             session,
             project_id=project_id,
-            name=f"{category} · {project['name']}",
-            category=category,
+            name=f"trigger · {project['name']}",
+            category="injection",
             budget_usd=budget_usd,
         )
+        request_id = campaign_id  # one campaign per request; reused for idempotency
         await write_audit(
             session,
             actor=principal.email,
-            action="campaign.fired",
+            action="campaign.requested",
             target_kind="campaign",
             target_id=campaign_id,
             payload={
-                "category": category,
                 "budget_usd": budget_usd,
                 "project_id": str(project_id),
-                "run_id": str(run_id),
+                "stub_run_id": str(run_id),
+                "project_version_id": str(project_version_id),
             },
         )
 
-    # Dispatch the graph as a background task; HTTP returns immediately.
-    # Keep a strong reference on the module so the task doesn't get GC'd
-    # mid-flight (the RUF006 ruff rule catches this footgun).
-    task = asyncio.create_task(
-        _dispatch_run(
-            campaign_id=campaign_id,
-            run_id=run_id,
-            project_version_id=project_version_id,
-        )
+    await _emit_campaign_requested(
+        project_id=project_id,
+        project_version_id=project_version_id,
+        budget_usd=budget_usd,
+        operator_user_id=None,
+        name=f"trigger · {project['name']}",
+        request_id=request_id,
     )
-    _BG_TASKS.add(task)
-    task.add_done_callback(_BG_TASKS.discard)
     return RedirectResponse(url=f"/campaigns/{campaign_id}", status_code=303)
 
 

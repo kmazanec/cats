@@ -70,6 +70,13 @@ reset_settings_cache()
 _TABLES_TO_TRUNCATE = [
     "audit_log",
     "users",
+    # R4 — order matters for CASCADE: dependent tables before parents.
+    "agent_dead_letters",
+    "agent_messages",
+    "campaign_plans",
+    "documentation_drafts",
+    "red_team_attempts",
+    "worker_heartbeats",
     "finding_executions",
     "findings",
     "attack_executions",

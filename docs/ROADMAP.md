@@ -1506,17 +1506,220 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R4 builder_
+*Commit A — bus + four-worker decoupling (preserves R3 behavior):*
+
+- [x] R4 worktree on `feat/round-4-orchestrator-bus`; sibling at
+      `../cats.worktrees/round-4-orchestrator-bus`.
+- [x] Alembic migration `20260512_0005` adds `agent_messages`,
+      `agent_dead_letters`, `red_team_attempts`,
+      `documentation_drafts`, `worker_heartbeats`, `campaign_plans`.
+      Partial index on `(to_agent, visible_after) WHERE consumed_at
+      IS NULL`; unique index on `idempotency_key`.
+- [x] `cats.messaging` package: typed `Envelope[T]` + six payload
+      kinds (`CampaignRequested`, `CampaignPlanProposed`,
+      `CampaignPlanApproved`, `AttackEvent`, `VerdictRendered`,
+      `FindingPromoted`); `Bus` client with
+      `emit/claim_next/ack/nack/dead_letter/requeue_dead_letter/
+      inbox_depth` using `FOR UPDATE SKIP LOCKED` + LISTEN/NOTIFY;
+      `Worker` base with visibility timeouts (60s judge/doc, 300s
+      orchestrator/red_team), exp-backoff retry, dead-letter at 5
+      failures, per-worker heartbeat row, SIGTERM/SIGINT handling.
+- [x] Four worker entry points (each launchable as `uv run python
+      -m cats.workers.<agent>`): `cats.workers.orchestrator` (stub
+      planner for Commit A — emits R3 ROTATION as a `PlannedCampaign`
+      and auto-approves), `cats.workers.red_team` (plan-executor;
+      consumes `CampaignPlanApproved` + `VerdictRendered(partial)`),
+      `cats.workers.judge` (consumes `AttackEvent`; deterministic +
+      LLM rubric), `cats.workers.documentation` (consumes pass/fail
+      verdicts; writes Finding + Report + audit + emits
+      `FindingPromoted`).
+- [x] `cats.agents.red_team.executor.execute_attempt`: standalone
+      function that fires one plan attempt, runs through the existing
+      output filter, persists the `AttackExecution` row, and returns
+      the data the worker wraps into an `AttackEvent`.
+- [x] `cats.db.repositories.run_repo.set_execution_verdict`: links
+      the Judge's verdict back to the Red Team's execution row.
+- [x] API route `POST /campaigns` now emits `CampaignRequested` on
+      the orchestrator's inbox instead of dispatching a graph
+      directly; the legacy `category` form field is parsed but
+      ignored (Orchestrator picks).
+- [x] `/bus` dashboard page (route + 3 HTMX-polling partials) — in-
+      flight messages, per-agent inbox depth, dead-letter table with
+      Re-queue button (operator-gated + CSRF + audit-logged).
+- [x] `/healthz` extended with a `workers` block — per-agent latest
+      heartbeat, derived `healthy` flag (stale after `2 *
+      visibility_timeout`).
+- [x] `docker-compose.yml` adds four worker services using the api
+      image with YAML anchors; Makefile gets `worker-orchestrator`,
+      `worker-red-team`, `worker-judge`, `worker-documentation`, and
+      `workers-all`.
+- [x] Tests: `tests/unit/test_messaging_envelopes.py` (16 cases);
+      `tests/integration/test_messaging_bus.py` (7 cases including
+      `FOR UPDATE SKIP LOCKED` dispatch-to-one, idempotency dedup,
+      visibility-timeout reclaim, dead-letter + requeue, inbox
+      depth); `tests/integration/test_messaging_worker.py` (5 cases:
+      ack, nack-with-backoff, dead-letter at cap,
+      `PermanentHandlerError`, heartbeat); `tests/integration/test_r4_bus_e2e.py`
+      drives a full Orchestrator→Red Team→Judge chain across four
+      workers in <4s and asserts every kind through `VerdictRendered`
+      lands on `agent_messages`. The cross-agent-imports guard test
+      greps the workers directory and fails if any worker imports
+      another worker's module directly.
+- [x] Lint + mypy --strict clean across all 138 source files
+      (`make lint` green). 162/162 tests pass.
+
+*Commit B — Orchestrator + HITL plan gate (work-in-progress; some
+artifacts pre-staged for the planner):*
+
+- [x] Orchestrator tool surface — five typed DB tools
+      (`list_coverage`, `list_open_findings`,
+      `list_recent_regressions`, `list_attack_categories`,
+      `budget_remaining`) under
+      `src/cats/agents/orchestrator/tools.py` plus `TOOL_DESCRIPTORS`
+      export and 17 unit tests. Pre-staged in Commit A so the planner
+      author can iterate without re-grounding.
+- [x] `evals/orchestrator/v1/` answer key — 12 hand-labeled
+      `(observability_state, expected_plan_shape)` cases covering
+      cold-start, saturated category, open critical finding, recent
+      regression, mixed, tiny budget, category disabled, everything
+      stale, always-failing technique, and three adversarial edges
+      (empty tool outputs, contradictory signals, zero budget). Bar:
+      plan covers ≥2 of top-3 expected categories; rationale rubric
+      is 5 yes/no checks. Runner is `evals.orchestrator.v1.runner`
+      with a stub planner that passes 12/12 sanity.
+- [ ] Real LLM planner that consumes the tool surface (replaces
+      Commit A stub).
+- [ ] HITL plan approval UI + diff-vs-proposed + audit logging.
+- [ ] `/coverage/<project>` dashboard backed by the same DB queries
+      the tool surface uses.
+- [ ] Adaptive-behavior synthetic-history integration test (10
+      simulated campaigns; saturated drops, finding-bearing rises).
+- [ ] Delete R3 `INJECTION_ROTATION` / `run_campaign_multi_technique`
+      remnants once the real planner replaces them.
 
 **Decisions.** *(builder records as made)*
 
-- _to be filled by R4 builder_
+- **Two commits in one round.** R4's roadmap entry explicitly
+  reserves this option; Commit A ships the bus + four-worker
+  decoupling with R3 behavior preserved end-to-end (via a stub
+  Orchestrator that walks the same `INJECTION_ROTATION`), Commit B
+  wires the real LLM planner + HITL gate on top. Rationale: keeps
+  the bisect window small; the riskiest engineering (the bus, the
+  worker base, the cross-agent contracts) lands as a single
+  reviewable commit before any prompt-engineering work begins.
+- **Stop the R4 e2e at `VerdictRendered`, not `FindingPromoted`.**
+  The full pass-path through Documentation depends on a real target
+  + LLM call landing a `pass` verdict; the R4 test fixture's
+  OpenEMR mock isn't shaped to satisfy the real login handshake the
+  target client performs. The R3 `test_campaign_e2e` covers the
+  `pass`-path domain logic end-to-end via `run_one` (still
+  functional in Commit A); R4's new test instead proves the
+  *cross-agent message chain* works, which is what's actually new.
+  Commit B will revisit once the new e2e fixture can mock the full
+  target handshake.
+- **Cross-agent contract enforced by grep.** A test that walks
+  `src/cats/workers/*.py` and fails if any worker imports another
+  worker's module directly. Cheaper than adding architectural-fitness
+  tooling; catches the regression the DoD explicitly names.
+- **`payload_version` field on every payload.** Schema evolution is
+  a migration + a code branch, not a guess. R4 ships everything at
+  `payload_version=1`.
+- **Visibility timeouts straight from ARCHITECTURE.md §2.7.** 60s
+  for Judge/Documentation, 300s for the LLM-driven agents
+  (Orchestrator + Red Team). Will tune from real operational data
+  later; documented as a tuning surface in the round's Risks.
+- **Polling-only `/bus` live updates.** HTMX polls every 3s. A real
+  Redis pub/sub channel for bus state changes is nice-to-have; the
+  trade-off (extra wiring + a second source-of-truth) isn't worth
+  the latency win at R4's scale.
+- **JSON payload serialized via `json.dumps` before INSERT.**
+  asyncpg's JSONB binding wants a string, not a dict; SQLAlchemy
+  doesn't transparently convert. Small but load-bearing — found
+  during the first end-to-end emit smoke and worth recording so
+  future bus producers know.
+- **`documentation_drafts` row at `published` + `awaiting_approval=False`
+  for non-critical findings.** R9 will flip `awaiting_approval=True`
+  on `severity=critical`. The schema is forward-ready; R4 just
+  doesn't exercise the gate yet.
 
 **Retrospective.** *(builder fills in after R4 ships)*
 
-- What went well: _
-- What didn't: _
-- What to change for R5: _
+- What went well:
+  - **The bus + worker decoupling went in faster than R4's risk
+    section forecast.** Authoring the typed envelope set,
+    `FOR UPDATE SKIP LOCKED` claim loop, visibility-timeout reclaim,
+    dead-lettering, heartbeat row, and LISTEN/NOTIFY wake-up all
+    fit in one commit with 28 messaging tests + an end-to-end
+    pipeline test that runs in <4s. The architectural choice from
+    R3's retro — "make the bus the contract, not the graph" — paid
+    for itself almost immediately.
+  - **Subagent parallelism on independent surfaces.** Docker-compose
+    wiring, `/bus` dashboard templates, `/healthz` worker block,
+    Orchestrator DB tool surface, evals/orchestrator/v1 answer key,
+    and messaging unit tests were all delivered by parallel
+    general-purpose subagents in the same window I was building
+    the worker classes. Six concurrent work streams reduced wall-
+    clock by a meaningful fraction.
+  - **Cross-agent-imports test is a single grep.** Catches the DoD's
+    "no worker imports another worker" constraint at unit-test
+    speed. Cheaper than any architectural-fitness library.
+  - **R3 tests still pass against the new topology.** No R3 test
+    needed to be deleted or substantially rewritten — the bus is
+    additive; `run_one` still functions for the R3 e2e. The
+    Commit-A stub Orchestrator preserves the multi-technique
+    rotation exactly so the multi-technique campaign test remains
+    valid.
+- What didn't:
+  - **The full pass-path e2e through Documentation didn't make
+    Commit A.** The fake OpenEMR transport in `test_r4_bus_e2e.py`
+    doesn't satisfy the real `TargetClient.attack` login handshake,
+    so the Red Team's target call fails fast and the Judge rules
+    `partial` on an empty response — never reaching Documentation.
+    R3's `test_campaign_e2e` still covers the domain logic via
+    `run_one`. Commit B should either reshape the fake transport
+    to mirror OpenEMR's auth flow or factor out a smaller
+    `TargetClient.attack`-only mock seam.
+  - **Ruff's UP046 + Pydantic generics.** `Envelope[T]` triggered
+    UP046 ("use type parameters"), and applying the unsafe-fix
+    orphaned the TypeVar declaration *and* tripped Pydantic's
+    PEP-695 limitations. Reverted to classic `Generic[T]` syntax
+    with a per-line `noqa: UP046`. Notable because the next round
+    that adds a generic Pydantic model will hit the same trap.
+  - **Generate_variant doesn't take individual fields.** R3's
+    Mutator reads from `CampaignState.pending_attack_payload`
+    directly, so the R4 executor has to construct a minimal state
+    object to call it. Works, but the seam isn't as clean as I'd
+    have written it from scratch. Note in Commit B's notes if the
+    Mutator gets touched.
+  - **The two-commit split landed only Commit A in this round
+    invocation.** The real LLM planner + HITL UI + `/coverage` page
+    + adaptive-behavior eval will need their own session. The
+    artifacts pre-staged (tool surface, eval set) make Commit B
+    significantly faster than starting cold.
+- What to change for R5:
+  - **R5 (.docx indirect injection) lands cleanly on the bus.** The
+    new attack-firing path goes through `cats.agents.red_team.executor`;
+    `.docx` payloads should add a new specialist + a payload-shape
+    entry in `attacks.payload`, not a new graph topology. The bus
+    contract doesn't need to change.
+  - **Honor R3's deferred refactor of `TargetClient.attack`'s SSE
+    walk.** R3 retro asked R5 to extract `walk_sse_to_text(events)
+    -> str` before `.docx` work; the executor still calls the inline
+    parser. R5 should do this *before* adding indirect-injection
+    specialists — same reason R3 retro gave.
+  - **Resolve `attempts` increment durability across handler
+    failures.** The messaging-tests subagent noted that when a
+    Worker handler raises, the same session rolls back both the
+    side effects *and* the `claim_next` increment, so `attempts`
+    only persists on the *next* claim. That's a reasonable design
+    choice for ack-atomicity but it means dead-letter triggers on
+    the in-memory `claimed.attempts == 5` rather than a durable
+    row value. Either land a separate-transaction increment or
+    document it explicitly in `ARCHITECTURE.md` §2.7.
+  - **Commit B's adaptive-behavior synthetic-history test should
+    seed via `cats.agents.orchestrator.tools` directly** — not by
+    fabricating coverage rows in raw SQL. That validates the
+    tool-surface schema along with the planner's reasoning.
 
 ---
 

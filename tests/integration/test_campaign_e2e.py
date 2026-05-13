@@ -292,7 +292,11 @@ async def test_campaign_fire_endpoint_requires_allow_run_against(client) -> None
 
 
 @pytest.mark.asyncio
-async def test_unknown_category_rejected_at_fire_time(client) -> None:
+async def test_r4_campaign_request_emits_envelope(client) -> None:
+    """R4: the /campaigns POST emits a CampaignRequested envelope onto
+    the orchestrator's inbox instead of dispatching a graph directly.
+    The legacy `category` form field is parsed but ignored — the
+    Orchestrator picks the category."""
     from cats.db.engine import session_scope
     from cats.db.repositories.project_repo import create_project
     from tests.integration.conftest import csrf_post
@@ -310,13 +314,26 @@ async def test_unknown_category_rejected_at_fire_time(client) -> None:
         "/login",
         data={"email": "admin@cats.test", "password": "admin-password-1234"},
     )
+    # Even an unknown legacy category value is accepted; Orchestrator decides.
     r = await csrf_post(
         client,
         "/campaigns",
         data={"project_id": str(project_id), "category": "exfil", "budget_usd": "1.0"},
     )
-    assert r.status_code == 400
-    assert "injection" in r.json()["detail"]
+    assert r.status_code in (200, 303)
+    # An envelope landed on orchestrator's inbox.
+    async with session_scope() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT count(*) FROM agent_messages
+                    WHERE to_agent = 'orchestrator' AND kind = 'CampaignRequested'
+                    """
+                )
+            )
+        ).first()
+    assert row is not None and row[0] >= 1
 
 
 @pytest.mark.asyncio

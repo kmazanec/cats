@@ -1,4 +1,4 @@
-.PHONY: help sync dev lint fmt typecheck test test-unit migrate revision smoke api worker compose-up compose-down
+.PHONY: help sync dev lint fmt typecheck test test-unit migrate revision smoke api worker worker-orchestrator worker-red-team worker-judge worker-documentation workers-all compose-up compose-down
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' Makefile | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -44,5 +44,20 @@ smoke: ## end-to-end no-LLM smoke path
 api: ## run FastAPI dev server
 	uv run uvicorn cats.api.app:app --host 0.0.0.0 --port 8400 --reload
 
-worker: ## run a campaign worker against a registered project
+worker: ## run a campaign worker against a registered project (R3, legacy)
 	uv run python -m cats.workers.campaign_worker
+
+worker-orchestrator: ## run the orchestrator agent locally
+	uv run python -m cats.workers.orchestrator
+
+worker-red-team: ## run the red_team agent locally
+	uv run python -m cats.workers.red_team
+
+worker-judge: ## run the judge agent locally
+	uv run python -m cats.workers.judge
+
+worker-documentation: ## run the documentation agent locally
+	uv run python -m cats.workers.documentation
+
+workers-all: ## start all four R4 workers under docker compose
+	docker compose up orchestrator red_team judge documentation

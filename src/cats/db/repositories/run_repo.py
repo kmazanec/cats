@@ -147,6 +147,21 @@ async def record_execution(
     return new_id
 
 
+async def set_execution_verdict(
+    session: AsyncSession,
+    *,
+    attack_execution_id: UUID,
+    judge_verdict_id: UUID,
+) -> None:
+    """R4 — the Judge worker writes a verdict row and then links it back
+    to the AttackExecution row that the Red Team worker created."""
+    await session.execute(
+        update(attack_executions)
+        .where(attack_executions.c.id == attack_execution_id)
+        .values(judge_verdict_id=judge_verdict_id)
+    )
+
+
 async def upsert_finding(
     session: AsyncSession,
     *,

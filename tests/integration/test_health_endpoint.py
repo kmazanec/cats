@@ -15,7 +15,15 @@ pytestmark = pytest.mark.integration
 async def test_healthz_basic(client: AsyncClient) -> None:
     r = await client.get("/healthz")
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    body = r.json()
+    # /healthz is additive: it now reports each external dep and each worker.
+    assert "ok" in body
+    assert {"postgres", "redis", "openrouter", "langsmith", "workers"}.issubset(body)
+    assert set(body["workers"]) >= {"orchestrator", "red_team", "judge", "documentation"}
+    # No workers are running in the integration harness — they must all be
+    # reported, and all must be unhealthy, dragging top-level ok to False.
+    assert all(w["healthy"] is False for w in body["workers"].values())
+    assert body["ok"] is False
 
 
 @pytest.mark.asyncio

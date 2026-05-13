@@ -1,0 +1,39 @@
+{# HTMX partial: dead-letter table. Operator role gets a Re-queue button
+   per row; viewer-only users see the row but no action button. #}
+{% if rows %}
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th class="num" style="width: 160px;">Dead-lettered (UTC)</th>
+        <th style="width: 100px;">To agent</th>
+        <th style="width: 200px;">Kind</th>
+        <th class="mono" style="width: 90px;">Msg ID</th>
+        <th>Last error</th>
+        <th style="width: 110px;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="num mono muted">{{ r.dead_lettered_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td class="mono">{{ r.to_agent }}</td>
+          <td class="mono" style="font-size: 12px;">{{ r.kind }}</td>
+          <td class="mono muted">{{ (r.message_id|string)[:8] }}</td>
+          <td class="mono muted" style="font-size: 11px;">{{ (r.last_error or '')[:200] }}</td>
+          <td>
+            {% if principal and principal.has_role('operator') %}
+              <form action="/bus/dead-letters/{{ r.id }}/requeue" method="post" style="display: inline;">
+                {{ csrf_input(request) | safe }}
+                <button class="btn small" type="submit"><span class="ch">↺</span>re-queue</button>
+              </form>
+            {% else %}
+              <span class="muted mono" style="font-size: 11px;">operator only</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <div class="empty" style="padding: 18px;">no dead-lettered messages — bus is clean</div>
+{% endif %}

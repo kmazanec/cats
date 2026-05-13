@@ -75,5 +75,74 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # Round 4 four-agent workers. Each is an independent process that talks to
+  # the others via the Postgres-backed message bus (no in-process coupling).
+  # They share the same image as the api (built once), the same .env, and
+  # the same source-mount for hot-reload during development. The only thing
+  # that differs per worker is the module entrypoint.
+  #
+  # Anchors below (&worker-base / *worker-base) factor out the shared config
+  # so adding/tweaking a worker is a one-line change. `<<: *worker-base`
+  # merges the anchor into each service definition.
+  # ---------------------------------------------------------------------------
+  orchestrator:
+    build: &worker-build
+      context: .
+      dockerfile: Dockerfile
+    depends_on: &worker-deps
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: &worker-env-file
+      - .env
+    environment: &worker-environment
+      DATABASE_URL: postgresql+asyncpg://cats:cats@postgres:5432/cats
+      REDIS_URL: redis://redis:6379/0
+      DEFAULT_TARGET_BASE_URL: http://host.docker.internal:8300
+    extra_hosts: &worker-extra-hosts
+      - "host.docker.internal:host-gateway"
+    volumes: &worker-volumes
+      - ./src:/app/src
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+    restart: unless-stopped
+    container_name: cats-orchestrator
+    command: uv run python -m cats.workers.orchestrator
+
+  red_team:
+    build: *worker-build
+    depends_on: *worker-deps
+    env_file: *worker-env-file
+    environment: *worker-environment
+    extra_hosts: *worker-extra-hosts
+    volumes: *worker-volumes
+    restart: unless-stopped
+    container_name: cats-red-team
+    command: uv run python -m cats.workers.red_team
+
+  judge:
+    build: *worker-build
+    depends_on: *worker-deps
+    env_file: *worker-env-file
+    environment: *worker-environment
+    extra_hosts: *worker-extra-hosts
+    volumes: *worker-volumes
+    restart: unless-stopped
+    container_name: cats-judge
+    command: uv run python -m cats.workers.judge
+
+  documentation:
+    build: *worker-build
+    depends_on: *worker-deps
+    env_file: *worker-env-file
+    environment: *worker-environment
+    extra_hosts: *worker-extra-hosts
+    volumes: *worker-volumes
+    restart: unless-stopped
+    container_name: cats-documentation
+    command: uv run python -m cats.workers.documentation
+
 volumes:
   cats_pg:

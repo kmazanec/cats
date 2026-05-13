@@ -1,0 +1,44 @@
+{# HTMX partial: recent in-flight messages with derived status. #}
+{% if rows %}
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th style="width: 220px;">Kind</th>
+        <th style="width: 110px;">From</th>
+        <th style="width: 110px;">To</th>
+        <th class="num" style="width: 90px;">Age</th>
+        <th class="num" style="width: 90px;">Attempts</th>
+        <th style="width: 130px;">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="mono" style="font-size: 12px;">{{ r.kind }}</td>
+          <td class="mono">{{ r.from_agent }}</td>
+          <td class="mono">{{ r.to_agent }}</td>
+          <td class="num mono muted">
+            {% if r.age_seconds < 60 %}{{ r.age_seconds }}s
+            {% elif r.age_seconds < 3600 %}{{ (r.age_seconds // 60) }}m
+            {% elif r.age_seconds < 86400 %}{{ (r.age_seconds // 3600) }}h
+            {% else %}{{ (r.age_seconds // 86400) }}d{% endif %}
+          </td>
+          <td class="num mono">{{ r.attempts }}</td>
+          <td>
+            {% if r.status == 'consumed' %}
+              <span class="dot green"></span>consumed
+            {% elif r.status == 'dead_lettered' %}
+              <span class="dot red"></span>dead-lettered
+            {% elif r.status == 'claimed' %}
+              <span class="dot amber"></span>claimed
+            {% else %}
+              <span class="dot"></span>queued
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <div class="empty" style="padding: 18px;">no messages on the bus yet</div>
+{% endif %}

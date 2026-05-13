@@ -1,0 +1,18 @@
+{# HTMX partial: per-agent inbox depth bar chart. Swapped into
+   #bus-inbox-depth every 3s by the parent /bus page. #}
+<div class="stack" style="gap: 10px;">
+  {% for r in rows %}
+    <div class="row" style="gap: 12px; align-items: center;">
+      <div class="mono" style="width: 140px; font-size: 12px;">{{ r.agent }}</div>
+      <div style="flex: 1; height: 10px; background: var(--c-panel-2, #1a1a1a); border-radius: 2px; overflow: hidden;">
+        <div style="width: {{ r.pct }}%; height: 100%; background: {% if r.depth == 0 %}var(--c-dim, #2a2a2a){% elif r.depth < 5 %}var(--c-green, #4ade80){% elif r.depth < 15 %}var(--c-amber, #fbbf24){% else %}var(--c-red, #f87171){% endif %};"></div>
+      </div>
+      <div class="num mono" style="width: 80px; text-align: right;">
+        {{ r.depth }}<span class="muted" style="font-size: 11px;"> msg</span>
+      </div>
+    </div>
+  {% endfor %}
+  <div class="muted mono" style="font-size: 11px;">
+    bar saturates at {{ cap }} · counts shown verbatim
+  </div>
+</div>

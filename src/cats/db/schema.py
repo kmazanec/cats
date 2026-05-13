@@ -421,21 +421,216 @@ source_access_log = Table(
 )
 
 
+# ---------------------------------------------------------------------------
+# R4 — agent message bus + per-agent durable state
+# ---------------------------------------------------------------------------
+
+agent_messages = Table(
+    "agent_messages",
+    metadata,
+    _uuid_pk(),
+    Column("from_agent", String(32), nullable=False),
+    Column("to_agent", String(32), nullable=False),
+    Column("kind", String(64), nullable=False),
+    Column("payload_json", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("trace_id", String(120), nullable=False, server_default=""),
+    Column("campaign_id", UUID(as_uuid=True), nullable=True),
+    Column("attack_id", UUID(as_uuid=True), nullable=True),
+    Column("idempotency_key", Text, nullable=False),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    Column(
+        "visible_after",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    Column("consumed_at", DateTime(timezone=True), nullable=True),
+    Column("consumed_by", String(200), nullable=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    CheckConstraint(
+        "from_agent IN ('trigger','orchestrator','red_team','judge',"
+        "'documentation','operator','system')",
+        name="ck_agent_messages_from",
+    ),
+    CheckConstraint(
+        "to_agent IN ('orchestrator','red_team','judge','documentation','operator','system')",
+        name="ck_agent_messages_to",
+    ),
+    Index(
+        "uq_agent_messages_idempotency_key",
+        "idempotency_key",
+        unique=True,
+    ),
+    Index(
+        "ix_agent_messages_inbox",
+        "to_agent",
+        "visible_after",
+        postgresql_where=text("consumed_at IS NULL"),
+    ),
+    Index("ix_agent_messages_campaign_id", "campaign_id"),
+    Index("ix_agent_messages_attack_id", "attack_id"),
+)
+
+agent_dead_letters = Table(
+    "agent_dead_letters",
+    metadata,
+    _uuid_pk(),
+    Column(
+        "message_id",
+        UUID(as_uuid=True),
+        ForeignKey("agent_messages.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("to_agent", String(32), nullable=False),
+    Column("kind", String(64), nullable=False),
+    Column("last_error", Text, nullable=False, server_default=""),
+    Column(
+        "dead_lettered_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    Column("requeued_at", DateTime(timezone=True), nullable=True),
+    Column("requeued_by", String(200), nullable=True),
+    Index(
+        "ix_agent_dead_letters_to_agent",
+        "to_agent",
+        postgresql_where=text("requeued_at IS NULL"),
+    ),
+)
+
+red_team_attempts = Table(
+    "red_team_attempts",
+    metadata,
+    Column(
+        "attack_id",
+        UUID(as_uuid=True),
+        ForeignKey("attacks.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("iteration", Integer, nullable=False, server_default="0"),
+    Column("max_iterations", Integer, nullable=False, server_default="2"),
+    Column("status", String(16), nullable=False, server_default="active"),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    CheckConstraint(
+        "status IN ('active','exhausted','complete','failed')",
+        name="ck_red_team_attempts_status",
+    ),
+)
+
+documentation_drafts = Table(
+    "documentation_drafts",
+    metadata,
+    Column(
+        "finding_id",
+        UUID(as_uuid=True),
+        ForeignKey("findings.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("status", String(16), nullable=False, server_default="draft"),
+    Column(
+        "awaiting_approval",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    CheckConstraint(
+        "status IN ('draft','published','rejected')",
+        name="ck_documentation_drafts_status",
+    ),
+)
+
+worker_heartbeats = Table(
+    "worker_heartbeats",
+    metadata,
+    Column("worker_name", String(64), nullable=False, primary_key=True),
+    Column("host_pid", String(200), nullable=False, primary_key=True),
+    Column(
+        "last_beat_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    Index("ix_worker_heartbeats_worker_name", "worker_name", "last_beat_at"),
+)
+
+campaign_plans = Table(
+    "campaign_plans",
+    metadata,
+    _uuid_pk(),
+    Column(
+        "campaign_id",
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("status", String(20), nullable=False, server_default="proposed"),
+    Column("proposed_plan", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("approved_plan", JSONB, nullable=True),
+    Column("tool_transcript", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("rationale", Text, nullable=False, server_default=""),
+    Column("approver_user_id", UUID(as_uuid=True), nullable=True),
+    Column("approved_at", DateTime(timezone=True), nullable=True),
+    Column("diff_summary", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=text("now()"),
+    ),
+    CheckConstraint(
+        "status IN ('proposed','approved','edited','rejected','dispatched','failed')",
+        name="ck_campaign_plans_status",
+    ),
+    Index("ix_campaign_plans_campaign_id", "campaign_id"),
+)
+
+
 __all__ = [
+    "agent_dead_letters",
+    "agent_messages",
     "attack_executions",
     "attacks",
     "audit_log",
+    "campaign_plans",
     "campaigns",
+    "documentation_drafts",
     "finding_executions",
     "findings",
     "judge_verdicts",
     "metadata",
     "project_versions",
     "projects",
+    "red_team_attempts",
     "regression_cases",
     "rubric_versions",
     "runs",
     "source_access_log",
     "users",
     "vulnerability_reports",
+    "worker_heartbeats",
 ]

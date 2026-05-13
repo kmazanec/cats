@@ -21,6 +21,7 @@ from cats.api.context import build_overview_context
 from cats.api.routes import (
     audit,
     auth_routes,
+    bus,
     campaigns,
     findings,
     health,
@@ -34,6 +35,8 @@ from cats.api.templating import templates
 from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.user_repo import ensure_admin_seeded
+from cats.health.checks import HealthCheckResult, run_all_checks
+from cats.health.workers import check_workers, workers_all_healthy
 from cats.logging import configure_logging, get_logger
 from cats.security.csrf import attach_cookie_if_new, ensure_token
 
@@ -91,8 +94,45 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        """Liveness probe — does not touch external deps. Always cheap."""
-        return {"ok": True}
+        """Liveness + per-dependency + per-worker health.
+
+        HTTP status stays 200 even when individual deps or workers are
+        unhealthy — orchestration layers care about reachability, not
+        readiness. Read the body's ``ok`` field for the aggregate.
+        """
+
+        def _check_dict(r: HealthCheckResult) -> dict[str, Any]:
+            # `not_configured` is neutral — treat as ok for the per-dep flag,
+            # mirroring HealthReport.overall_ok semantics in checks.py.
+            return {"ok": not r.is_blocking, "status": r.status, "detail": r.detail}
+
+        try:
+            report = await run_all_checks()
+        except Exception as exc:  # pragma: no cover - defensive
+            return {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        by_name = {c.name: c for c in report.checks}
+        workers_block: dict[str, Any]
+        try:
+            workers = await check_workers()
+            workers_block = {name: w.as_dict() for name, w in workers.items()}
+            workers_ok = workers_all_healthy(workers)
+        except Exception as exc:
+            workers_block = {"error": f"{type(exc).__name__}: {exc}"}
+            workers_ok = False
+
+        payload: dict[str, Any] = {
+            "ok": report.overall_ok and workers_ok,
+            "postgres": _check_dict(by_name["postgres"]),
+            "redis": _check_dict(by_name["redis"]),
+            "openrouter": _check_dict(by_name["openrouter"]),
+            "langsmith": _check_dict(by_name["langsmith"]),
+            "workers": workers_block,
+        }
+        return payload
 
     @app.get("/")
     async def index(
@@ -145,6 +185,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
     app.include_router(sse.router, prefix="/events", tags=["events"])
     app.include_router(traces.router, prefix="/traces", tags=["traces"])
+    app.include_router(bus.router, prefix="/bus", tags=["bus"])
     return app
 
 
