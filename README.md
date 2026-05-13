@@ -4,7 +4,7 @@ Adversarial multi-agent platform that continuously probes the OpenEMR Clinical
 Co-Pilot for vulnerabilities. Sibling to `openemr/`; read-only relationship to
 the target.
 
-![CATS hero image](./hero.png)
+![CATS hero image](./docs/hero.png)
 
 - Architecture: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 - Threat model: [`THREAT_MODEL.md`](./THREAT_MODEL.md)
