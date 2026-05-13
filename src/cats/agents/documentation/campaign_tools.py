@@ -383,17 +383,29 @@ _AGENT_COLORS = {
 
 def _svg_header(width: int, height: int, title: str = "") -> str:
     """Common SVG envelope. Inline styles keep the file render-anywhere
-    (no external CSS dependency from the served page)."""
+    (no external CSS dependency from the served page).
+
+    The palette is tuned for the CATS dashboard's dark theme — text
+    fills are light (matching ``--ink``/``--ink-2`` in
+    ``tokens.css``). A panel-tinted backdrop ``<rect>`` is included
+    so the artifact stays legible when viewed standalone (e.g.
+    fetched directly from the artifact-serving route) without
+    relying on the surrounding page background.
+    """
     safe_title = html.escape(title)
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
         f'role="img" aria-label="{safe_title}">'
         f"<style>"
-        f"text {{ font: 12px ui-sans-serif, system-ui, -apple-system, sans-serif; fill: #1f2937; }}"
-        f".title {{ font-weight: 600; font-size: 14px; }}"
-        f".muted {{ fill: #6b7280; }}"
+        f"text {{ font: 12px ui-sans-serif, system-ui, -apple-system, sans-serif; "
+        f"fill: #e7ecf5; }}"
+        f".title {{ font-weight: 600; font-size: 14px; fill: #f8fafc; }}"
+        f".muted {{ fill: #aab3c6; }}"
         f"</style>"
+        # Backdrop matches --bg-2 from tokens.css so the SVG is legible
+        # whether it's embedded in the dark dashboard or viewed solo.
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#0f1424"/>'
     )
 
 
@@ -562,9 +574,13 @@ def render_coverage_heatmap(verdict_breakdown: dict[str, Any]) -> str:
             x = pad_left + j * cell_w
             cell = by_cat.get(cat, {}).get(tech)
             if not cell:
+                # Untested (category, technique) — render as a subtle
+                # outlined cell. Fill matches --bg-3 (slightly lighter
+                # than the SVG backdrop) so the grid stays visible but
+                # the empty cells clearly read as "no data".
                 parts.append(
                     f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" '
-                    f'fill="#f3f4f6" stroke="#e5e7eb"/>'
+                    f'fill="#131a2e" stroke="#2a3756"/>'
                 )
                 continue
             dominant = max(cell.items(), key=lambda kv: kv[1])

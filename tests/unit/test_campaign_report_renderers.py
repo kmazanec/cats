@@ -160,3 +160,23 @@ def test_renderer_tooltips_include_counts() -> None:
     svg = render_verdict_histogram(_verdict_breakdown_fixture())
     assert "<title>" in svg
     assert "fail=4" in svg
+
+
+def test_renderers_emit_dark_theme_friendly_palette() -> None:
+    """Text fills must be light so labels are legible on the CATS
+    dashboard's dark background. The renderers also include a panel
+    backdrop ``<rect>`` so SVGs viewed standalone aren't a sea of
+    invisible labels on the browser's default white. Catches a
+    regression to the previous near-black ``#1f2937`` text fill."""
+    svg = render_verdict_histogram(_verdict_breakdown_fixture())
+    # Light ink for default text.
+    assert "fill: #e7ecf5" in svg
+    # Bright title.
+    assert "fill: #f8fafc" in svg
+    # Mid-luminance muted text.
+    assert "fill: #aab3c6" in svg
+    # Panel-tinted backdrop so the SVG carries its own background.
+    assert 'fill="#0f1424"' in svg
+    # Make sure we did not regress to the near-black palette.
+    assert "fill: #1f2937" not in svg
+    assert "fill: #6b7280" not in svg
