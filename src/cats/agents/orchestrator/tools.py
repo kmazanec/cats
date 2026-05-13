@@ -43,6 +43,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cats.agents.red_team.exfil.dispatcher import (
+    KNOWN_TECHNIQUES as EXFIL_TECHNIQUES,
+)
+from cats.agents.red_team.indirect_injection.dispatcher import (
+    KNOWN_TECHNIQUES as INDIRECT_INJECTION_TECHNIQUES,
+)
 from cats.agents.red_team.injection.dispatcher import (
     KNOWN_TECHNIQUES as INJECTION_TECHNIQUES,
 )
@@ -68,13 +74,16 @@ _SEVERITY_RANK: Mapping[str, int] = {
     "critical": 4,
 }
 
-# Technique catalogue. Only the injection family currently ships
-# per-technique modules; exfil and tool_abuse run as a single
-# category-default technique for now. The Orchestrator can still plan
-# at the category level for those.
+# Technique catalogue. Each category exposes only the techniques it
+# actually has a specialist module for — the dispatchers raise
+# NotImplementedError on deferred techniques, so emitting an unshipped
+# technique in a plan would crash the worker. tool_abuse has no
+# specialist family yet (post-R5/R6 follow-up); the Orchestrator can
+# still see the category but can't plan techniques against it.
 _KNOWN_TECHNIQUES_BY_CATEGORY: Mapping[str, tuple[str, ...]] = {
     "injection": tuple(sorted(INJECTION_TECHNIQUES)),
-    "exfil": ("default",),
+    "indirect_injection": tuple(sorted(INDIRECT_INJECTION_TECHNIQUES)),
+    "exfil": tuple(sorted(EXFIL_TECHNIQUES)),
     "tool_abuse": ("default",),
 }
 
@@ -465,6 +474,7 @@ def _default_severity_for(category: str) -> str:
     every tool call (this list is short and stable)."""
     return {
         "injection": "high",
+        "indirect_injection": "critical",
         "exfil": "critical",
         "tool_abuse": "high",
     }.get(category, "medium")
