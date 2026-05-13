@@ -23,6 +23,9 @@ dist/
 htmlcov/
 coverage.xml
 
+.claude/*local*
+.claude/*lock*
+
 # Env / secrets
 .env
 .env.*
