@@ -1,0 +1,8 @@
+name = "indirect_injection"
+title = "Indirect Injection via Uploaded `.docx`"
+mvp = true
+severity_default = "critical"
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+judge_role = "judge"
+notes = "Docx-borne indirect injection per W3_THREAT_RESEARCH §5 (EchoLeak / ForcedLeak profile). Direct chat-borne injection lives in the `injection` category."

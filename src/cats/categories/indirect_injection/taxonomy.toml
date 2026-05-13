@@ -1,0 +1,82 @@
+# Per-technique MITRE ATLAS + OWASP LLM mapping for the indirect_injection
+# category.
+#
+# Used by `cats.categories.taxonomy.lookup(category, technique)`. The
+# documentation node tags each finding with the most-specific label its
+# technique earns rather than the category-wide default.
+#
+# References:
+# - MITRE ATLAS v5.4.0 (Feb 2026): AML.T0051 Prompt Injection,
+#   AML.T0051.001 Indirect (the docx-borne variant).
+# - OWASP LLM Top 10 v2025: LLM01 Prompt Injection.
+# - docs/W3_THREAT_RESEARCH.md §5 (.docx threat landscape).
+
+[default]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "Indirect prompt injection via uploaded document"
+
+[techniques.white_text]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.1 White-on-white text — color=FFFFFF run invisible to humans, visible to extractor"
+
+[techniques.tiny_font]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.2 Tiny font — 1pt run a clinician's eye skips; extractor reads literal chars"
+
+[techniques.off_page]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.2 Off-page positioning — negative-x framePr clipped by renderer; extractor pulls anyway"
+
+[techniques.zero_width]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.3 Zero-width / variation-selector smuggling — U+200B between every char; renderer collapses, tokenizer doesn't"
+
+[techniques.homoglyph]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.4 Homoglyph substitution — Cyrillic lookalikes for Latin a/e/o/p/c/y/x/i (arXiv 2508.14070, 58.7% avg ASR)"
+
+[techniques.header_hide]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.5 Header hiding — payload in word/header1.xml; humans don't review aux parts, extractors do"
+
+[techniques.footer_hide]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.5 Footer hiding — payload in word/footer1.xml"
+
+[techniques.footnote_hide]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.5 Footnote hiding — payload in word/footnotes.xml"
+
+[techniques.comment_hide]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.5 Comment hiding — payload in word/comments.xml"
+
+[techniques.tracked_changes]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.6 Tracked-changes injection — <w:ins> the user never accepted; flatteners surface it"
+
+[techniques.field_code]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.8 Field-code injection — <w:fldSimple INCLUDETEXT/IF/DDE> surfaces in some extractors"
+
+[techniques.metadata]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.9 Document metadata — payload in docProps/core.xml description; surfaced by 'summarize this document'"
+
+[techniques.bidi_spoof]
+atlas_technique_id = "AML.T0051.001"
+owasp_llm_id = "LLM01"
+description = "§5.13 Bidi / RTL spoofing — U+202E reverses display so logs and reviewers see different content than the model"

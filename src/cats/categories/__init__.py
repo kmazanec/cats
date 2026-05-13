@@ -11,7 +11,15 @@ from importlib import import_module
 from typing import Any
 
 # Categories shipped at MVP per W3_ARCHITECTURE.md §1.3.
-REGISTERED_CATEGORIES: list[str] = ["injection", "exfil", "tool_abuse"]
+# `indirect_injection` (R5) covers docx-borne attacks; it lives separately
+# from `injection` (direct chat-borne attacks) so its severity, rubric, and
+# fixtures can evolve independently.
+REGISTERED_CATEGORIES: list[str] = [
+    "injection",
+    "indirect_injection",
+    "exfil",
+    "tool_abuse",
+]
 
 DeterministicCheck = Callable[..., tuple[str, str, dict[str, Any]]]
 
