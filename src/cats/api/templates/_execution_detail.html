@@ -1,0 +1,102 @@
+{# Fragment swapped into #exec-detail on the run detail page when a row
+   in the executions table is clicked. Not extended from _base.html — it
+   replaces the panel body, not the whole page. #}
+
+<div class="stack" style="gap: 18px;">
+  <div class="row between" style="align-items: flex-end;">
+    <div>
+      <div class="eyebrow">— Execution · {{ (execution.id|string)[:8] }}</div>
+      <h3 class="title">{{ execution.attack_title }}</h3>
+      <div class="muted mono" style="font-size: 12px; margin-top: 4px;">
+        category <strong>{{ execution.attack_category }}</strong> ·
+        signature <code class="mono">{{ execution.attack_signature }}</code> ·
+        agent role <code class="mono">{{ execution.agent_role or '—' }}</code> ·
+        model <code class="mono">{{ execution.model or '—' }}</code>
+      </div>
+    </div>
+    <div class="row" style="gap: 10px;">
+      {% if execution.judge_verdict == 'pass' %}
+        <span class="pill red">judge · breach</span>
+      {% elif execution.judge_verdict == 'fail' %}
+        <span class="pill green">judge · held</span>
+      {% elif execution.judge_verdict == 'partial' %}
+        <span class="pill outline-amber">judge · partial</span>
+      {% elif execution.judge_verdict == 'error' %}
+        <span class="pill red">judge · error</span>
+      {% else %}
+        <span class="pill">judge · pending</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="grid cols-2" style="gap: 18px;">
+    <div>
+      <div class="eyebrow cy">— Attack payload</div>
+      <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">
+        sent to target by <code class="mono">{{ execution.agent_role or 'red team' }}</code>
+      </div>
+      <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.attack_payload | tojson(indent=2) }}</pre>
+    </div>
+    <div>
+      <div class="eyebrow cy">— Target response</div>
+      <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">
+        status {{ execution.target_status_code or '—' }} ·
+        latency {{ execution.target_latency_ms or '—' }}ms
+      </div>
+      <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.target_response | tojson(indent=2) }}</pre>
+    </div>
+  </div>
+
+  <div>
+    <div class="eyebrow">— Output filter</div>
+    <div class="row" style="gap: 12px; margin-bottom: 6px;">
+      {% if execution.filter_verdict == 'safe' %}<span class="pill green">safe</span>
+      {% elif execution.filter_verdict == 'attack_payload' %}<span class="pill outline-amber">attack payload</span>
+      {% elif execution.filter_verdict == 'dangerous' %}<span class="pill red">dangerous</span>
+      {% else %}<span class="pill">{{ execution.filter_verdict }}</span>{% endif %}
+    </div>
+    {% if execution.filter_reason %}
+      <div style="font-size: 13px; color: var(--ink-2); line-height: 1.55;">{{ execution.filter_reason }}</div>
+    {% else %}
+      <div class="muted mono" style="font-size: 12px;">no reason recorded</div>
+    {% endif %}
+  </div>
+
+  {% if execution.judge_verdict %}
+  <div>
+    <div class="eyebrow">— Judge rationale</div>
+    <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">
+      verdict <strong>{{ execution.judge_verdict }}</strong> ·
+      exploitability <strong>{{ execution.judge_exploitability or '—' }}</strong> ·
+      model <code class="mono">{{ execution.judge_model or '—' }}</code>
+    </div>
+    {% if execution.judge_rationale %}
+      <div style="font-size: 13px; color: var(--ink); line-height: 1.6; background: var(--bg-2); border-left: 2px solid var(--cyan); padding: 12px 14px;">{{ execution.judge_rationale }}</div>
+    {% else %}
+      <div class="muted mono" style="font-size: 12px;">no rationale recorded</div>
+    {% endif %}
+    {% if execution.judge_evidence %}
+      <div class="eyebrow" style="margin-top: 14px;">— Evidence (judge_verdicts.evidence)</div>
+      <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.judge_evidence | tojson(indent=2) }}</pre>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if execution.error %}
+  <div>
+    <div class="eyebrow" style="color: var(--red);">— Error</div>
+    <pre class="mono" style="background: rgba(239,68,68,0.06); border: 1px solid var(--red); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--red);">{{ execution.error }}</pre>
+  </div>
+  {% endif %}
+
+  <div class="row" style="gap: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-3);">
+    <span>tokens in <strong style="color: var(--ink);">{{ execution.tokens_in or 0 }}</strong></span>
+    <span>tokens out <strong style="color: var(--ink);">{{ execution.tokens_out or 0 }}</strong></span>
+    <span>usd <strong style="color: var(--ink);">${{ '%.4f'|format(execution.usd or 0.0) }}</strong></span>
+    {% if execution.trace_id %}
+      <span><a class="nav-link" href="/traces/{{ execution.trace_id }}" target="_blank">langsmith trace</a></span>
+    {% endif %}
+    <span>started {{ execution.started_at.strftime('%H:%M:%S') if execution.started_at else '—' }}</span>
+    <span>ended {{ execution.ended_at.strftime('%H:%M:%S') if execution.ended_at else '—' }}</span>
+  </div>
+</div>

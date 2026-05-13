@@ -19,8 +19,11 @@ from cats.db.repositories.audit_repo import write_audit
 from cats.db.repositories.campaign_repo import (
     create_campaign_and_run,
     get_campaign_with_project,
+    get_execution_full,
+    get_run_with_campaign,
     list_campaigns,
     list_executions_for_run,
+    list_executions_full,
     list_findings_for_run,
     list_runs_for_campaign,
 )
@@ -189,6 +192,68 @@ async def campaign_detail(
         }
     )
     return templates.TemplateResponse(request, "campaign_detail.html", ctx)
+
+
+@router.get("/{campaign_id}/runs/{run_id}")
+async def run_detail(
+    request: Request,
+    campaign_id: UUID,
+    run_id: UUID,
+    principal: Principal = Depends(require_user),
+) -> Any:
+    """Per-run forensic view — every execution fired in this Run, plus the
+    findings it produced. The campaign detail page links here once a Run
+    is visible in its table."""
+    async with session_scope() as session:
+        run = await get_run_with_campaign(session, run_id=run_id, campaign_id=campaign_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found for this campaign")
+        executions = await list_executions_full(session, run_id=run_id)
+        run_findings = await list_findings_for_run(session, run_id=run_id)
+
+    ctx = _chrome_ctx(principal)
+    ctx.update(
+        {
+            "run": run,
+            "executions": executions,
+            "findings": run_findings,
+            "cost_by_agent": _cost_by_agent(executions),
+            "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
+        }
+    )
+    return templates.TemplateResponse(request, "run_detail.html", ctx)
+
+
+@router.get("/{campaign_id}/runs/{run_id}/executions/{execution_id}")
+async def execution_fragment(
+    request: Request,
+    campaign_id: UUID,
+    run_id: UUID,
+    execution_id: UUID,
+    principal: Principal = Depends(require_user),
+) -> Any:
+    """HTML fragment for one execution, swapped into the run detail page
+    via HTMX when a row is clicked. Returns the expanded payload, target
+    response, output-filter reason, and judge rationale + evidence."""
+    _ = principal
+    async with session_scope() as session:
+        # Bind the execution to the (campaign, run) pair so the fragment
+        # can't be used to read executions from another campaign.
+        run = await get_run_with_campaign(session, run_id=run_id, campaign_id=campaign_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found for this campaign")
+        execution = await get_execution_full(session, execution_id=execution_id, run_id=run_id)
+        if execution is None:
+            raise HTTPException(status_code=404, detail="execution not found for this run")
+
+    return templates.TemplateResponse(
+        request,
+        "_execution_detail.html",
+        {
+            "execution": execution,
+            "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
+        },
+    )
 
 
 def _cost_by_agent(executions: list[dict[str, Any]]) -> list[dict[str, Any]]:

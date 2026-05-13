@@ -26,6 +26,7 @@ from cats.api.routes import (
     health,
     projects,
     sse,
+    traces,
     user_admin,
     webhooks,
 )
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(findings.router, prefix="/findings", tags=["findings"])
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
     app.include_router(sse.router, prefix="/events", tags=["events"])
+    app.include_router(traces.router, prefix="/traces", tags=["traces"])
     return app
 
 

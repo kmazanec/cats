@@ -54,9 +54,11 @@
             <tbody>
               {% for r in runs %}
                 <tr>
-                  <td class="mono muted">{{ (r.id|string)[:8] }}</td>
+                  <td class="mono">
+                    <a class="nav-link" href="/campaigns/{{ campaign.id }}/runs/{{ r.id }}">{{ (r.id|string)[:8] }}</a>
+                  </td>
                   <td>
-                    {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% else %}<span class="dot"></span>{% endif %}
+                    {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% elif r.status == 'failed' %}<span class="dot red"></span>{% else %}<span class="dot"></span>{% endif %}
                     {{ r.status }}
                   </td>
                   <td class="num">{{ r.attacks_fired }}</td>

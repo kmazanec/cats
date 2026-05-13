@@ -1,0 +1,211 @@
+{% extends "_base.html" %}
+{% block title %}CATS · Run {{ (run.id|string)[:8] }}{% endblock %}
+{% block crumb %}Run · {{ (run.id|string)[:8] }}{% endblock %}
+
+{% block main %}
+<main class="stack" style="gap: 32px;">
+
+  <section>
+    <div class="row" style="gap: 12px; margin-bottom: 6px;">
+      <a class="nav-link" href="/campaigns">all campaigns</a>
+      <a class="nav-link" href="/campaigns/{{ run.campaign_id }}">campaign {{ run.campaign_name }}</a>
+    </div>
+    <div class="row between" style="align-items: flex-end;">
+      <div>
+        <span class="eyebrow">— Run · {{ (run.id|string)[:8] }}</span>
+        <h1 class="title">Run forensics</h1>
+        <p class="subtitle">
+          Target <strong>{{ run.project_name }}</strong> · env
+          <code class="mono">{{ run.project_env }}</code> · trigger
+          <code class="mono">{{ run.trigger }}</code> ·
+          started {{ run.started_at.strftime('%Y-%m-%d %H:%M:%S') if run.started_at else '—' }} ·
+          ended {{ run.ended_at.strftime('%H:%M:%S') if run.ended_at else '—' }}
+        </p>
+      </div>
+      <div class="row" style="gap: 10px;">
+        {% if run.status == 'running' %}<span class="pill amber">running</span>
+        {% elif run.status == 'completed' %}<span class="pill green">completed</span>
+        {% elif run.status == 'failed' %}<span class="pill red">failed</span>
+        {% else %}<span class="pill">{{ run.status }}</span>{% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="stat-strip">
+    <div class="stat">
+      <div class="label">Attacks fired</div>
+      <div class="num">{{ run.attacks_fired }}</div>
+      <div class="delta">recorded in attack_executions</div>
+    </div>
+    <div class="stat">
+      <div class="label">Spend</div>
+      <div class="num">${{ '%.4f'|format(run.budget_consumed_usd or 0.0) }}</div>
+      <div class="delta">sum of usd_estimate</div>
+    </div>
+    <div class="stat">
+      <div class="label">Findings</div>
+      <div class="num {{ 'red' if findings else '' }}">{{ findings|length }}</div>
+      <div class="delta">{% if findings %}promoted by Judge{% else %}target held{% endif %}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Wall time</div>
+      <div class="num">
+        {% if run.started_at and run.ended_at %}
+          {{ ((run.ended_at - run.started_at).total_seconds()|round(1)) }}<span class="unit">s</span>
+        {% else %}—{% endif %}
+      </div>
+      <div class="delta">end-to-end</div>
+    </div>
+  </section>
+
+  <div class="panel">
+    <header>
+      <div class="title">Attack executions</div>
+      <div class="meta">{{ executions|length }} fired · click a row to expand</div>
+    </header>
+    <div class="body flush">
+      {% if executions %}
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th style="width: 90px;">Attack</th>
+              <th>Title</th>
+              <th style="width: 130px;">Agent role</th>
+              <th style="width: 90px;">Target</th>
+              <th class="num" style="width: 90px;">Latency</th>
+              <th style="width: 90px;">Filter</th>
+              <th style="width: 100px;">Judge</th>
+              <th class="num" style="width: 80px;">Tokens</th>
+              <th class="num" style="width: 90px;">USD</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in executions %}
+              <tr style="cursor: pointer;"
+                  hx-get="/campaigns/{{ run.campaign_id }}/runs/{{ run.id }}/executions/{{ e.id }}"
+                  hx-target="#exec-detail"
+                  hx-swap="innerHTML"
+                  hx-on::after-request="document.getElementById('exec-detail').scrollIntoView({behavior:'smooth', block:'start'});">
+                <td class="mono muted">{{ (e.id|string)[:8] }}</td>
+                <td>
+                  <strong>{{ e.attack_title }}</strong>
+                  <div class="muted mono" style="font-size: 11px;">{{ e.attack_signature }}</div>
+                </td>
+                <td class="mono" style="font-size: 12px;">{{ e.agent_role or '—' }}</td>
+                <td class="mono">
+                  {% if e.target_status_code %}
+                    {% set sc = e.target_status_code %}
+                    <span class="dot {% if sc < 300 %}green{% elif sc < 500 %}amber{% else %}red{% endif %}"></span>{{ sc }}
+                  {% else %}<span class="muted">—</span>{% endif %}
+                </td>
+                <td class="num mono muted">{{ e.target_latency_ms }}ms</td>
+                <td>
+                  {% if e.filter_verdict == 'safe' %}<span class="dot green"></span>safe
+                  {% elif e.filter_verdict == 'attack_payload' %}<span class="dot amber"></span>payload
+                  {% elif e.filter_verdict == 'dangerous' %}<span class="dot red"></span>danger
+                  {% else %}<span class="dot"></span>{{ e.filter_verdict }}{% endif %}
+                </td>
+                <td>
+                  {% if e.judge_verdict == 'pass' %}<span class="sev high">breach</span>
+                  {% elif e.judge_verdict == 'fail' %}<span class="sev low">held</span>
+                  {% elif e.judge_verdict == 'partial' %}<span class="sev medium">partial</span>
+                  {% elif e.judge_verdict == 'error' %}<span class="sev critical">error</span>
+                  {% else %}<span class="muted mono">—</span>{% endif %}
+                </td>
+                <td class="num mono">{{ (e.tokens_in or 0) + (e.tokens_out or 0) }}</td>
+                <td class="num mono">${{ '%.4f'|format(e.usd or 0.0) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">
+          no executions recorded
+          <span class="hint">the worker started this run but no attack was fired before it ended</span>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel cy" id="exec-detail-wrap">
+    <header>
+      <div class="title">Execution detail</div>
+      <div class="meta">click a row above to load</div>
+    </header>
+    <div class="body" id="exec-detail">
+      <div class="empty" style="border:0; background:transparent;">
+        no execution selected
+        <span class="hint">click any row in the table to see the payload, target response, and judge rationale</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid cols-2" style="gap: 18px;">
+    <div class="panel">
+      <header>
+        <div class="title">Cost by agent</div>
+        <div class="meta">per-role rollup for this run</div>
+      </header>
+      <div class="body flush">
+        {% if cost_by_agent %}
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th class="num">Tokens in</th>
+                <th class="num">Tokens out</th>
+                <th class="num">USD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c in cost_by_agent %}
+                <tr>
+                  <td class="mono">{{ c.role }}</td>
+                  <td class="num">{{ c.tokens_in }}</td>
+                  <td class="num">{{ c.tokens_out }}</td>
+                  <td class="num mono">${{ '%.4f'|format(c.usd) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">no executions</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <header>
+        <div class="title">Findings from this run</div>
+        <div class="meta">{{ findings|length }} promoted</div>
+      </header>
+      <div class="body flush">
+        {% if findings %}
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th style="width: 80px;">Sev</th>
+                <th>Title</th>
+                <th style="width: 100px;">Category</th>
+                <th style="width: 80px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in findings %}
+                <tr>
+                  <td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td>
+                  <td>{{ f.title }}</td>
+                  <td class="mono muted">{{ f.category }}</td>
+                  <td><a class="nav-link" href="/findings/{{ f.id }}">open</a></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">no findings — target held</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}

@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.db.schema import (
     attack_executions,
+    attacks,
     campaigns,
     findings,
+    judge_verdicts,
     project_versions,
     projects,
     runs,
@@ -376,3 +378,162 @@ async def list_findings(session: AsyncSession, *, limit: int = 200) -> list[dict
         }
         for r in rows
     ]
+
+
+async def get_run_with_campaign(
+    session: AsyncSession, *, run_id: UUID, campaign_id: UUID
+) -> dict[str, Any] | None:
+    """Fetch one Run together with its parent Campaign + Project. Returns
+    None if the run doesn't exist or doesn't belong to that campaign — the
+    route layer uses that to 404 rather than leak unrelated runs."""
+    row = (
+        await session.execute(
+            select(
+                runs.c.id,
+                runs.c.status,
+                runs.c.started_at,
+                runs.c.ended_at,
+                runs.c.attacks_fired,
+                runs.c.budget_consumed_usd,
+                runs.c.created_at,
+                campaigns.c.id.label("campaign_id"),
+                campaigns.c.name.label("campaign_name"),
+                campaigns.c.trigger,
+                projects.c.name.label("project_name"),
+                projects.c.env.label("project_env"),
+            )
+            .select_from(
+                runs.join(campaigns, runs.c.campaign_id == campaigns.c.id).join(
+                    projects, campaigns.c.project_id == projects.c.id
+                )
+            )
+            .where(runs.c.id == run_id)
+            .where(runs.c.campaign_id == campaign_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "status": row.status,
+        "started_at": row.started_at,
+        "ended_at": row.ended_at,
+        "attacks_fired": row.attacks_fired,
+        "budget_consumed_usd": row.budget_consumed_usd,
+        "created_at": row.created_at,
+        "campaign_id": row.campaign_id,
+        "campaign_name": row.campaign_name,
+        "trigger": row.trigger,
+        "project_name": row.project_name,
+        "project_env": row.project_env,
+    }
+
+
+def _execution_row_to_dict(r: Any) -> dict[str, Any]:
+    """Shared shape for execution rows. Used by both the per-run list and
+    the per-execution detail helper so the template can rely on one schema."""
+    return {
+        "id": r.id,
+        "attack_id": r.attack_id,
+        "attack_title": r.attack_title,
+        "attack_category": r.attack_category,
+        "attack_signature": r.attack_signature,
+        "attack_payload": r.attack_payload,
+        "agent_role": r.agent_role,
+        "model": r.model,
+        "tokens_in": r.tokens_in,
+        "tokens_out": r.tokens_out,
+        "usd": r.usd_estimate,
+        "filter_verdict": r.output_filter_verdict,
+        "filter_reason": r.output_filter_reason,
+        "target_status_code": r.target_status_code,
+        "target_latency_ms": r.target_latency_ms,
+        "target_response": r.target_response,
+        "trace_id": r.langsmith_trace_id,
+        "error": r.error,
+        "started_at": r.started_at,
+        "ended_at": r.ended_at,
+        "created_at": r.created_at,
+        "judge_verdict": r.judge_verdict,
+        "judge_exploitability": r.judge_exploitability,
+        "judge_rationale": r.judge_rationale,
+        "judge_evidence": r.judge_evidence,
+        "judge_model": r.judge_model,
+    }
+
+
+_EXECUTION_COLS = (
+    attack_executions.c.id,
+    attack_executions.c.attack_id,
+    attack_executions.c.agent_role,
+    attack_executions.c.model,
+    attack_executions.c.tokens_in,
+    attack_executions.c.tokens_out,
+    attack_executions.c.usd_estimate,
+    attack_executions.c.output_filter_verdict,
+    attack_executions.c.output_filter_reason,
+    attack_executions.c.target_status_code,
+    attack_executions.c.target_latency_ms,
+    attack_executions.c.target_response,
+    attack_executions.c.langsmith_trace_id,
+    attack_executions.c.error,
+    attack_executions.c.started_at,
+    attack_executions.c.ended_at,
+    attack_executions.c.created_at,
+    attacks.c.title.label("attack_title"),
+    attacks.c.category.label("attack_category"),
+    attacks.c.signature.label("attack_signature"),
+    attacks.c.payload.label("attack_payload"),
+    judge_verdicts.c.verdict.label("judge_verdict"),
+    judge_verdicts.c.exploitability.label("judge_exploitability"),
+    judge_verdicts.c.rationale.label("judge_rationale"),
+    judge_verdicts.c.evidence.label("judge_evidence"),
+    judge_verdicts.c.judge_model.label("judge_model"),
+)
+
+
+async def list_executions_full(session: AsyncSession, *, run_id: UUID) -> list[dict[str, Any]]:
+    """Per-run executions joined with their Attack and (optional) Judge
+    verdict. Drives the per-run detail page's executions table — one row
+    per attack fired, click expands to the payload/response/rationale."""
+    rows = (
+        await session.execute(
+            select(*_EXECUTION_COLS)
+            .select_from(
+                attack_executions.join(
+                    attacks, attack_executions.c.attack_id == attacks.c.id
+                ).outerjoin(
+                    judge_verdicts,
+                    attack_executions.c.judge_verdict_id == judge_verdicts.c.id,
+                )
+            )
+            .where(attack_executions.c.run_id == run_id)
+            .order_by(attack_executions.c.created_at)
+        )
+    ).all()
+    return [_execution_row_to_dict(r) for r in rows]
+
+
+async def get_execution_full(
+    session: AsyncSession, *, execution_id: UUID, run_id: UUID
+) -> dict[str, Any] | None:
+    """Fetch a single execution with its joined Attack + Judge verdict.
+    Scoped by run_id so the fragment route can refuse cross-run lookups."""
+    row = (
+        await session.execute(
+            select(*_EXECUTION_COLS)
+            .select_from(
+                attack_executions.join(
+                    attacks, attack_executions.c.attack_id == attacks.c.id
+                ).outerjoin(
+                    judge_verdicts,
+                    attack_executions.c.judge_verdict_id == judge_verdicts.c.id,
+                )
+            )
+            .where(attack_executions.c.id == execution_id)
+            .where(attack_executions.c.run_id == run_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    return _execution_row_to_dict(row)
