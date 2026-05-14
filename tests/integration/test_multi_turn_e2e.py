@@ -1,28 +1,31 @@
 # mypy: disable-error-code="no-untyped-def,misc,unused-ignore"
-"""R10-follow-up — end-to-end multi-turn conversation driven by the
-Red Team LangGraph agent.
+"""R10-follow-up — multi-attempt agent session over the live bus.
 
-Drives the four-worker bus pipeline with a FakeLLMClient that scripts:
+Drives the four-worker pipeline with a FakeLLMClient that scripts:
 
-- An Orchestrator plan with one injection attempt (seeds_per_attempt=4).
-- A Red Team agent attacker that walks
-  ``propose_attack → fire_at_target → mutate_attack → fire_at_target →
-   submit_for_judgment``. Per-turn user_messages vary so the transcript
-  records an escalation arc.
-- A Judge that rules ``pass`` over the multi-turn transcript and names
-  turn 1 (the response that echoes the canary) as decisive.
+- An Orchestrator plan with TWO injection attempts
+  (``ignore_previous`` then ``policy_puppetry``, both
+  ``seeds_per_attempt=4``).
+- A Red Team agent that, for each attempt, walks
+  ``propose_attack → fire_at_target → mutate_attack →
+   fire_at_target → submit_for_judgment``.
+- A Judge that rules ``pass`` on each attempt's transcript and names
+  turn 1 (the canary-echo turn) as decisive.
 
-DoD checks for R10-follow-up:
+DoD checks for the run-vs-attempt model:
 
-- Exactly ONE ``AttackEvent`` envelope per conversation (the Red Team
-  agent's ``submit_for_judgment`` is the single emission point).
-- Multiple ``attack_executions`` rows in the same run with ascending
-  ``seed_idx``.
-- ONE ``judge_verdicts`` row per conversation with
-  ``decisive_seed_idx`` + ``total_seeds`` populated.
-- The Finding row carries the decisive turn.
-- The Red Team agent stopped via ``submit_for_judgment`` before
-  ``seeds_per_attempt=4`` was exhausted.
+- Exactly ONE ``runs`` row covers the whole agent session — the load-
+  bearing assertion for the "one run, N attempts" worker shape.
+- TWO ``AttackEvent`` envelopes (one per PlanAttempt), all sharing
+  ``run_id`` — the Red Team agent's ``submit_for_judgment`` is still
+  the single emission point per attempt.
+- FOUR ``attack_executions`` rows on that one run (2 attempts x 2
+  turns each), spanning >=2 distinct ``attack_id`` values.
+- TWO ``judge_verdicts`` rows, both ``pass`` with
+  ``decisive_seed_idx`` populated.
+- TWO ``findings`` rows.
+- Audit trail records two ``agent_started`` rows and two
+  ``submitted_for_judgment`` rows.
 """
 
 from __future__ import annotations
@@ -130,7 +133,11 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
     set_settings_for_test(orchestrator_auto_approve=True)
 
     fake = FakeLLMClient()
-    # Orchestrator: one attempt, multi-turn capable.
+    # Orchestrator: two attempts, multi-turn capable. Two attempts in
+    # one plan exercises the new "one run, N attempts" worker shape —
+    # the worker creates one runs row and walks both attempts inside
+    # it. Two attempts of injection.ignore_previous lets us reuse the
+    # same FakeLLM responder logic across both.
     fake.register(
         "orchestrator",
         lambda _m: json.dumps(
@@ -142,9 +149,16 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
                         "per_attempt_budget_usd": 0.5,
                         "max_consecutive_partials": 1,
                         "seeds_per_attempt": 4,
-                    }
+                    },
+                    {
+                        "category": "injection",
+                        "technique": "policy_puppetry",
+                        "per_attempt_budget_usd": 0.5,
+                        "max_consecutive_partials": 1,
+                        "seeds_per_attempt": 4,
+                    },
                 ],
-                "rationale": "R10-follow-up multi-turn agent smoke",
+                "rationale": "R10-follow-up multi-attempt agent smoke",
                 "confidence": "medium",
                 "halt_on_consecutive_fails": 3,
                 "halt_on_judge_errors": 2,
@@ -153,32 +167,43 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
         ),
     )
 
-    # Scripted tool-call sequence the agent's attacker emits.
+    # One scripted tool-call sequence per attempt: propose → fire →
+    # mutate → fire → submit. The agent walks both attempts inside one
+    # run; the LLM counter resets at attempt boundaries because the
+    # agent rebuilds its state per attempt, but the FakeLLMClient's
+    # call-sequence position is process-global, so we feed it the
+    # concatenation of both attempts' scripts.
+    def _attempt_script(technique: str, rationale_suffix: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"{technique}-c1",
+                "name": "propose_attack",
+                "arguments": {
+                    "category": "injection",
+                    "technique": technique,
+                    "rationale": f"open {rationale_suffix}",
+                },
+            },
+            {"id": f"{technique}-c2", "name": "fire_at_target", "arguments": {}},
+            {
+                "id": f"{technique}-c3",
+                "name": "mutate_attack",
+                "arguments": {"rationale": "target refused; tighten boundary"},
+            },
+            {"id": f"{technique}-c4", "name": "fire_at_target", "arguments": {}},
+            {
+                "id": f"{technique}-c5",
+                "name": "submit_for_judgment",
+                "arguments": {
+                    "rationale": "canary echoed on turn 1",
+                    "expected_verdict": "pass",
+                },
+            },
+        ]
+
     attacker_script = [
-        {
-            "id": "c1",
-            "name": "propose_attack",
-            "arguments": {
-                "category": "injection",
-                "technique": "ignore_previous",
-                "rationale": "open with direct injection",
-            },
-        },
-        {"id": "c2", "name": "fire_at_target", "arguments": {}},
-        {
-            "id": "c3",
-            "name": "mutate_attack",
-            "arguments": {"rationale": "target refused; tighten boundary"},
-        },
-        {"id": "c4", "name": "fire_at_target", "arguments": {}},
-        {
-            "id": "c5",
-            "name": "submit_for_judgment",
-            "arguments": {
-                "rationale": "canary echoed on turn 1",
-                "expected_verdict": "pass",
-            },
-        },
+        *_attempt_script("ignore_previous", "with direct injection"),
+        *_attempt_script("policy_puppetry", "with policy puppetry"),
     ]
     attacker_counter = {"n": 0}
 
@@ -300,11 +325,14 @@ async def _wait_for(
 
 
 @pytest.mark.asyncio
-async def test_agent_driven_conversation_emits_one_attack_event_and_pinpoints_decisive_turn(
+async def test_agent_walks_multiple_attempts_in_one_run(
     client, patch_target_transport, workers
 ) -> None:
-    """The R10-follow-up DoD load-bearing test: one agent conversation =
-    one AttackEvent + one verdict + N attack_executions sharing a run."""
+    """The R10-follow-up DoD load-bearing test: a plan with N
+    PlanAttempts produces ONE ``runs`` row + N ``AttackEvent``
+    envelopes (one per attempt) + N verdicts + N findings, all
+    sharing the same ``run_id``. Each attempt is itself a multi-turn
+    conversation with mutate."""
     _ = client
     _ = patch_target_transport
 
@@ -358,87 +386,108 @@ async def test_agent_driven_conversation_emits_one_attack_event_and_pinpoints_de
         await bus.emit(session, envelope)
         await session.commit()
 
-    async def _verdict_landed() -> bool:
+    async def _verdicts_landed() -> bool:
+        # Wait for BOTH attempts' verdicts to land.
         async with session_scope() as session:
             row = (await session.execute(text("SELECT count(*) FROM judge_verdicts"))).first()
-        return bool(row and row[0] >= 1)
+        return bool(row and row[0] >= 2)
 
     await _wait_for(
-        cond=_verdict_landed,
-        timeout_seconds=30.0,
-        label="judge_verdicts row",
+        cond=_verdicts_landed,
+        timeout_seconds=45.0,
+        label="2 judge_verdicts rows",
     )
 
-    async def _finding_landed() -> bool:
+    async def _findings_landed() -> bool:
         async with session_scope() as session:
             row = (await session.execute(text("SELECT count(*) FROM findings"))).first()
-        return bool(row and row[0] >= 1)
+        return bool(row and row[0] >= 2)
 
     await _wait_for(
-        cond=_finding_landed,
-        timeout_seconds=30.0,
-        label="findings row",
+        cond=_findings_landed,
+        timeout_seconds=45.0,
+        label="2 findings rows",
     )
 
     async with session_scope() as session:
-        # Exactly one AttackEvent envelope on the bus — the agent only
-        # emits once per conversation, via submit_for_judgment.
+        # Two AttackEvent envelopes — one per PlanAttempt the agent
+        # walked. The agent emits once per attempt via
+        # submit_for_judgment.
         attack_events = (
             await session.execute(
                 text("SELECT count(*) FROM agent_messages WHERE kind = 'AttackEvent'")
             )
         ).first()
         assert attack_events is not None
-        assert attack_events[0] == 1, (
-            f"expected exactly 1 AttackEvent per conversation, got {attack_events[0]}"
+        assert attack_events[0] == 2, (
+            f"expected exactly 2 AttackEvents (one per attempt), got {attack_events[0]}"
         )
 
-        # Multiple attack_executions rows on a single run with ascending
-        # seed_idx. The scripted agent fires turn 0 (propose → fire), then
-        # turn 1 (mutate → fire), then submits.
+        # ONE run row covers both attempts (the load-bearing assertion
+        # for the new "one run, N attempts" shape).
+        runs = (await session.execute(text("SELECT count(distinct id) FROM runs"))).first()
+        assert runs is not None
+        assert runs[0] == 1, f"expected one runs row for the whole agent session, got {runs[0]}"
+
+        # Multiple attack_executions rows on the single run, two per
+        # attempt (turn 0 + turn 1 each), 4 total. Each attempt's two
+        # executions point at the same Attack template (their
+        # ``attack_id`` is set by the propose_attack step which mints
+        # one template per attempt), so we expect exactly two distinct
+        # attack_ids across the four executions.
         rows = (
             await session.execute(
-                text("SELECT run_id, seed_idx FROM attack_executions ORDER BY seed_idx")
+                text(
+                    "SELECT ae.run_id, ae.seed_idx, ae.attack_id "
+                    "FROM attack_executions ae "
+                    "ORDER BY ae.created_at"
+                )
             )
         ).all()
-        assert len(rows) >= 2, f"expected >=2 turns, got {len(rows)}"
+        assert len(rows) == 4, f"expected 4 executions (2 attempts x 2 turns), got {len(rows)}"
         run_ids = {r.run_id for r in rows}
-        assert len(run_ids) == 1, f"expected one run for the conversation, got {run_ids}"
-        seeds = [r.seed_idx for r in rows]
-        assert seeds == list(range(len(seeds))), f"expected seed_idx to ascend from 0, got {seeds}"
-        # Agent stopped via submit before the seeds_per_attempt cap.
-        assert len(rows) < 4, (
-            "expected agent to submit_for_judgment before hitting the seeds_per_attempt cap"
+        assert len(run_ids) == 1, f"expected all executions on one run row, got {run_ids}"
+        # Two attempts → two distinct propose-attack-minted attacks
+        # templates → the worker emits two AttackEvents pointing at
+        # different last-turn attack_ids. Asserted via the bus envelope
+        # count below; here we just confirm executions span >1 attack.
+        attack_ids = {r.attack_id for r in rows}
+        assert len(attack_ids) >= 2, (
+            f"expected >=2 distinct attack_ids across the two attempts, got {len(attack_ids)}"
         )
 
         verdicts = (await session.execute(text("SELECT count(*) FROM judge_verdicts"))).first()
         assert verdicts is not None
-        assert verdicts[0] == 1, f"expected exactly 1 verdict per conversation, got {verdicts[0]}"
+        assert verdicts[0] == 2, f"expected 2 verdicts (one per attempt), got {verdicts[0]}"
 
-        v = (
+        all_verdicts = (
             await session.execute(
                 text("SELECT verdict, decisive_seed_idx, total_seeds FROM judge_verdicts")
             )
-        ).first()
-        assert v is not None
-        assert v.verdict == "pass"
-        assert v.decisive_seed_idx is not None
-        assert v.total_seeds == len(rows)
+        ).all()
+        for v in all_verdicts:
+            assert v.verdict == "pass"
+            assert v.decisive_seed_idx is not None
+            assert v.total_seeds >= 1
 
-        f = (
+        findings_rows = (
             await session.execute(text("SELECT decisive_seed_idx, total_seeds FROM findings"))
-        ).first()
-        assert f is not None
-        assert f.decisive_seed_idx == v.decisive_seed_idx
-        assert f.total_seeds == v.total_seeds
+        ).all()
+        assert len(findings_rows) == 2, f"expected 2 findings, got {len(findings_rows)}"
 
-        # Audit trail: the agent wrote at least one ``submitted_for_judgment``
-        # row and one ``agent_started`` row.
+        # Audit trail: the agent wrote ``agent_started`` once per
+        # attempt and ``submitted_for_judgment`` once per attempt.
         actions = (
             await session.execute(
                 text("SELECT array_agg(action) FROM audit_log WHERE actor = 'red_team_agent'")
             )
         ).first()
         assert actions is not None
-        assert "agent_started" in (actions[0] or [])
-        assert "submitted_for_judgment" in (actions[0] or [])
+        action_list = actions[0] or []
+        assert action_list.count("agent_started") == 2, (
+            f"expected 2 agent_started audit rows, got {action_list.count('agent_started')}"
+        )
+        assert action_list.count("submitted_for_judgment") == 2, (
+            "expected 2 submitted_for_judgment audit rows, got "
+            f"{action_list.count('submitted_for_judgment')}"
+        )

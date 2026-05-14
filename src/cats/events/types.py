@@ -14,6 +14,11 @@ EventKind = Literal[
     # the UI can show "attacking…" instead of a 30s blank stretch.
     # Not persisted; the campaign timeline only replays attack_executed.
     "attack_starting",
+    # R10-follow-up — emitted by the Red Team worker when it starts a
+    # new PlanAttempt inside an already-running agent session (one run
+    # row, N attempts inside). Lets the UI flip the per-attempt header
+    # without waiting for the first attack_executed event.
+    "attempt_started",
     "attack_executed",
     "judge_verdict_rendered",
     "finding_promoted",

@@ -141,6 +141,47 @@ def score(case: Case, proposal: dict[str, Any]) -> ScoreResult:
         hi = int(exp["tool_call_count_max"])
         result.add("tool_call_count_max", n <= hi, f"count={n} hi={hi}")
 
+    # Multi-attempt (R10-follow-up) checks. The runner's
+    # ``_run_multi_attempt_case`` returns one row of aggregate stats
+    # for a session that walked multiple PlanAttempts under one run.
+    if "attempt_count" in exp:
+        n = int(proposal.get("attempt_count") or 0)
+        result.add(
+            "attempt_count",
+            n == int(exp["attempt_count"]),
+            f"got={n} expected={exp['attempt_count']}",
+        )
+    if "total_transcript_length" in exp:
+        n = int(proposal.get("total_transcript_length") or 0)
+        result.add(
+            "total_transcript_length",
+            n == int(exp["total_transcript_length"]),
+            f"got={n} expected={exp['total_transcript_length']}",
+        )
+    if "all_attempts_submitted" in exp:
+        got_b = bool(proposal.get("all_attempts_submitted"))
+        result.add(
+            "all_attempts_submitted",
+            got_b == bool(exp["all_attempts_submitted"]),
+            f"got={got_b}",
+        )
+    if "per_attempt_stop_reasons" in exp:
+        got_list = list(proposal.get("per_attempt_stop_reasons") or [])
+        expected_list = list(exp["per_attempt_stop_reasons"])
+        result.add(
+            "per_attempt_stop_reasons",
+            got_list == expected_list,
+            f"got={got_list} expected={expected_list}",
+        )
+    if "per_attempt_expected_verdicts" in exp:
+        got_list = list(proposal.get("per_attempt_expected_verdicts") or [])
+        expected_list = list(exp["per_attempt_expected_verdicts"])
+        result.add(
+            "per_attempt_expected_verdicts",
+            got_list == expected_list,
+            f"got={got_list} expected={expected_list}",
+        )
+
     if not result.checks:
         result.error = "no expected checks specified — case has no assertions"
     return result

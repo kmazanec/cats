@@ -3202,6 +3202,26 @@ escalation / mutation / give-up; the worker just consumes the
   procedure, but it's still a manual step. A pre-merge CI rail that
   rebuilds the worker image and runs one live conversation against a
   staging OpenEMR would close it.
+- *Run vs. attempt model was wrong.* First cut had one ``runs`` row
+  per PlanAttempt — i.e. a 3-attempt plan produced 3 runs. The
+  user's correction: a *run* is the agent's whole session against a
+  project, not one attempt within it. The worker now creates one
+  run row, walks every attempt inside, and emits one ``AttackEvent``
+  per attempt sharing ``run_id``. The data model already supported
+  this — ``attack_executions.run_id`` was many-to-one on ``runs``
+  since R2 — the prior shape was hiding it. Cost: the worker's
+  ``_handle_plan_approved`` got a clearer split between "own the
+  run lifecycle" and "drive one attempt", and the campaign-detail
+  UI now naturally groups every attempt of a session under one
+  row. Eval case ``13_agent_walks_two_attempts_in_one_run`` pins
+  this shape so a future refactor can't accidentally revert.
+- *Eval coverage on agent control flow.* Cases 09 (give-up on cold
+  refusals), 10 (clean submit on first turn), 11 (escalate via
+  mutate then submit), 12 (force-submit on turn cap), and 13
+  (multi-attempt session) cover every legitimate exit path the
+  agent has. A future round can layer a "real-LLM" variant of these
+  cases that swaps in OpenRouter and runs the same scripted target
+  responses — same scorer, same expected stop_reasons.
 
 ---
 

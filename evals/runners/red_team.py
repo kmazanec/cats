@@ -74,34 +74,19 @@ def _proposal_to_dict(proposal: Any) -> dict[str, Any]:
     return base
 
 
-async def _run_agent_case(case: Case) -> dict[str, Any]:
-    """Drive the LangGraph agent with a scripted tool-call sequence.
-    Returns a flat dict the scorer reads (``stop_reason``,
-    ``expected_verdict``, ``transcript_length``, ``tool_call_count``,
-    ``submitted_before_cap``)."""
+def _install_agent_fakes(monkeypatch_targets: dict[str, Any]) -> dict[str, Any]:
+    """Stash the originals of every module attribute the agent path
+    touches with infrastructure, then replace them with no-op fakes.
+    Returns the originals dict the caller restores from in a finally
+    block. Keeps the per-case setup terse."""
     from uuid import uuid4
 
+    from cats.agents.mutator.strategies import MutatorResult
+    from cats.agents.red_team import agent as agent_mod
     from cats.agents.red_team import tools as tools_mod
-    from cats.agents.red_team.agent import run_red_team_agent
     from cats.agents.red_team.executor import AttemptResult, _NormalizedProposal
-    from cats.llm.client import FakeLLMClient, LLMResult, install_override
-    from cats.messaging.envelopes import PlanAttempt
+    from cats.llm.client import LLMResult
     from cats.target.contracts import AttackEnvelope
-
-    category = str(case.inputs.get("category") or "injection")
-    technique = str(case.inputs.get("technique") or "ignore_previous")
-    seeds = int(case.inputs.get("seeds_per_attempt") or 5)
-    scripted = case.inputs.get("scripted_tool_calls") or []
-    if not isinstance(scripted, list) or not scripted:
-        raise ValueError(f"{case.case_id}: inputs.scripted_tool_calls required")
-
-    # Stub out side-effects that need real infrastructure.
-    class _S:
-        async def execute(self, *_a: Any, **_k: Any) -> Any:
-            return None
-
-        async def commit(self) -> None:
-            return None
 
     async def _fake_audit(*_a: Any, **_k: Any) -> None:
         return None
@@ -154,9 +139,6 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
             ),
         )
 
-    from cats.agents.mutator.strategies import MutatorResult
-    from cats.agents.red_team import agent as agent_mod
-
     async def _fake_variant(*, state: Any, llm: Any) -> MutatorResult:
         return MutatorResult(
             user_message="mutated for eval CATS-CANARY-EVAL",
@@ -165,21 +147,46 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
             llm=None,
         )
 
-    # Monkeypatch via module attribute assignment (cleared in finally).
-    saved_fire = tools_mod.fire_prepared_attack
-    saved_propose = tools_mod._propose_attack
-    saved_variant = tools_mod.generate_variant
-    saved_publish = tools_mod.publish
-    saved_audit = agent_mod.write_audit
+    originals = {
+        "fire": tools_mod.fire_prepared_attack,
+        "propose": tools_mod._propose_attack,
+        "variant": tools_mod.generate_variant,
+        "publish": tools_mod.publish,
+        "audit": agent_mod.write_audit,
+    }
+    monkeypatch_targets["tools"] = tools_mod
+    monkeypatch_targets["agent"] = agent_mod
     tools_mod.fire_prepared_attack = _fake_fire  # type: ignore[assignment]
     tools_mod._propose_attack = _fake_propose_attack  # type: ignore[assignment]
     tools_mod.generate_variant = _fake_variant  # type: ignore[assignment]
     tools_mod.publish = _fake_publish  # type: ignore[assignment]
     agent_mod.write_audit = _fake_audit  # type: ignore[assignment]
+    return originals
 
-    fake = FakeLLMClient()
-    # Build the responder sequence — one assistant turn per scripted call.
-    sequence = []
+
+def _restore_agent_fakes(originals: dict[str, Any], modules: dict[str, Any]) -> None:
+    tools_mod = modules["tools"]
+    agent_mod = modules["agent"]
+    tools_mod.fire_prepared_attack = originals["fire"]  # type: ignore[assignment]
+    tools_mod._propose_attack = originals["propose"]  # type: ignore[assignment]
+    tools_mod.generate_variant = originals["variant"]  # type: ignore[assignment]
+    tools_mod.publish = originals["publish"]  # type: ignore[assignment]
+    agent_mod.write_audit = originals["audit"]  # type: ignore[assignment]
+
+
+def _fake_session() -> Any:
+    class _S:
+        async def execute(self, *_a: Any, **_k: Any) -> Any:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    return _S()
+
+
+def _build_attacker_sequence(scripted: list[dict[str, Any]]) -> list[Any]:
+    sequence: list[Any] = []
     for tc in scripted:
         payload = {
             "id": f"eval-{len(sequence)}",
@@ -187,11 +194,35 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
             "arguments": tc.get("arguments", {}),
         }
         sequence.append((lambda p=payload: lambda _msgs: {"text": "", "tool_calls": [p]})())
-    fake.register_sequence("redteam_injection", sequence)
+    return sequence
+
+
+async def _run_agent_case(case: Case) -> dict[str, Any]:
+    """Drive the LangGraph agent with a scripted tool-call sequence.
+    Returns a flat dict the scorer reads (``stop_reason``,
+    ``expected_verdict``, ``transcript_length``, ``tool_call_count``,
+    ``submitted_before_cap``)."""
+    from uuid import uuid4
+
+    from cats.agents.red_team.agent import run_red_team_agent
+    from cats.llm.client import FakeLLMClient, install_override
+    from cats.messaging.envelopes import PlanAttempt
+
+    category = str(case.inputs.get("category") or "injection")
+    technique = str(case.inputs.get("technique") or "ignore_previous")
+    seeds = int(case.inputs.get("seeds_per_attempt") or 5)
+    scripted = case.inputs.get("scripted_tool_calls") or []
+    if not isinstance(scripted, list) or not scripted:
+        raise ValueError(f"{case.case_id}: inputs.scripted_tool_calls required")
+
+    modules: dict[str, Any] = {}
+    originals = _install_agent_fakes(modules)
+    fake = FakeLLMClient()
+    fake.register_sequence("redteam_injection", _build_attacker_sequence(scripted))
     install_override(fake)
     try:
         result = await run_red_team_agent(
-            session=_S(),
+            session=_fake_session(),
             campaign_id=uuid4(),
             run_id=uuid4(),
             project_version_id=uuid4(),
@@ -200,11 +231,7 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
         )
     finally:
         install_override(None)
-        tools_mod.fire_prepared_attack = saved_fire  # type: ignore[assignment]
-        tools_mod._propose_attack = saved_propose  # type: ignore[assignment]
-        tools_mod.generate_variant = saved_variant  # type: ignore[assignment]
-        tools_mod.publish = saved_publish  # type: ignore[assignment]
-        agent_mod.write_audit = saved_audit  # type: ignore[assignment]
+        _restore_agent_fakes(originals, modules)
 
     return {
         "stop_reason": result.stop_reason,
@@ -215,9 +242,98 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
     }
 
 
+async def _run_multi_attempt_case(case: Case) -> dict[str, Any]:
+    """R10-follow-up — drive multiple PlanAttempts through one shared
+    agent session (mirrors the worker's "one run, N attempts" shape).
+    Each attempt has its own scripted_tool_calls; the runner walks them
+    sequentially under one synthetic run_id. Returns aggregate stats
+    the scorer reads (``attempt_count``, per-attempt ``stop_reasons``
+    and ``expected_verdicts``, ``total_transcript_length``)."""
+    from uuid import uuid4
+
+    from cats.agents.red_team.agent import run_red_team_agent
+    from cats.llm.client import FakeLLMClient, install_override
+    from cats.messaging.envelopes import PlanAttempt
+
+    attempts = case.inputs.get("attempts") or []
+    if not isinstance(attempts, list) or not attempts:
+        raise ValueError(f"{case.case_id}: inputs.attempts (list) required")
+
+    modules: dict[str, Any] = {}
+    originals = _install_agent_fakes(modules)
+
+    # All attempts share one campaign_id, project_version_id, and run_id
+    # to mirror the worker's actual shape under the R10-follow-up
+    # refactor. Each attempt re-registers a fresh FakeLLMClient sequence
+    # because the LangGraph compile is cached and re-uses the override
+    # set at attacker-call time.
+    campaign_id = uuid4()
+    project_version_id = uuid4()
+    run_id = uuid4()
+    session = _fake_session()
+
+    per_attempt_stops: list[str] = []
+    per_attempt_verdicts: list[str] = []
+    per_attempt_lengths: list[int] = []
+    all_submitted = True
+    try:
+        for idx, attempt_dict in enumerate(attempts):
+            scripted = attempt_dict.get("scripted_tool_calls") or []
+            if not isinstance(scripted, list) or not scripted:
+                raise ValueError(f"{case.case_id}: attempts[{idx}].scripted_tool_calls required")
+            fake = FakeLLMClient()
+            # Register the same scripted sequence under every Red Team
+            # role — the agent picks its attacker role based on the
+            # PlanAttempt's category (``redteam_injection`` /
+            # ``redteam_exfil`` / etc.), so a single per-role registration
+            # would miss cross-category multi-attempt sessions.
+            attacker_seq = _build_attacker_sequence(scripted)
+            for role in (
+                "redteam_injection",
+                "redteam_exfil",
+                "redteam_toolabuse",
+                "redteam_indirect_injection",
+            ):
+                fake.register_sequence(role, list(attacker_seq))
+            install_override(fake)
+            result = await run_red_team_agent(
+                session=session,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                project_version_id=project_version_id,
+                attempt=PlanAttempt(
+                    category=str(attempt_dict.get("category") or "injection"),
+                    technique=str(attempt_dict.get("technique") or "ignore_previous"),
+                    seeds_per_attempt=int(attempt_dict.get("seeds_per_attempt") or 4),
+                ),
+                trace_id=f"eval-trace-{idx}",
+            )
+            install_override(None)
+            per_attempt_stops.append(result.stop_reason)
+            per_attempt_verdicts.append(result.expected_verdict)
+            per_attempt_lengths.append(len(result.transcript))
+            if result.stop_reason != "agent_submitted":
+                all_submitted = False
+    finally:
+        install_override(None)
+        _restore_agent_fakes(originals, modules)
+
+    return {
+        "attempt_count": len(per_attempt_stops),
+        "per_attempt_stop_reasons": per_attempt_stops,
+        "per_attempt_expected_verdicts": per_attempt_verdicts,
+        "per_attempt_transcript_lengths": per_attempt_lengths,
+        "total_transcript_length": sum(per_attempt_lengths),
+        "all_attempts_submitted": all_submitted,
+    }
+
+
 async def _run_case(case: Case) -> dict[str, Any]:
-    if (case.tags.get("mode") or "").lower() == "agent":
+    mode = (case.tags.get("mode") or "").lower()
+    if mode == "agent":
         return await _run_agent_case(case)
+    if mode == "agent_multi_attempt":
+        return await _run_multi_attempt_case(case)
     category = case.tags.get("category") or ""
     technique = case.inputs.get("technique") or case.expected.get("technique") or ""
     fake_response = case.inputs.get("fake_specialist_response")
