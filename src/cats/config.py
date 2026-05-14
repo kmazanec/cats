@@ -103,10 +103,14 @@ class Settings(BaseSettings):
         alias="LANGSMITH_URL_BASE",
     )
 
-    # Nightly judge-accuracy eval budget cap (R3). The nightly CI runner
-    # refuses to start if the cap is below the minimum needed for one full
-    # answer-key pass; below threshold the runner exits non-zero.
-    eval_nightly_budget_usd: float = Field(default=2.00, alias="CATS_EVAL_NIGHTLY_BUDGET_USD")
+    # Nightly judge-accuracy eval budget cap. Bumped from $2 → $3 when
+    # the harness was generalized from injection-only to all 6 fixture-
+    # bearing categories (~91 cases at Haiku 4.5 prices with retries and
+    # Gemini-Flash fallback). ``eval_accuracy_threshold`` is the FALLBACK
+    # for unknown categories; the canonical per-category bars live in
+    # ``evals.runner._CATEGORY_THRESHOLDS`` (transcribed from each
+    # category's locked rubric/v1.md).
+    eval_nightly_budget_usd: float = Field(default=3.00, alias="CATS_EVAL_NIGHTLY_BUDGET_USD")
     eval_accuracy_threshold: float = Field(default=0.85, alias="CATS_EVAL_ACCURACY_THRESHOLD")
 
     # Max turns the campaign-report tool loop will take before forcing

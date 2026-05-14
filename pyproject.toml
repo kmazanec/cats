@@ -138,6 +138,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: requires postgres + redis (skip in pure-unit runs)",
     "smoke: end-to-end no-LLM smoke path",
+    "live_judge: opt-in; hits real OpenRouter for the live Judge LLM. Not run in CI by default; runs nightly via the judge-accuracy-nightly job. Opt in locally with `pytest -m live_judge`.",
 ]
 # Third-party warnings we cannot fix at source. R2 retro asked R3 to pin
 # `allowed_objects` on the langgraph serializer, but it is set at

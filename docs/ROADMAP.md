@@ -3832,6 +3832,117 @@ Out:
 
 ---
 
+## Round 12.5 — Live Judge accuracy harness (tooling)
+
+**Goal.** Wire the Judge LLM into a per-category accuracy harness
+that reads `src/cats/categories/<cat>/fixtures/ground_truth.jsonl`
+and enforces each category's locked rubric threshold in CI. Before
+this, only `injection` had its accuracy bar CI-gated (via the legacy
+`evals/injection/answer_key/v1/cases.jsonl` path); the five
+categories that shipped after R3 — `exfil`, `indirect_injection`,
+`tool_abuse`, `clinical_misinformation`, `xss` — had fixtures but
+no runner. Their DoD lines (90% / 90% / 90% / 85% / 90%) were
+aspirational, not enforced.
+
+This round is tooling, not a new attack surface — hence the .5
+numbering. It does not change production Judge behavior; it adds the
+accuracy gate the rounds since R3 each promised in their DoD.
+
+**Outcome.** A user can:
+
+1. Run `make eval-judge-live` and see the real Judge LLM rule on
+   every category's fixtures with per-category accuracy and
+   pass/fail against the per-category threshold.
+2. Run `make eval-judge-live CATEGORY=xss` to scope to one
+   category for fast iteration.
+3. Trust that the GitLab nightly job (`judge-accuracy-nightly`)
+   enforces every category's threshold automatically; a regression
+   in any single category fails the job.
+
+**Scope.**
+
+In:
+- Rewrite `evals/runner.py` to read the per-category
+  `fixtures/ground_truth.jsonl` files as the unified source.
+- Migrate the 30 `injection` cases from the legacy
+  `evals/injection/answer_key/v1/cases.jsonl` path into the new
+  `src/cats/categories/injection/fixtures/ground_truth.jsonl`
+  using the unified schema; one source of truth.
+- `_CATEGORY_THRESHOLDS` table transcribed from each category's
+  locked rubric/v1.md (95 / 90 / 90 / 90 / 85 / 90).
+- `--all-categories` mode for the nightly job; per-category
+  threshold gating so one category's miss fails the run.
+- `make eval-judge-live` target with `CATEGORY=` and `THRESHOLD=`
+  overrides for developer iteration.
+- Update `.gitlab-ci.yml`: nightly job switches to
+  `--all-categories`, default budget cap bumped from $2 → $3
+  (six categories, ~91 cases at Haiku 4.5 prices with retries
+  and Gemini-Flash fallback).
+- Unit tests for case loading, schema normalization, threshold
+  table consistency, accuracy computation, threshold-gate
+  semantics.
+- Opt-in `live_judge` integration smoke test that hits real
+  OpenRouter — gated on `CATS_RUN_LIVE_JUDGE_EVAL=1` because
+  `tests/conftest.py` plants a fake key for every test.
+
+Out:
+- Rubric v2 bumps for any category (the bars stay where they are).
+- Multi-turn fixtures (the existing fixtures are single-turn; R10
+  shipped multi-turn support in the Judge but extending fixtures
+  is a follow-up).
+- Hard mid-run budget abort. Today the runner respects the budget
+  cap as documentation; the cap is enforced by the cost surfaced
+  in the summary and the operator killing the job. Mid-run abort
+  is a follow-up if costs ever materially exceed the cap.
+
+**Definition of done.**
+
+- [x] One harness reads every category's fixtures.
+- [x] Per-category threshold enforced; one miss fails the run.
+- [x] `make eval-judge-live` works for all-categories and
+      single-category.
+- [x] Nightly CI job covers every category.
+- [x] Unit tests assert the threshold table matches the locked
+      rubric bars (regression catches a sneaky rubric change).
+- [x] Lint + mypy clean.
+
+**Decisions.**
+
+- **Single source of truth: `src/cats/categories/<cat>/fixtures/`.**
+  Considered keeping injection on the legacy `evals/injection/answer_key/v1/`
+  path with a new runner for the rest. Rejected — two paths invite
+  drift and the existing offline-guard test was easy to keep
+  working via back-compat `attack_user_message`/`target_response_text`
+  property aliases on the new `FixtureCase`.
+- **Per-category thresholds in `_CATEGORY_THRESHOLDS`, not in
+  config.** The bars are committed values that change only with a
+  rubric bump; putting them in `cats.config.Settings` would invite
+  env-var override which would silently lower a category's bar.
+  Codified in `evals/runner.py` next to the runner that enforces
+  them. `Settings.eval_accuracy_threshold` stays as the fallback
+  for unknown categories.
+- **`--all-categories` aggregates per-category, fails on any miss.**
+  An overall accuracy number across the 91 cases would let a
+  catastrophic regression in one category get averaged out by good
+  results elsewhere. Per-category gating is what the DoD asks for.
+- **Live smoke test opt-in via env var, not pytest mark alone.**
+  `tests/conftest.py` plants a fake `test-` OpenRouter key for
+  every test, so a key-presence check wouldn't actually skip. The
+  explicit `CATS_RUN_LIVE_JUDGE_EVAL=1` flag is unambiguous.
+- **Budget bumped to $3 default.** Back-of-envelope: 91 cases × Haiku
+  4.5 at ~$0.001/case = $0.09. With retries, fallback to Gemini
+  Flash (~3x cost), and prompt-cache misses on the first run of
+  the day, $0.30 worst-case. $3 leaves 10x headroom. The schedule
+  variable `CATS_EVAL_NIGHTLY_BUDGET_USD` overrides if needed.
+
+**Retrospective.**
+
+- What went well: _
+- What didn't: _
+- What to change for R13: _
+
+---
+
 ## Beyond Round 11
 
 After Round 11, every high-priority threat-model category has

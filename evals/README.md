@@ -20,10 +20,17 @@ evals/
   suite.py               — top-level CLI runs all four
 ```
 
-The older R3 JSONL answer key (`evals/injection/answer_key/v1/`)
-and R4 JSON orchestrator cases (`evals/orchestrator/v1/`) are
+The R4 JSON orchestrator cases (`evals/orchestrator/v1/`) are
 preserved untouched — the nightly CI job points at those and the
 markdown suite here is the human-facing extension surface.
+
+**Judge-accuracy fixtures live alongside each category** in
+`src/cats/categories/<cat>/fixtures/ground_truth.jsonl` (R12.5
+migration; the older `evals/injection/answer_key/v1/cases.jsonl`
+is retained as a deprecation step but no longer read). The runner
+(`evals/runner.py`) walks every fixture-bearing category in
+`--all-categories` mode and enforces each category's per-rubric
+threshold.
 
 ## Running
 
@@ -178,14 +185,15 @@ real-LLM planner via `run_eval(plan_fn=…)`.
 That's the whole loop. There is no schema to register and no
 fixture file to edit.
 
-## Why this co-exists with the JSONL answer key
+## Why this co-exists with the per-category JSONL fixtures
 
-The R3-era `evals/runner.py` + `evals/injection/answer_key/v1/`
-were built for the nightly LLM-Judge accuracy gate and are still
-the authoritative thing CI watches. They're a tight, JSONL-shaped
-format optimized for that one job: 30+ rows, real LLM, real cost.
+`evals/runner.py` + `src/cats/categories/<cat>/fixtures/ground_truth.jsonl`
+are the nightly LLM-Judge accuracy gate and remain the authoritative
+thing CI watches. JSONL is the right shape for that one job:
+~91 rows across six categories, real LLM, real cost, per-category
+threshold gating.
 
 This Markdown suite is the human-extensible layer above it:
 shorter cases, four agents instead of one, no LLM required by
 default. The two are not in tension — adding a Judge case here
-does not invalidate the JSONL answer key.
+does not invalidate the JSONL fixtures.

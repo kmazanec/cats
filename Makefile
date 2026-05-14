@@ -76,3 +76,19 @@ eval-judge: ## run the judge eval suite (evidence-only by default; add --with-fa
 
 eval-documentation: ## run the documentation eval suite
 	uv run python -m evals.runners.documentation
+
+# Live Judge accuracy harness — runs the real LLM Judge against every
+# category's ground-truth fixtures and enforces the per-category
+# accuracy threshold from cats.categories.<cat>.rubric.v1. Needs an
+# OpenRouter key; budgeted via CATS_EVAL_NIGHTLY_BUDGET_USD (default $3).
+#
+# Usage:
+#   make eval-judge-live                    # all categories
+#   make eval-judge-live CATEGORY=xss       # one category
+#   make eval-judge-live CATEGORY=xss THRESHOLD=0.85   # override threshold
+eval-judge-live: ## run the live LLM judge accuracy harness (needs OPENROUTER_API_KEY)
+ifdef CATEGORY
+	uv run python -m evals.runner --category $(CATEGORY) $(if $(THRESHOLD),--threshold $(THRESHOLD),)
+else
+	uv run python -m evals.runner --all-categories
+endif
