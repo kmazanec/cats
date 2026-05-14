@@ -136,10 +136,12 @@
           <tr>
             <th class="mono">Run</th>
             <th>Status</th>
+            <th>Judge</th>
             <th>Technique</th>
             <th class="num">Attacks</th>
             <th class="num">Spend (USD)</th>
-            <th class="num">Slowest</th>
+            <th class="num">Avg latency</th>
+            <th class="num">Elapsed</th>
             <th class="num">Started</th>
           </tr>
         </thead>
@@ -153,6 +155,13 @@
                 {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% elif r.status == 'failed' %}<span class="dot red"></span>{% else %}<span class="dot"></span>{% endif %}
                 <span class="run-status-text">{{ r.status }}</span>
               </td>
+              <td class="run-judge mono">
+                {% if r.judge_verdict == 'pass' %}<span class="sev high">breach</span>
+                {% elif r.judge_verdict == 'fail' %}<span class="sev low">held</span>
+                {% elif r.judge_verdict == 'partial' %}<span class="sev medium">partial</span>
+                {% elif r.judge_verdict == 'error' %}<span class="sev critical">error</span>
+                {% else %}<span class="muted">—</span>{% endif %}
+              </td>
               <td class="run-technique mono{% if not r.technique %} muted{% endif %}">
                 {% if r.technique %}
                   {{ r.technique }}{% if r.category %} <span class="muted">· {{ r.category }}</span>{% endif %}
@@ -160,8 +169,11 @@
               </td>
               <td class="num run-attacks">{{ r.attacks_fired }}</td>
               <td class="num mono run-spend">${{ '%.4f'|format(r.budget_consumed_usd) }}</td>
-              <td class="num mono run-slowest {% if r.max_target_latency_ms and r.max_target_latency_ms >= 60000 %}amber{% endif %}">
-                {% if r.max_target_latency_ms %}{{ (r.max_target_latency_ms / 1000)|round(1) }}s{% else %}—{% endif %}
+              <td class="num mono run-avg-latency {% if r.avg_target_latency_ms and r.avg_target_latency_ms >= 60000 %}amber{% endif %}">
+                {% if r.avg_target_latency_ms %}{{ (r.avg_target_latency_ms / 1000)|round(1) }}s{% else %}—{% endif %}
+              </td>
+              <td class="num mono run-elapsed">
+                {% if r.elapsed_ms %}{{ (r.elapsed_ms / 1000)|round(1) }}s{% else %}—{% endif %}
               </td>
               <td class="num muted">{{ r.started_at.strftime('%H:%M:%S') if r.started_at else '—' }}</td>
             </tr>

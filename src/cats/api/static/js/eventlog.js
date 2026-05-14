@@ -374,10 +374,12 @@
     tr.innerHTML =
       `<td class="mono"><a class="nav-link" href="/campaigns/${escapeHtml(campaignId)}/runs/${escapeHtml(env.run_id)}">${escapeHtml(shortId(env.run_id))}</a></td>` +
       `<td class="run-status-cell"><span class="dot amber pulse"></span> <span class="run-status-text">running</span></td>` +
+      `<td class="run-judge mono"><span class="muted">—</span></td>` +
       techCell +
       `<td class="num run-attacks">0</td>` +
       `<td class="num mono run-spend">$0.0000</td>` +
-      `<td class="num mono run-slowest">—</td>` +
+      `<td class="num mono run-avg-latency" data-sum-ms="0" data-count="0">—</td>` +
+      `<td class="num mono run-elapsed" data-started="${escapeHtml(env.at || '')}">—</td>` +
       `<td class="num muted">${escapeHtml(ts)}</td>`;
     tbody.insertBefore(tr, tbody.firstChild);
     updateRunsCountMeta();
@@ -408,6 +410,17 @@
           "$" +
           (p.spend_usd.toFixed ? p.spend_usd.toFixed(4) : p.spend_usd);
     }
+    // Stamp wall-clock elapsed using the run's start timestamp.
+    const elapsedCell = tr.querySelector(".run-elapsed");
+    if (elapsedCell) {
+      const started = elapsedCell.dataset.started || "";
+      const endedAt = env.at || new Date().toISOString();
+      const s = Date.parse(started);
+      const e = Date.parse(endedAt);
+      if (!isNaN(s) && !isNaN(e) && e >= s) {
+        elapsedCell.textContent = ((e - s) / 1000).toFixed(1) + "s";
+      }
+    }
     tr.classList.add("fresh");
   }
 
@@ -422,23 +435,43 @@
       const n = parseInt(cell.textContent || "0", 10);
       cell.textContent = String((isNaN(n) ? 0 : n) + 1);
     }
-    // Track the slowest attack so the operator sees cost-amplification
-    // signals at a glance. ≥60s flips the cell amber to match the
-    // server-rendered threshold.
+    // Maintain a running average of target latency so the operator sees
+    // typical-call timing at a glance. ≥60s flips the cell amber to
+    // match the server-rendered threshold (cost-amplification signal).
     const p = env.payload || {};
     if (p.latency_ms != null) {
-      const slow = tr.querySelector(".run-slowest");
-      if (slow) {
-        const current = parseFloat(slow.dataset.maxMs || "0");
+      const avg = tr.querySelector(".run-avg-latency");
+      if (avg) {
         const incoming = Number(p.latency_ms);
-        if (!isNaN(incoming) && incoming > current) {
-          slow.dataset.maxMs = String(incoming);
-          slow.textContent = (incoming / 1000).toFixed(1) + "s";
-          if (incoming >= 60000) slow.classList.add("amber");
-          else slow.classList.remove("amber");
+        if (!isNaN(incoming)) {
+          const sum = parseFloat(avg.dataset.sumMs || "0") + incoming;
+          const count = parseInt(avg.dataset.count || "0", 10) + 1;
+          avg.dataset.sumMs = String(sum);
+          avg.dataset.count = String(count);
+          const mean = sum / count;
+          avg.textContent = (mean / 1000).toFixed(1) + "s";
+          if (mean >= 60000) avg.classList.add("amber");
+          else avg.classList.remove("amber");
         }
       }
     }
+  }
+
+  function handleJudgeVerdict(env) {
+    const table = findRunsTable();
+    if (!table || !env || !env.run_id) return;
+    const tr = table.querySelector(`tr[data-run-id="${env.run_id}"]`);
+    if (!tr) return;
+    const cell = tr.querySelector(".run-judge");
+    if (!cell) return;
+    const p = env.payload || {};
+    const v = p.verdict;
+    let html = `<span class="muted">—</span>`;
+    if (v === "pass") html = `<span class="sev high">breach</span>`;
+    else if (v === "fail") html = `<span class="sev low">held</span>`;
+    else if (v === "partial") html = `<span class="sev medium">partial</span>`;
+    else if (v === "error") html = `<span class="sev critical">error</span>`;
+    cell.innerHTML = html;
   }
 
   function applyMutations(env) {
@@ -446,6 +479,7 @@
     if (env.kind === "run_started") handleRunStarted(env);
     else if (env.kind === "run_completed") handleRunCompleted(env);
     else if (env.kind === "attack_executed") handleAttackExecuted(env);
+    else if (env.kind === "judge_verdict_rendered") handleJudgeVerdict(env);
   }
 
   // ----- Backfill + live stream wiring --------------------------------

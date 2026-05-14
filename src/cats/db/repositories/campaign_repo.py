@@ -123,18 +123,31 @@ async def create_campaign_and_run(
 
 async def list_campaigns(session: AsyncSession, *, limit: int = 100) -> list[dict[str, Any]]:
     """Return campaigns (newest first) joined with their target project and
-    a one-row summary of the most-recent run (status, attacks, spend)."""
+    a one-row summary of the most-recent run (status, attacks, spend).
+
+    ``attacks_fired`` and ``budget_consumed_usd`` derive from
+    ``attack_executions`` rather than the ``runs`` columns — same
+    source-of-truth rule as ``list_runs_for_campaign``."""
+    from sqlalchemy import func
+
     latest_run = (
         select(
             runs.c.campaign_id,
             runs.c.id.label("run_id"),
             runs.c.status,
-            runs.c.attacks_fired,
-            runs.c.budget_consumed_usd,
             runs.c.started_at,
         )
         .order_by(runs.c.campaign_id, desc(runs.c.created_at))
         .distinct(runs.c.campaign_id)
+        .subquery()
+    )
+    exec_rollup = (
+        select(
+            attack_executions.c.run_id,
+            func.count(attack_executions.c.id).label("exec_count"),
+            func.coalesce(func.sum(attack_executions.c.usd_estimate), 0.0).label("usd_total"),
+        )
+        .group_by(attack_executions.c.run_id)
         .subquery()
     )
     stmt = (
@@ -150,14 +163,14 @@ async def list_campaigns(session: AsyncSession, *, limit: int = 100) -> list[dic
             projects.c.env.label("project_env"),
             latest_run.c.run_id,
             latest_run.c.status,
-            latest_run.c.attacks_fired,
-            latest_run.c.budget_consumed_usd,
+            exec_rollup.c.exec_count,
+            exec_rollup.c.usd_total,
             latest_run.c.started_at,
         )
         .select_from(
-            campaigns.join(projects, campaigns.c.project_id == projects.c.id).outerjoin(
-                latest_run, campaigns.c.id == latest_run.c.campaign_id
-            )
+            campaigns.join(projects, campaigns.c.project_id == projects.c.id)
+            .outerjoin(latest_run, campaigns.c.id == latest_run.c.campaign_id)
+            .outerjoin(exec_rollup, latest_run.c.run_id == exec_rollup.c.run_id)
         )
         .order_by(desc(campaigns.c.created_at))
         .limit(limit)
@@ -176,8 +189,8 @@ async def list_campaigns(session: AsyncSession, *, limit: int = 100) -> list[dic
             "project_env": r.project_env,
             "run_id": r.run_id,
             "run_status": r.status,
-            "attacks_fired": r.attacks_fired,
-            "budget_consumed_usd": r.budget_consumed_usd,
+            "attacks_fired": int(r.exec_count or 0),
+            "budget_consumed_usd": float(r.usd_total or 0.0),
             "started_at": r.started_at,
         }
         for r in rows
@@ -239,15 +252,20 @@ async def get_campaign_with_project(
 async def list_runs_for_campaign(
     session: AsyncSession, *, campaign_id: UUID
 ) -> list[dict[str, Any]]:
-    # Surface the slowest attack's wall-clock per run so the campaign
-    # detail page flags potential cost-amplification / DoS attempts.
-    # The full DoS attack family is a future round; this is a heads-up
-    # column the operator can read at a glance.
+    # Per-run rollup driving the campaign-detail Run-status table.
     #
-    # ``attacks_fired`` is derived from ``attack_executions`` rather than
-    # the denormed ``runs.attacks_fired`` column — that column was being
-    # set to a fixed 1 by the worker path, which understated multi-turn
-    # conversations. The execution count is the source of truth.
+    # Everything that exists as a denorm on ``runs`` is re-derived from
+    # ``attack_executions`` instead — the denorm columns were unreliable
+    # (R3 worker hard-coded ``attacks_fired=1``; agent path sometimes
+    # left ``budget_consumed_usd=0``). The execution rows are the source
+    # of truth. We surface:
+    #   - attacks_fired  = count(executions)
+    #   - spend_usd      = sum(usd_estimate)
+    #   - avg_latency_ms = avg(target_latency_ms)
+    #   - elapsed_ms     = runs.ended_at - runs.started_at (wall clock)
+    #   - judge_verdict  = verdict from the latest execution that has
+    #                      one (the Red Team submits once at end-of-run;
+    #                      typically only one execution carries a verdict)
     #
     # ``category``/``technique`` come from the run's first execution
     # (lowest seed_idx, tie-broken by created_at). Since a Run is
@@ -258,8 +276,9 @@ async def list_runs_for_campaign(
     exec_stats = (
         select(
             attack_executions.c.run_id,
-            func.max(attack_executions.c.target_latency_ms).label("max_latency"),
+            func.avg(attack_executions.c.target_latency_ms).label("avg_latency"),
             func.count(attack_executions.c.id).label("exec_count"),
+            func.coalesce(func.sum(attack_executions.c.usd_estimate), 0.0).label("usd_total"),
         )
         .group_by(attack_executions.c.run_id)
         .subquery()
@@ -288,6 +307,35 @@ async def list_runs_for_campaign(
         .where(first_exec.c.rn == 1)
         .subquery()
     )
+    # Run-level Judge verdict: pick the latest execution row that has a
+    # non-null verdict and join its judge_verdicts.verdict. The Red Team
+    # submits the whole conversation once at end-of-run, so at most one
+    # execution per run carries a verdict (typically the last fire).
+    # Ranking by created_at desc handles the edge case where two
+    # executions ended up with verdicts.
+    verdict_exec = (
+        select(
+            attack_executions.c.run_id,
+            judge_verdicts.c.verdict.label("judge_verdict"),
+            func.row_number()
+            .over(
+                partition_by=attack_executions.c.run_id,
+                order_by=desc(attack_executions.c.created_at),
+            )
+            .label("rn"),
+        )
+        .select_from(
+            attack_executions.join(
+                judge_verdicts, attack_executions.c.judge_verdict_id == judge_verdicts.c.id
+            )
+        )
+        .subquery()
+    )
+    verdict_filtered = (
+        select(verdict_exec.c.run_id, verdict_exec.c.judge_verdict)
+        .where(verdict_exec.c.rn == 1)
+        .subquery()
+    )
     rows = (
         await session.execute(
             select(
@@ -295,16 +343,17 @@ async def list_runs_for_campaign(
                 runs.c.status,
                 runs.c.started_at,
                 runs.c.ended_at,
-                runs.c.budget_consumed_usd,
-                exec_stats.c.max_latency,
+                exec_stats.c.avg_latency,
                 exec_stats.c.exec_count,
+                exec_stats.c.usd_total,
                 first_exec_filtered.c.category,
                 first_exec_filtered.c.attack_payload,
+                verdict_filtered.c.judge_verdict,
             )
             .select_from(
-                runs.outerjoin(exec_stats, runs.c.id == exec_stats.c.run_id).outerjoin(
-                    first_exec_filtered, runs.c.id == first_exec_filtered.c.run_id
-                )
+                runs.outerjoin(exec_stats, runs.c.id == exec_stats.c.run_id)
+                .outerjoin(first_exec_filtered, runs.c.id == first_exec_filtered.c.run_id)
+                .outerjoin(verdict_filtered, runs.c.id == verdict_filtered.c.run_id)
             )
             .where(runs.c.campaign_id == campaign_id)
             .order_by(desc(runs.c.created_at))
@@ -315,6 +364,9 @@ async def list_runs_for_campaign(
         technique = ""
         if isinstance(r.attack_payload, dict):
             technique = str(r.attack_payload.get("technique", ""))
+        elapsed_ms: int | None = None
+        if r.started_at is not None and r.ended_at is not None:
+            elapsed_ms = int((r.ended_at - r.started_at).total_seconds() * 1000)
         out.append(
             {
                 "id": r.id,
@@ -322,10 +374,14 @@ async def list_runs_for_campaign(
                 "started_at": r.started_at,
                 "ended_at": r.ended_at,
                 "attacks_fired": int(r.exec_count or 0),
-                "budget_consumed_usd": r.budget_consumed_usd,
-                "max_target_latency_ms": r.max_latency,
+                "budget_consumed_usd": float(r.usd_total or 0.0),
+                "avg_target_latency_ms": (
+                    int(r.avg_latency) if r.avg_latency is not None else None
+                ),
+                "elapsed_ms": elapsed_ms,
                 "category": r.category or "",
                 "technique": technique,
+                "judge_verdict": r.judge_verdict,
             }
         )
     return out
