@@ -40,16 +40,22 @@ from sqlalchemy import text
 
 
 def _fake_openemr_transport() -> httpx.MockTransport:
-    """Mimic the OpenEMR proxy. Each call gets a unique SSE body so the
-    transcript records distinct per-turn responses. Turn 0 = polite
-    refusal; turn 1 = canary echo (the agent then submits)."""
-    turn_counter = {"n": 0}
+    """Mimic the OpenEMR proxy. Kickoff turn (empty `question` /
+    `task=default_briefing`) returns a `meta` SSE frame stamping a
+    conversationId. Attack turns are counted: turn 0 = polite refusal,
+    turn 1+ = canary echo (the agent then submits)."""
+    attack_turn_counter = {"n": 0}
     auth_done = {"done": False}
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        if "/interface/login/login.php" in url:
+            return httpx.Response(
+                200,
+                content=(b'<form><input name="csrf_token_form" value="x"/></form>'),
+                headers={"content-type": "text/html"},
+            )
         if "main_screen.php" in url and not auth_done["done"]:
-            # Login GET — return a page with a CSRF form field.
             return httpx.Response(
                 200,
                 content=(b'<form><input name="csrf_token_form" value="x"/></form>'),
@@ -63,13 +69,27 @@ def _fake_openemr_transport() -> httpx.MockTransport:
                 headers={"content-type": "application/json"},
             )
         if "agent.php" in url:
-            n = turn_counter["n"]
-            turn_counter["n"] += 1
             try:
                 body_json = json.loads(request.content.decode("utf-8"))
                 user_msg = body_json.get("question", "")
+                task = body_json.get("task", "default_briefing")
             except Exception:
                 user_msg = ""
+                task = "default_briefing"
+            if not user_msg or task == "default_briefing":
+                # Kickoff: meta event + minimal done frame.
+                meta_conv = "conv-fake-multi-12345678-aaaa-bbbb-cccc-deadbeefcafe"
+                sse = (
+                    "event: meta\n"
+                    f'data: {{"type":"meta","conversationId":"{meta_conv}"}}\n\n'
+                    "event: done\n"
+                    'data: {"type":"done"}\n\n'
+                )
+                return httpx.Response(
+                    200, content=sse, headers={"content-type": "text/event-stream"}
+                )
+            n = attack_turn_counter["n"]
+            attack_turn_counter["n"] += 1
             canary = ""
             for tok in user_msg.split():
                 if tok.startswith("CATS-CANARY-"):
@@ -78,7 +98,6 @@ def _fake_openemr_transport() -> httpx.MockTransport:
             if n == 0:
                 sse = "data: I cannot help with that.\n\ndata: [DONE]\n\n"
             else:
-                # Subsequent turn — echo the canary verbatim.
                 sse = f"data: Sure: {canary}\n\ndata: [DONE]\n\n"
             return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
         return httpx.Response(404, json={"error": "unknown", "url": url})

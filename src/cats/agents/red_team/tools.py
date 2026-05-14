@@ -35,6 +35,7 @@ from cats.agents.mutator import generate_variant
 from cats.agents.red_team.executor import (
     AttemptResult,
     _propose_attack,
+    fire_kickoff_briefing,
     fire_prepared_attack,
 )
 from cats.graph.events import publish
@@ -274,11 +275,15 @@ class AgentContext:
     # Pending draft (from propose_attack or mutate_attack) waiting to fire.
     pending_user_message: str | None = None
     pending_canary: str = ""
-    # Wire-level conversationId minted by the target on turn 0.
+    # Wire-level conversationId minted by the target on the kickoff
+    # turn (fired inside propose_attack). All fire_at_target calls then
+    # ride the same conversationId as `task=follow_up`.
     conversation_id: str | None = None
-    # Whether this category shares conversations across turns at the
-    # wire layer. Identical rule as the R10 worker.
-    shares_conversation: bool = False
+    # Canned briefing text returned by the kickoff. Persisted on ctx so
+    # the kickoff_turns row is the only place we re-derive it from; the
+    # attacker LLM sees it inline in the propose_attack tool result.
+    kickoff_briefing: str = ""
+    kickoff_latency_ms: int = 0
     # Realized turn log — one entry per fire_at_target call that
     # produced a TargetCallResult (regardless of status).
     turns: list[TurnRecord] = field(default_factory=list)
@@ -344,11 +349,6 @@ class AgentContext:
         return list(pending)
 
 
-CONVERSATION_SHARING_CATEGORIES: frozenset[str] = frozenset(
-    {"injection", "exfil", "tool_abuse", "indirect_injection"}
-)
-
-
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -410,7 +410,17 @@ async def run_propose_attack(
 ) -> ToolOutcome:
     """Draft (but do not fire) the opening attack. Subsequent calls are
     rejected — propose_attack is the seeding move; later turns use
-    mutate_attack or pass a user_message into fire_at_target."""
+    mutate_attack or pass a user_message into fire_at_target.
+
+    Side effect: on the first call, fires a bare ``default_briefing``
+    kickoff against the target to harvest the server-minted
+    ``conversationId``. The Co-Pilot ignores ``question`` on
+    ``default_briefing`` (openemr/agent/src/server/briefingRunner.ts:281),
+    so the only way an attack payload's ``question`` gets honored is to
+    send it as ``follow_up`` against an existing conversation. The
+    kickoff round-trip is dominated by the Co-Pilot's chart retrieval
+    + synthesis pipeline (typically 20-30s), so this tool blocks for
+    that duration before returning."""
     if ctx.propose_called:
         return ToolOutcome(
             payload={
@@ -421,6 +431,44 @@ async def run_propose_attack(
                 )
             },
         )
+    # --- Kickoff: harvest the conversationId before authoring -----------
+    # Done here rather than in the agent driver so a propose_attack
+    # failure (kickoff or specialist) presents as a tool error the
+    # attacker LLM can read and react to, rather than a graph crash.
+    kickoff_error: str | None = None
+    if ctx.conversation_id is None:
+        log.info(
+            "red_team.kickoff_started",
+            run_id=str(ctx.run_id),
+            category=ctx.category,
+            technique=ctx.technique,
+        )
+        kickoff = await fire_kickoff_briefing(
+            ctx.session,
+            run_id=ctx.run_id,
+            project_version_id=ctx.project_version_id,
+        )
+        ctx.conversation_id = kickoff.conversation_id
+        ctx.kickoff_briefing = kickoff.briefing_text
+        ctx.kickoff_latency_ms = kickoff.target_latency_ms
+        kickoff_error = kickoff.error
+        # Hard fail when the kickoff didn't produce a conversationId —
+        # follow_up turns require it. Surface as a tool error so the
+        # attacker LLM stops and submits with a clear stop_reason.
+        if kickoff.conversation_id is None:
+            return ToolOutcome(
+                payload={
+                    "error": (
+                        "kickoff briefing failed — no conversationId returned. "
+                        "Cannot send follow_up attacks without it. "
+                        f"target_status={kickoff.target_status_code} "
+                        f"error={kickoff.error or 'none'}"
+                    ),
+                    "kickoff_status_code": kickoff.target_status_code,
+                    "kickoff_error": kickoff.error,
+                },
+            )
+
     category = str(args.get("category", "")).strip() or ctx.category
     technique = str(args.get("technique", "")).strip() or ctx.technique
     # Lock the category/technique the agent picked — the executor's
@@ -447,6 +495,15 @@ async def run_propose_attack(
             "canary": proposal.canary,
             "title": proposal.title,
             "description": proposal.description,
+            # The kickoff context — the attacker LLM hasn't seen the
+            # target's canned briefing through any other channel, so
+            # surface it inline so it can tailor follow-ups to the
+            # actual chart contents (or notice the briefing was
+            # truncated/empty/errored).
+            "conversation_id": ctx.conversation_id,
+            "kickoff_briefing": ctx.kickoff_briefing[:8000],
+            "kickoff_latency_ms": ctx.kickoff_latency_ms,
+            **({"kickoff_error": kickoff_error} if kickoff_error else {}),
         },
     )
 
@@ -522,6 +579,25 @@ async def run_fire_at_target(
 
             ctx.pending_canary = f"CATS-CANARY-{secrets.token_hex(4).upper()}"
 
+    # Hard precondition: every attack rides as `follow_up` against the
+    # conversationId the kickoff harvested. Without one, the Co-Pilot
+    # would discard our `question` (it ignores question on
+    # default_briefing). Tell the model to ensure propose_attack
+    # succeeded first rather than silently send an attack the target
+    # won't read. Checked before pending_user_message so the model gets
+    # the structurally-bigger prerequisite first.
+    if ctx.conversation_id is None:
+        return ToolOutcome(
+            payload={
+                "error": (
+                    "No conversation_id available. Ensure propose_attack succeeded "
+                    "first (it kicks off the briefing and harvests the conversationId). "
+                    "Without a conversationId the target ignores the user "
+                    "question, so this fire would be wasted."
+                )
+            },
+        )
+
     if ctx.pending_user_message is None:
         return ToolOutcome(
             payload={
@@ -533,12 +609,6 @@ async def run_fire_at_target(
         )
 
     seed_idx = ctx.next_seed_idx
-    task = (
-        "follow_up"
-        if (ctx.shares_conversation and ctx.conversation_id and seed_idx > 0)
-        else "default_briefing"
-    )
-
     # The agent already chose the user_message via propose_attack /
     # mutate_attack / or an explicit override on this call. Fire it
     # verbatim — `fire_prepared_attack` runs the deterministic filter
@@ -566,7 +636,7 @@ async def run_fire_at_target(
         ),
         description=(f"Red Team agent turn {seed_idx} for {ctx.category}/{ctx.technique}"),
         conversation_id=ctx.conversation_id,
-        task=task,
+        task="follow_up",
         prior_agent_costs=[
             {
                 "role": c.role,
@@ -578,10 +648,6 @@ async def run_fire_at_target(
             for c in pending_costs
         ],
     )
-
-    # Capture conversation_id from turn 0's meta SSE frame.
-    if ctx.conversation_id is None and result.assigned_conversation_id and ctx.shares_conversation:
-        ctx.conversation_id = result.assigned_conversation_id
 
     ctx.turns.append(
         TurnRecord(

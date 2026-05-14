@@ -88,6 +88,7 @@ _TABLES_TO_TRUNCATE = [
     "judge_verdicts",
     "rubric_versions",
     "attacks",
+    "kickoff_turns",
     "runs",
     "campaigns",
     "project_versions",

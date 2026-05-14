@@ -21,6 +21,7 @@ crashed worker can resume the partial-loop.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -38,6 +39,7 @@ from cats.agents.red_team.injection.dispatcher import (
     propose_technique as propose_injection,
 )
 from cats.agents.red_team.tool_abuse import dispatcher as tool_abuse_dispatcher
+from cats.db.repositories.kickoff_repo import record_kickoff
 from cats.db.repositories.run_repo import record_execution, upsert_attack
 from cats.db.schema import project_versions, projects
 from cats.graph.events import publish
@@ -426,6 +428,137 @@ async def execute_attempt(
         payload_extras=payload_extras,
         conversation_id=conversation_id,
         task=task,
+    )
+
+
+@dataclass(frozen=True)
+class KickoffResult:
+    """Outcome of the per-Run briefing kickoff. The Co-Pilot's
+    ``default_briefing`` task discards the user ``question`` (see
+    openemr/agent/src/server/briefingRunner.ts:281), so the only useful
+    output is the server-minted ``conversationId`` and the canned
+    briefing text — the agent can read that briefing as context before
+    authoring its first attack on the follow-up turn."""
+
+    conversation_id: str | None
+    briefing_text: str
+    target_status_code: int
+    target_latency_ms: int
+    error: str | None
+
+
+async def execute_kickoff_with_target(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    target_base_url: str,
+    target_kind: str,
+    target_username: str,
+    target_password: str,
+    target_bearer_token: str,
+) -> KickoffResult:
+    """Lower-level shared kickoff body: fire a bare ``default_briefing``
+    via TargetClient using the supplied target credentials, persist a
+    ``kickoff_turns`` row, return the harvested conversationId + briefing.
+
+    Both the Red Team agent (which has a hydrated CampaignState already)
+    and the legacy graph's ``briefing_kickoff`` node delegate here so
+    the wire envelope, response shape, and ``kickoff_turns`` JSON stay
+    in lockstep."""
+    started_at = datetime.now(UTC)
+    client = TargetClient(
+        base_url=target_base_url,
+        target_kind=target_kind,
+        username=target_username,
+        password=target_password,
+        bearer_token=target_bearer_token,
+    )
+    # Bare envelope — no canary, empty user_message. The Co-Pilot
+    # ignores `question` on default_briefing, so loading content here
+    # would be wasted bytes (and would muddy the audit trail by making
+    # the kickoff look like an attack attempt).
+    envelope = AttackEnvelope(
+        user_message="",
+        canary="",
+        extra={"task": "default_briefing"},
+    )
+    target_text = ""
+    target_status_code = 0
+    target_latency_ms = 0
+    error: str | None = None
+    assigned_conv_id: str | None = None
+    raw_response: dict[str, Any] = {}
+    try:
+        result = await client.attack(envelope)
+        target_text = result.text
+        target_status_code = result.status_code
+        target_latency_ms = result.latency_ms
+        assigned_conv_id = result.assigned_conversation_id
+        error = result.error
+        raw_response = {
+            "status_code": result.status_code,
+            "latency_ms": result.latency_ms,
+            "text": result.text[:65536],
+            "stream_shape": result.stream_shape,
+            "error": result.error,
+            "assigned_conversation_id": assigned_conv_id,
+        }
+    except Exception as exc:
+        error = repr(exc)
+        log.warning("red_team.kickoff_failed", run_id=str(run_id), error=error)
+        raw_response = {"error": error}
+    ended_at = datetime.now(UTC)
+
+    await record_kickoff(
+        session,
+        run_id=run_id,
+        conversation_id=assigned_conv_id,
+        target_response=raw_response,
+        target_status_code=target_status_code or None,
+        target_latency_ms=target_latency_ms or None,
+        started_at=started_at,
+        ended_at=ended_at,
+        error=error,
+    )
+    log.info(
+        "red_team.kickoff_completed",
+        run_id=str(run_id),
+        conversation_id=assigned_conv_id,
+        latency_ms=target_latency_ms,
+        status_code=target_status_code,
+        error=error,
+    )
+    return KickoffResult(
+        conversation_id=assigned_conv_id,
+        briefing_text=target_text,
+        target_status_code=target_status_code,
+        target_latency_ms=target_latency_ms,
+        error=error,
+    )
+
+
+async def fire_kickoff_briefing(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    project_version_id: UUID,
+) -> KickoffResult:
+    """Agent-side kickoff: hydrate the project's target config and fire.
+    Used by the Red Team agent's ``propose_attack`` tool. Caller MUST
+    invoke before any ``follow_up`` attack on the same run.
+
+    Latency is dominated by the Co-Pilot's chart retrieval + synthesis
+    pipeline (typically 20-30s); callers should expect a slow round-trip
+    here, not the snappy local-loop timing of pure-fixture tests."""
+    state = await _hydrate_target(session, project_version_id)
+    return await execute_kickoff_with_target(
+        session,
+        run_id=run_id,
+        target_base_url=state.target_base_url,
+        target_kind=state.target_kind,
+        target_username=state.target_username,
+        target_password=state.target_password,
+        target_bearer_token=state.target_bearer_token,
     )
 
 

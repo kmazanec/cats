@@ -39,6 +39,13 @@ class CampaignState(BaseModel):
     target_password: str = ""
     target_bearer_token: str = ""
 
+    # Briefing kickoff — fired once per Run before any attack. The
+    # Co-Pilot's `default_briefing` task discards the user `question`,
+    # so the kickoff harvests the server-minted conversationId that
+    # every subsequent `follow_up` attack rides against. Empty until
+    # the kickoff node runs (smoke mode skips it).
+    kickoff_conversation_id: str = ""
+
     # Inner-loop scratch
     selected_category: str = "injection"
     selected_technique: str = ""

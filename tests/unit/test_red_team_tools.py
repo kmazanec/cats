@@ -55,6 +55,32 @@ def fire_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
+@pytest.fixture(autouse=True)
+def fake_kickoff(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
+    """Stub the briefing kickoff so propose_attack doesn't try to hit
+    the real target. Autouse — every test that goes through
+    ``run_propose_attack`` needs this. Returns a list tests can inspect
+    to confirm the kickoff fired (tests that explicitly override the
+    stub use ``monkeypatch.setattr`` themselves and ignore this fixture's
+    return value)."""
+    from cats.agents.red_team.executor import KickoffResult
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_kickoff(_session: Any, **kwargs: Any) -> KickoffResult:
+        calls.append(dict(kwargs))
+        return KickoffResult(
+            conversation_id="conv-fixed",
+            briefing_text="canned briefing body",
+            target_status_code=200,
+            target_latency_ms=20_000,
+            error=None,
+        )
+
+    monkeypatch.setattr(tools_mod, "fire_kickoff_briefing", _fake_kickoff)
+    yield calls
+
+
 @pytest.fixture
 def fake_propose(monkeypatch: pytest.MonkeyPatch) -> None:
     from cats.agents.red_team.executor import _NormalizedProposal
@@ -132,7 +158,6 @@ def _ctx(**overrides: Any) -> AgentContext:
         "trace_id": "unit-trace",
         "budget_usd_cap": 1.00,
         "max_turns_soft": 10,
-        "shares_conversation": True,
     }
     base.update(overrides)
     return AgentContext(**base)
@@ -147,7 +172,9 @@ class _DummySession:
 
 
 @pytest.mark.asyncio
-async def test_propose_attack_fills_pending(fake_propose: None) -> None:
+async def test_propose_attack_fills_pending(
+    fake_propose: None, fake_kickoff: list[dict[str, Any]]
+) -> None:
     _ = fake_propose
     ctx = _ctx()
     outcome = await tools_mod.run_propose_attack(
@@ -163,11 +190,20 @@ async def test_propose_attack_fills_pending(fake_propose: None) -> None:
     assert ctx.pending_canary == "CATS-CANARY-XYZ"
     assert ctx.propose_called is True
     assert "user_message" in outcome.payload
+    # Kickoff fired exactly once, harvested the conversationId, and
+    # the canned briefing surfaced in the tool payload.
+    assert len(fake_kickoff) == 1
+    assert ctx.conversation_id == "conv-fixed"
+    assert outcome.payload["conversation_id"] == "conv-fixed"
+    assert "kickoff_briefing" in outcome.payload
+    assert outcome.payload["kickoff_latency_ms"] == 20_000
 
 
 @pytest.mark.asyncio
-async def test_propose_attack_rejects_second_call(fake_propose: None) -> None:
-    _ = fake_propose
+async def test_propose_attack_rejects_second_call(
+    fake_propose: None, fake_kickoff: list[dict[str, Any]]
+) -> None:
+    _ = (fake_propose, fake_kickoff)
     ctx = _ctx()
     await tools_mod.run_propose_attack(
         ctx, args={"category": "injection", "technique": "ignore_previous", "rationale": "1"}
@@ -176,6 +212,40 @@ async def test_propose_attack_rejects_second_call(fake_propose: None) -> None:
         ctx, args={"category": "injection", "technique": "ignore_previous", "rationale": "2"}
     )
     assert "error" in second.payload
+    # Kickoff still only fires once even across rejected re-calls.
+    assert len(fake_kickoff) == 1
+
+
+@pytest.mark.asyncio
+async def test_propose_attack_aborts_when_kickoff_returns_no_conversation_id(
+    fake_propose: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the kickoff fails to produce a conversationId, propose_attack
+    must surface the error rather than letting the agent attempt an
+    attack the target will discard."""
+    _ = fake_propose
+    from cats.agents.red_team.executor import KickoffResult
+
+    async def _broken_kickoff(_s: Any, **_k: Any) -> KickoffResult:
+        return KickoffResult(
+            conversation_id=None,
+            briefing_text="",
+            target_status_code=502,
+            target_latency_ms=120,
+            error="upstream timeout",
+        )
+
+    monkeypatch.setattr(tools_mod, "fire_kickoff_briefing", _broken_kickoff)
+    ctx = _ctx()
+    outcome = await tools_mod.run_propose_attack(
+        ctx, args={"category": "injection", "technique": "ignore_previous", "rationale": "x"}
+    )
+    assert "error" in outcome.payload
+    assert outcome.payload["kickoff_status_code"] == 502
+    assert outcome.payload["kickoff_error"] == "upstream timeout"
+    # Specialist was NOT invoked — propose_called stays False.
+    assert ctx.propose_called is False
+    assert ctx.pending_user_message is None
 
 
 @pytest.mark.asyncio
@@ -216,15 +286,36 @@ async def test_mutate_after_a_turn_rewrites_pending(fake_mutator: None) -> None:
 @pytest.mark.asyncio
 async def test_fire_without_pending_returns_error() -> None:
     ctx = _ctx()
+    # Conversation id is set so we exercise the no-pending branch
+    # rather than the no-conversation-id branch.
+    ctx.conversation_id = "conv-fixed"
     outcome = await tools_mod.run_fire_at_target(ctx, args={})
     assert "error" in outcome.payload
+    assert "pending" in outcome.payload["error"].lower()
 
 
 @pytest.mark.asyncio
-async def test_fire_records_turn_and_captures_conversation_id(
-    fake_propose: None, fire_calls: list[dict[str, Any]]
+async def test_fire_without_conversation_id_returns_error() -> None:
+    """fire_at_target must refuse when no kickoff has run yet —
+    otherwise the target receives a default_briefing that ignores
+    `question` and the attack silently no-ops."""
+    ctx = _ctx()
+    ctx.pending_user_message = "anything"
+    ctx.pending_canary = "C"
+    outcome = await tools_mod.run_fire_at_target(ctx, args={})
+    assert "error" in outcome.payload
+    assert "conversation_id" in outcome.payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_fire_records_turn_with_follow_up_task(
+    fake_propose: None,
+    fake_kickoff: list[dict[str, Any]],
+    fire_calls: list[dict[str, Any]],
 ) -> None:
-    _ = fake_propose
+    """Every attack turn — including the first — rides as `follow_up`
+    against the kickoff's conversationId."""
+    _ = (fake_propose, fake_kickoff)
     ctx = _ctx()
     await tools_mod.run_propose_attack(
         ctx, args={"category": "injection", "technique": "ignore_previous", "rationale": "x"}
@@ -234,18 +325,20 @@ async def test_fire_records_turn_and_captures_conversation_id(
     assert out0.payload["status_code"] == 200
     assert len(ctx.turns) == 1
     assert ctx.pending_user_message is None  # consumed by fire
-    # Conversation_id captured from the first fire.
+    # Conversation_id was captured by the kickoff (not by the fire).
     assert ctx.conversation_id == "conv-fixed"
-    # Fire was called with task=default_briefing on turn 0.
-    assert fire_calls[0]["task"] == "default_briefing"
-    assert fire_calls[0]["conversation_id"] is None
+    assert fire_calls[0]["task"] == "follow_up"
+    assert fire_calls[0]["conversation_id"] == "conv-fixed"
 
 
 @pytest.mark.asyncio
 async def test_subsequent_fire_uses_follow_up_task_and_shared_conv(
-    fake_propose: None, fake_mutator: None, fire_calls: list[dict[str, Any]]
+    fake_propose: None,
+    fake_mutator: None,
+    fake_kickoff: list[dict[str, Any]],
+    fire_calls: list[dict[str, Any]],
 ) -> None:
-    _ = (fake_propose, fake_mutator)
+    _ = (fake_propose, fake_mutator, fake_kickoff)
     ctx = _ctx()
     await tools_mod.run_propose_attack(
         ctx, args={"category": "injection", "technique": "ignore_previous", "rationale": "x"}
@@ -254,8 +347,10 @@ async def test_subsequent_fire_uses_follow_up_task_and_shared_conv(
     await tools_mod.run_mutate_attack(ctx, args={"rationale": "push"}, llm=FakeLLMClient())
     await tools_mod.run_fire_at_target(ctx, args={})
     assert len(ctx.turns) == 2
-    assert fire_calls[1]["task"] == "follow_up"
-    assert fire_calls[1]["conversation_id"] == "conv-fixed"
+    # Every fire — including the first — uses follow_up against the
+    # kickoff conversationId.
+    assert all(c["task"] == "follow_up" for c in fire_calls)
+    assert all(c["conversation_id"] == "conv-fixed" for c in fire_calls)
     # seed_idx ascends.
     assert [t.seed_idx for t in ctx.turns] == [0, 1]
 

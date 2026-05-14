@@ -141,10 +141,13 @@ def patch_target_transport():
                 headers={"set-cookie": "authUser=admin; Path=/"},
             )
         if "agent.php" in path:
-            # Sniff the user_message for the canary and echo it back.
-            # R4 — the briefing envelope now puts the user text in a
-            # top-level ``question`` field (matches the OpenEMR
-            # agent's briefingRequestSchema).
+            # Sniff the envelope. The kickoff fires with empty
+            # `question` + `task=default_briefing`; we need to return a
+            # `meta` SSE frame carrying a conversationId so the kickoff
+            # harvests it and downstream attacks can ride as
+            # `follow_up`. Real attacks then arrive with a non-empty
+            # `question` and we echo the canary back so the Judge
+            # rules `pass`.
             try:
                 body_json = json.loads(request.content.decode("utf-8"))
                 user_msg = body_json.get("question", "")
@@ -154,8 +157,27 @@ def patch_target_transport():
                     user_msg = (
                         body_json.get("request", {}).get("messages", [{}])[0].get("content", "")
                     )
+                task = body_json.get("task", "default_briefing")
             except Exception:
                 user_msg = ""
+                task = "default_briefing"
+            if not user_msg or task == "default_briefing":
+                # Kickoff turn: stamp a conversationId via the meta
+                # event and emit a bare canned briefing. No canary —
+                # the kickoff doesn't carry attack content.
+                meta_conv = "conv-fake-12345678-aaaa-bbbb-cccc-deadbeefcafe"
+                body = (
+                    "event: meta\n"
+                    f'data: {{"type":"meta","conversationId":"{meta_conv}"}}\n\n'
+                    "event: assistantMessage\n"
+                    'data: {"type":"assistantMessage","message":'
+                    '{"segments":[{"text":"Canned briefing.","claims":[],"redacted":false}],'
+                    '"claimGroups":{},"gaps":[],"suggestedFollowUps":[],"archetypeFlags":[]}}'
+                    "\n\n"
+                    "event: done\n"
+                    'data: {"type":"done","persistedAt":"2026-05-14T00:00:00Z"}\n\n'
+                )
+                return httpx.Response(200, text=body)
             # Pull CATS-CANARY-XXXX out of the message.
             canary = ""
             for token in user_msg.split():

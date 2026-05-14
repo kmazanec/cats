@@ -46,7 +46,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.agents.red_team.tools import (
     ALL_TOOLS,
-    CONVERSATION_SHARING_CATEGORIES,
     AgentContext,
     AgentTurnCost,
     dispatch,
@@ -513,7 +512,6 @@ async def run_red_team_agent(
         trace_id=trace_id,
         budget_usd_cap=budget_usd_cap,
         max_turns_soft=MAX_TURNS_SOFT,
-        shares_conversation=attempt.category in CONVERSATION_SHARING_CATEGORIES,
     )
     ctx_key = f"{run_id}:{trace_id or 'no-trace'}"
     _CTX_HOLDER[ctx_key] = ctx

@@ -236,6 +236,33 @@ judge_verdicts = Table(
     CheckConstraint("mode IN ('blackhat','whitehat')", name="ck_judge_verdicts_mode"),
 )
 
+kickoff_turns = Table(
+    "kickoff_turns",
+    metadata,
+    _uuid_pk(),
+    # Unique → 1:1 with the run. Cascade on Run delete since the kickoff
+    # has no meaning without its parent run.
+    Column(
+        "run_id",
+        UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    ),
+    # Server-minted by the Co-Pilot (returned in the kickoff's first
+    # `meta` SSE frame). Nullable because the kickoff can fail before
+    # the meta frame arrives — we still record the row for forensics.
+    Column("conversation_id", String(120), nullable=True),
+    Column("target_response", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("target_status_code", Integer, nullable=True),
+    Column("target_latency_ms", Integer, nullable=True),
+    Column("started_at", DateTime(timezone=True), nullable=True),
+    Column("ended_at", DateTime(timezone=True), nullable=True),
+    Column("error", Text, nullable=True),
+    _ts(),
+)
+
+
 attack_executions = Table(
     "attack_executions",
     metadata,
@@ -792,6 +819,7 @@ __all__ = [
     "finding_executions",
     "findings",
     "judge_verdicts",
+    "kickoff_turns",
     "metadata",
     "project_versions",
     "projects",

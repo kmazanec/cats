@@ -41,6 +41,11 @@ EventKind = Literal[
     "regression_sweep_started",
     "regression_case_finished",
     "regression_sweep_finished",
+    # Briefing kickoff failed (no conversationId minted) — downstream
+    # follow_up attacks would silently no-op against the Co-Pilot's
+    # default_briefing path. The legacy graph node emits this so the
+    # run-detail page can flag affected runs distinctly.
+    "kickoff_failed",
 ]
 
 

@@ -34,8 +34,11 @@ from sqlalchemy import text
 
 
 def _fake_openemr_transport(canary: str) -> httpx.MockTransport:
-    """Mimic the OpenEMR co-pilot proxy. Returns an SSE-shaped body
-    that echoes the canary so the deterministic judge rules `pass`."""
+    """Mimic the OpenEMR co-pilot proxy. The kickoff turn (empty
+    `question`, `task=default_briefing`) returns a `meta` SSE frame
+    with a fake conversationId so the agent can ride follow-ups
+    against it. The follow-up attack turn echoes the canary so the
+    deterministic judge rules `pass`."""
     auth_done = {"done": False}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -46,7 +49,44 @@ def _fake_openemr_transport(canary: str) -> httpx.MockTransport:
                 200,
                 json={"status": "ok", "session_id": "fake-sess-1", "csrf_token": "x"},
             )
+        # OpenEMR PHP login flow — TargetClient now hits this on every
+        # _attack_proxy call (kickoff fires through the same proxy
+        # path). Match the R3 fixture's two-step login: a CSRF-bearing
+        # form on the GET, then a 302 redirect on the POST.
+        if "/interface/login/login.php" in url:
+            from uuid import uuid4 as _uuid4
+
+            return httpx.Response(
+                200,
+                text=(
+                    '<form action="...">\n'
+                    f'<input type="hidden" name="csrf_token_form" value="fake-csrf-{_uuid4()}" />\n'
+                    "</form>"
+                ),
+                headers={"set-cookie": "PHPSESSID=fake-session; Path=/"},
+            )
+        if "/interface/main/main_screen.php" in url:
+            return httpx.Response(302, headers={"location": "/interface/main/main.php"})
         if "agent.php" in url:
+            try:
+                body_json = json.loads(request.content.decode("utf-8"))
+                user_msg = body_json.get("question", "")
+                task = body_json.get("task", "default_briefing")
+            except Exception:
+                user_msg = ""
+                task = "default_briefing"
+            if not user_msg or task == "default_briefing":
+                # Kickoff: emit meta + empty briefing.
+                meta_conv = "conv-fake-r4-12345678-aaaa-bbbb-cccc-deadbeefcafe"
+                sse = (
+                    "event: meta\n"
+                    f'data: {{"type":"meta","conversationId":"{meta_conv}"}}\n\n'
+                    "event: done\n"
+                    'data: {"type":"done"}\n\n'
+                )
+                return httpx.Response(
+                    200, content=sse, headers={"content-type": "text/event-stream"}
+                )
             sse = f"data: I will echo the canary: {canary}\n\ndata: [DONE]\n\n"
             return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
         return httpx.Response(404, json={"error": "unknown", "url": url})

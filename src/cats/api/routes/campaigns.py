@@ -31,6 +31,7 @@ from cats.db.repositories.campaign_repo import (
     list_findings_for_run,
     list_runs_for_campaign,
 )
+from cats.db.repositories.kickoff_repo import get_for_run as _get_kickoff_for_run
 from cats.db.repositories.project_repo import get_project, list_projects
 from cats.logging import get_logger
 from cats.messaging import (
@@ -325,6 +326,7 @@ async def run_detail(
         run_findings = await list_findings_for_run(session, run_id=run_id)
         transcript = await _load_run_transcript(session, run_id=run_id)
         run_judgment = _run_judgment(executions)
+        kickoff = await _load_kickoff(session, run_id=run_id)
 
     # Map seed_idx -> execution row so the chat view can dereference
     # each turn into the execution that backed it without a second
@@ -363,11 +365,40 @@ async def run_detail(
             "findings": run_findings,
             "transcript": transcript,
             "run_judgment": run_judgment,
+            "kickoff": kickoff,
             "cost_by_agent": _cost_by_agent(executions),
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         }
     )
     return templates.TemplateResponse(request, "run_detail.html", ctx)
+
+
+async def _load_kickoff(session: AsyncSession, *, run_id: UUID) -> dict[str, Any] | None:
+    """Load the per-Run kickoff turn for the chat view. Returns the
+    parsed AssistantMessage from the canned briefing plus the wire-
+    level metadata (latency, status code, conversationId, error). The
+    template renders this as a target-side bubble before T0 of the
+    attacker conversation. Returns ``None`` when no kickoff row exists
+    (legacy runs from before the kickoff table was introduced — those
+    runs went through the bypass path and don't have a kickoff to
+    show)."""
+    row = await _get_kickoff_for_run(session, run_id=run_id)
+    if row is None:
+        return None
+    raw_text = ""
+    if isinstance(row.target_response, dict):
+        raw = row.target_response.get("text")
+        if isinstance(raw, str):
+            raw_text = raw
+    return {
+        "id": str(row.id),
+        "conversation_id": row.conversation_id,
+        "target_status_code": row.target_status_code,
+        "target_latency_ms": row.target_latency_ms,
+        "error": row.error,
+        "assistant_message": _parse_assistant_message(raw_text),
+        "raw_text_excerpt": raw_text[:8000],
+    }
 
 
 def _run_judgment(executions: list[dict[str, Any]]) -> dict[str, Any] | None:

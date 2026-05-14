@@ -38,6 +38,7 @@ from langgraph.graph import END, START, StateGraph
 from cats.agents.mutator import MAX_CONSECUTIVE_PARTIALS
 from cats.graph.checkpointer import get_inmemory_checkpointer
 from cats.graph.nodes import (
+    briefing_kickoff,
     documentation,
     judge,
     mutator,
@@ -76,6 +77,7 @@ def build_graph(*, checkpointer: Any | None = None) -> Any:
     g: StateGraph[CampaignState] = StateGraph(CampaignState)
 
     g.add_node("orchestrator", orchestrator.run)
+    g.add_node("briefing_kickoff", briefing_kickoff.run)
     g.add_node("red_team_router", red_team_router.run)
     g.add_node("mutator", mutator.run)
     g.add_node("output_filter", output_filter.run)
@@ -84,7 +86,12 @@ def build_graph(*, checkpointer: Any | None = None) -> Any:
     g.add_node("documentation", documentation.run)
 
     g.add_edge(START, "orchestrator")
-    g.add_edge("orchestrator", "red_team_router")
+    # Kickoff runs once per Run, after the orchestrator has selected a
+    # technique but before the specialist drafts an attack. The captured
+    # conversationId rides into every subsequent target_caller invocation
+    # (mutate-loop variants too) as task=follow_up.
+    g.add_edge("orchestrator", "briefing_kickoff")
+    g.add_edge("briefing_kickoff", "red_team_router")
     g.add_edge("red_team_router", "mutator")
     g.add_edge("mutator", "output_filter")
     g.add_conditional_edges("output_filter", _route_after_filter)

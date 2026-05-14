@@ -8,6 +8,8 @@ these at run start so this node doesn't have to touch the DB.
 
 from __future__ import annotations
 
+from typing import Any
+
 from cats.graph.events import publish
 from cats.graph.state import CampaignState
 from cats.target.client import TargetClient
@@ -42,9 +44,21 @@ async def run(state: CampaignState) -> CampaignState:
         password=state.target_password,
         bearer_token=state.target_bearer_token,
     )
+    # Every attack rides as `follow_up` against the conversationId the
+    # kickoff harvested. If the kickoff didn't produce one (network
+    # error, transport failure) the attack still goes out — but as the
+    # default_briefing fallback, where the Co-Pilot ignores `question`
+    # and the attack effectively becomes a no-op probe. Surfacing the
+    # kickoff failure separately (in kickoff_turns.error) keeps the
+    # cause visible without crashing the run.
+    extra: dict[str, Any] = {}
+    if state.kickoff_conversation_id:
+        extra["task"] = "follow_up"
+        extra["conversation_id"] = state.kickoff_conversation_id
     envelope = AttackEnvelope(
         user_message=str(state.pending_attack_payload.get("user_message", "")),
         canary=state.pending_canary,
+        extra=extra,
     )
     result = await client.attack(envelope)
 

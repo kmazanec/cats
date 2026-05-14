@@ -33,6 +33,20 @@
   .bubble.active { border-color: var(--amber); box-shadow: 0 0 0 2px var(--amber-soft); }
   .bubble.user { background: rgba(245,165,36,0.06); }
   .bubble.assistant { background: var(--bg-2); }
+  /* Kickoff bubble — distinct from real attack turns. The kickoff
+     fires a bare default_briefing to harvest the conversationId; no
+     attacker preceded it, so we render it standalone with a neutral
+     palette and an explicit "kickoff" label so a glance at the chat
+     view distinguishes it from the agent's first real follow-up. */
+  .chat-row.kickoff { justify-content: flex-start; }
+  .chat-row.kickoff .avatar { background: var(--bg-3); color: var(--ink-3); border-color: var(--line); }
+  .bubble.kickoff {
+    background: rgba(120,120,120,0.04);
+    border-style: dashed;
+  }
+  .bubble.kickoff .bubble-head .pill {
+    background: var(--bg-3); color: var(--ink-3);
+  }
   .bubble-head {
     display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
     margin-bottom: 8px; font-size: 11px; color: var(--ink-3);
@@ -243,6 +257,56 @@
     <div class="body">
       {% if transcript and transcript.turns %}
         <div class="chat-thread">
+          {# --- Kickoff bubble (target-side; no preceding attacker) - #}
+          {% if kickoff %}
+            <div class="chat-row kickoff">
+              <div class="avatar" title="briefing kickoff">K</div>
+              <div class="bubble kickoff assistant">
+                <div class="bubble-head">
+                  <span class="pill">kickoff</span>
+                  <span>· ← target</span>
+                  {% if kickoff.target_status_code %}
+                    <span class="dot {% if kickoff.target_status_code < 300 %}green{% elif kickoff.target_status_code < 500 %}amber{% else %}red{% endif %}"></span>
+                    <span>HTTP {{ kickoff.target_status_code }}</span>
+                  {% endif %}
+                  {% if kickoff.target_latency_ms %}
+                    <span>· {{ kickoff.target_latency_ms }}ms</span>
+                  {% endif %}
+                  {% if kickoff.error %}
+                    <span class="sev critical">· {{ kickoff.error }}</span>
+                  {% endif %}
+                  {% if kickoff.conversation_id %}
+                    <span>· conv <code class="mono">{{ kickoff.conversation_id[:8] }}</code></span>
+                  {% endif %}
+                </div>
+                {% set kam = kickoff.assistant_message %}
+                {% if kam and kam.segments %}
+                  <div class="bubble-body copilot">
+                    {% for seg in kam.segments %}
+                      {% if seg.redacted %}
+                        <p class="bubble-segment redacted">[content withheld]</p>
+                      {% else %}
+                        <p class="bubble-segment">{{ seg.text }}</p>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="bubble-body copilot">
+                    <p class="muted" style="font-style: italic; margin: 0;">
+                      {% if kickoff.error %}
+                        kickoff failed — follow-ups have no conversation to ride on
+                      {% else %}
+                        no assistantMessage in kickoff body
+                      {% endif %}
+                    </p>
+                  </div>
+                {% endif %}
+                <div class="bubble-foot">
+                  <span>bare <code class="mono">default_briefing</code> — no attack payload</span>
+                </div>
+              </div>
+            </div>
+          {% endif %}
           {% for turn in transcript.turns %}
             {% set ex = turn.execution %}
             {% set sc = turn.target_status_code %}

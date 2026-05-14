@@ -72,6 +72,30 @@ def _silence_audit(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, A
     yield log
 
 
+@pytest.fixture(autouse=True)
+def _fake_kickoff(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
+    """Stub the per-Run briefing kickoff so propose_attack doesn't try
+    to hit the live target. Returns a fixed conversation_id every test
+    can rely on. Autouse — every agent-graph test runs through
+    propose_attack which now fires the kickoff as a side effect."""
+    from cats.agents.red_team.executor import KickoffResult
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake(_session: Any, **kwargs: Any) -> KickoffResult:
+        calls.append(dict(kwargs))
+        return KickoffResult(
+            conversation_id="conv-1",
+            briefing_text="canned briefing for tests",
+            target_status_code=200,
+            target_latency_ms=21_000,
+            error=None,
+        )
+
+    monkeypatch.setattr(tools_mod, "fire_kickoff_briefing", _fake)
+    yield calls
+
+
 @pytest.fixture
 def fake_fire(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Replace ``fire_prepared_attack`` (used inside the
