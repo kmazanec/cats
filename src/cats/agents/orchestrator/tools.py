@@ -58,6 +58,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cats.agents.red_team.clinical_misinformation.dispatcher import (
+    KNOWN_TECHNIQUES as CLINICAL_MISINFORMATION_TECHNIQUES,
+)
 from cats.agents.red_team.exfil.dispatcher import (
     KNOWN_TECHNIQUES as EXFIL_TECHNIQUES,
 )
@@ -109,6 +112,7 @@ _KNOWN_TECHNIQUES_BY_CATEGORY: Mapping[str, tuple[str, ...]] = {
     "indirect_injection": tuple(sorted(INDIRECT_INJECTION_TECHNIQUES)),
     "exfil": tuple(sorted(EXFIL_TECHNIQUES)),
     "tool_abuse": tuple(sorted(TOOL_ABUSE_TECHNIQUES)),
+    "clinical_misinformation": tuple(sorted(CLINICAL_MISINFORMATION_TECHNIQUES)),
 }
 
 # Project-level budget defaults (TODO R5+: replace with a real
@@ -501,6 +505,7 @@ def _default_severity_for(category: str) -> str:
         "indirect_injection": "critical",
         "exfil": "critical",
         "tool_abuse": "high",
+        "clinical_misinformation": "critical",
     }.get(category, "medium")
 
 

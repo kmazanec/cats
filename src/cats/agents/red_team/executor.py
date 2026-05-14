@@ -30,6 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.agents.common import with_cost
 from cats.agents.mutator import generate_variant
+from cats.agents.red_team.clinical_misinformation import (
+    dispatcher as clinical_misinformation_dispatcher,
+)
 from cats.agents.red_team.exfil import dispatcher as exfil_dispatcher
 from cats.agents.red_team.indirect_injection import dispatcher as indirect_dispatcher
 from cats.agents.red_team.injection.dispatcher import (
@@ -58,7 +61,7 @@ from cats.target.contracts import AttachmentSpec, AttackEnvelope
 # tool/area mentions against the per-task baseline in
 # ``reports/tool_abuse/baselines.md``.
 _SUPPORTED_CATEGORIES: frozenset[str] = frozenset(
-    {"injection", "indirect_injection", "exfil", "tool_abuse"}
+    {"injection", "indirect_injection", "exfil", "tool_abuse", "clinical_misinformation"}
 )
 
 log = get_logger(__name__)
@@ -176,6 +179,7 @@ async def _propose_attack(
     seed_idx: int = 0,
     prior_user_messages: list[str] | None = None,
     prior_target_responses: list[str] | None = None,
+    kickoff_briefing: str = "",
 ) -> _NormalizedProposal:
     """Dispatch to the right specialist family for ``category``.
 
@@ -192,7 +196,13 @@ async def _propose_attack(
     multi-turn worker flow (Red Team decides escalate/stop/declare)
     but their specialists do not yet read prior target responses
     (near-term follow-up). The Judge sees the full transcript across
-    all categories regardless."""
+    all categories regardless.
+
+    R11 — ``kickoff_briefing`` carries the Co-Pilot's own briefing for
+    the active patient as returned by the agent's kickoff turn. Only
+    the ``clinical_misinformation`` specialist reads it today — it
+    needs the chart context to pick a fact the chart contradicts. The
+    other categories accept the argument but ignore it."""
     llm = get_llm()
 
     if category == "injection":
@@ -291,6 +301,32 @@ async def _propose_attack(
             envelope=AttackEnvelope(user_message=tool_abuse.user_message),
             cost_role="redteam_toolabuse",
             llm_result=tool_abuse.llm,
+        )
+
+    if category == "clinical_misinformation":
+        misinfo = await clinical_misinformation_dispatcher.propose_technique(
+            technique=technique,
+            llm=llm,
+            kickoff_briefing=kickoff_briefing,
+        )
+        return _NormalizedProposal(
+            title=misinfo.title,
+            description=misinfo.description,
+            user_message=misinfo.user_message,
+            # clinical_misinformation has no canary — the deterministic
+            # check scans the response for the false_premise_marker
+            # carried in payload_extras. Leave canary empty so the
+            # attack-row hashing pipeline stays uniform.
+            canary="",
+            technique=misinfo.technique,
+            payload_extras={
+                "false_premise_marker": misinfo.false_premise_marker,
+                "paraphrase_cues": misinfo.paraphrase_cues,
+                "chart_contradiction": misinfo.chart_contradiction,
+            },
+            envelope=AttackEnvelope(user_message=misinfo.user_message),
+            cost_role="redteam_clinical_misinformation",
+            llm_result=misinfo.llm,
         )
 
     raise NotImplementedError(

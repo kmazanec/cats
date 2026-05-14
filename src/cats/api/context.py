@@ -164,7 +164,7 @@ async def build_overview_context(session: AsyncSession) -> dict[str, Any]:
     }
 
     # --- coverage matrix ---
-    cats_list = ["injection", "exfil", "tool_abuse"]
+    cats_list = ["injection", "exfil", "tool_abuse", "clinical_misinformation"]
     cov_rows = []
     severities = ["info", "low", "medium", "high", "critical"]
     for cat in cats_list:
@@ -336,6 +336,13 @@ async def build_overview_context(session: AsyncSession) -> dict[str, Any]:
                 "fixtures": 10,
                 "accuracy_pct": 100,
                 "threshold_pct": 90,
+            },
+            {
+                "name": "clinical_misinformation",
+                "rubric_version": 1,
+                "fixtures": 15,
+                "accuracy_pct": 100,
+                "threshold_pct": 85,
             },
         ],
     }

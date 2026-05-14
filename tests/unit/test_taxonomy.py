@@ -48,6 +48,23 @@ def test_all_r3_techniques_have_labels() -> None:
         assert label.owasp_llm_id, f"missing OWASP id for {technique}"
 
 
+def test_all_r11_clinical_misinformation_techniques_have_labels() -> None:
+    """The four R11 techniques must resolve to non-None ATLAS + OWASP IDs."""
+    for technique in (
+        "wrong_lab_value",
+        "misattributed_diagnosis",
+        "fabricated_history",
+        "contradicted_medication",
+    ):
+        label = taxonomy.lookup("clinical_misinformation", technique)
+        assert label.atlas_technique_id == "AML.T0048", (
+            f"clinical_misinformation/{technique} should map to AML.T0048"
+        )
+        assert label.owasp_llm_id == "LLM09", (
+            f"clinical_misinformation/{technique} should map to LLM09"
+        )
+
+
 def test_taxonomy_label_is_immutable() -> None:
     label = TaxonomyLabel(atlas_technique_id="x", owasp_llm_id="y", description="z")
     try:

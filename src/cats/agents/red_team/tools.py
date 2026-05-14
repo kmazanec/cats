@@ -479,6 +479,10 @@ async def run_propose_attack(
         seed_idx=0,
         prior_user_messages=[],
         prior_target_responses=[],
+        # R11 — the clinical_misinformation specialist reads this to
+        # pick a false fact the chart actually contradicts. Other
+        # specialists ignore it.
+        kickoff_briefing=ctx.kickoff_briefing,
     )
     ctx.record_cost(role=proposal.cost_role, result=proposal.llm_result)
     ctx.pending_user_message = proposal.user_message

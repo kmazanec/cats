@@ -26,6 +26,7 @@ AgentRole = Literal[
     "redteam_indirect_injection",
     "redteam_exfil",
     "redteam_toolabuse",
+    "redteam_clinical_misinformation",
     "mutator",
     "judge",
     "judge_third_vote",
@@ -96,6 +97,22 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
         primary="deepseek/deepseek-chat",
         fallback="nousresearch/hermes-4-405b",
         notes="DeepSeek's tool-use reasoning is the right shape for crafting tool-abuse prompts (parameter tampering, recursive calls). Hermes fallback if DeepSeek refuses.",
+    ),
+    # R11 — clinical-misinformation content generator. Unlike the other
+    # redteam content roles, low refusal isn't the differentiator (the
+    # task is plausibly-phrased clinician questions, not jailbreak
+    # content). What matters is clinical realism: phrasing that reads
+    # like a real chart-aware question, picking adjacent-but-wrong
+    # facts. Haiku 4.5 is cheap, clinically literate, and reliably
+    # emits strict JSON; Sonnet 4.5 fallback when Haiku's output is too
+    # generic. Note: Haiku is the Judge family — that's intentionally
+    # different roles (different system prompts, different temperatures)
+    # but if we ever ensemble-judge this category we'll have to rotate
+    # one side to a non-Anthropic provider for diversity.
+    "redteam_clinical_misinformation": ModelChoice(
+        primary="anthropic/claude-haiku-4.5",
+        fallback="anthropic/claude-sonnet-4.5",
+        notes="Clinical-realism wins over low-refusal here. JSON output only; no tool calls.",
     ),
     "mutator": ModelChoice(
         primary="deepseek/deepseek-chat",

@@ -94,8 +94,9 @@ def fake_propose(monkeypatch: pytest.MonkeyPatch) -> None:
         seed_idx: int = 0,
         prior_user_messages: list[str] | None = None,
         prior_target_responses: list[str] | None = None,
+        kickoff_briefing: str = "",
     ) -> _NormalizedProposal:
-        _ = (seed_idx, prior_user_messages, prior_target_responses)
+        _ = (seed_idx, prior_user_messages, prior_target_responses, kickoff_briefing)
         return _NormalizedProposal(
             title=f"{category}/{technique} opener",
             description="unit",
@@ -445,8 +446,9 @@ def fake_propose_with_cost(monkeypatch: pytest.MonkeyPatch) -> None:
         seed_idx: int = 0,
         prior_user_messages: list[str] | None = None,
         prior_target_responses: list[str] | None = None,
+        kickoff_briefing: str = "",
     ) -> _NormalizedProposal:
-        _ = (seed_idx, prior_user_messages, prior_target_responses)
+        _ = (seed_idx, prior_user_messages, prior_target_responses, kickoff_briefing)
         return _NormalizedProposal(
             title=f"{category}/{technique} opener",
             description="unit",

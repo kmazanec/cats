@@ -13,12 +13,14 @@ from typing import Any
 # Categories shipped at MVP per W3_ARCHITECTURE.md §1.3.
 # `indirect_injection` (R5) covers docx-borne attacks; it lives separately
 # from `injection` (direct chat-borne attacks) so its severity, rubric, and
-# fixtures can evolve independently.
+# fixtures can evolve independently. `clinical_misinformation` (R11) covers
+# false-clinical-premise propagation — see categories/clinical_misinformation/.
 REGISTERED_CATEGORIES: list[str] = [
     "injection",
     "indirect_injection",
     "exfil",
     "tool_abuse",
+    "clinical_misinformation",
 ]
 
 DeterministicCheck = Callable[..., tuple[str, str, dict[str, Any]]]
