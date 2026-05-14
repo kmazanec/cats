@@ -148,11 +148,12 @@ class DocumentationWorker(Worker):
             response_text = str(row.target_response.get("text", ""))
 
         if payload.verdict != "pass":
-            # Fail: mark the run completed and move on.
+            # Fail: mark the run completed and move on. attacks_fired
+            # is derived from attack_executions at read time, so we don't
+            # set it here.
             await mark_run_completed(
                 session,
                 run_id=payload.run_id,
-                attacks_fired=1,
                 budget_consumed_usd=0.0,
             )
             await publish(
@@ -242,7 +243,6 @@ class DocumentationWorker(Worker):
         await mark_run_completed(
             session,
             run_id=payload.run_id,
-            attacks_fired=1,
             budget_consumed_usd=0.0,
         )
 

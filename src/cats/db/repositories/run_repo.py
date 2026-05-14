@@ -247,19 +247,22 @@ async def mark_run_completed(
     session: AsyncSession,
     *,
     run_id: UUID,
-    attacks_fired: int,
     budget_consumed_usd: float,
+    attacks_fired: int | None = None,
 ) -> None:
-    await session.execute(
-        update(runs)
-        .where(runs.c.id == run_id)
-        .values(
-            status="completed",
-            ended_at=_utcnow(),
-            attacks_fired=attacks_fired,
-            budget_consumed_usd=budget_consumed_usd,
-        )
-    )
+    """Mark a run completed. ``attacks_fired`` is a legacy denorm column
+    that the worker path no longer maintains — the campaign-detail UI
+    reads the live count from ``attack_executions`` instead. Callers
+    that still pass it (the legacy graph node) keep their behavior.
+    """
+    values: dict[str, Any] = {
+        "status": "completed",
+        "ended_at": _utcnow(),
+        "budget_consumed_usd": budget_consumed_usd,
+    }
+    if attacks_fired is not None:
+        values["attacks_fired"] = attacks_fired
+    await session.execute(update(runs).where(runs.c.id == run_id).values(**values))
 
 
 async def mark_run_failed(session: AsyncSession, *, run_id: UUID) -> None:

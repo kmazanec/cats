@@ -243,14 +243,49 @@ async def list_runs_for_campaign(
     # detail page flags potential cost-amplification / DoS attempts.
     # The full DoS attack family is a future round; this is a heads-up
     # column the operator can read at a glance.
+    #
+    # ``attacks_fired`` is derived from ``attack_executions`` rather than
+    # the denormed ``runs.attacks_fired`` column — that column was being
+    # set to a fixed 1 by the worker path, which understated multi-turn
+    # conversations. The execution count is the source of truth.
+    #
+    # ``category``/``technique`` come from the run's first execution
+    # (lowest seed_idx, tie-broken by created_at). Since a Run is
+    # technique-scoped, every execution shares the same pair — picking
+    # one is unambiguous.
     from sqlalchemy import func
 
-    max_latency = (
+    exec_stats = (
         select(
             attack_executions.c.run_id,
             func.max(attack_executions.c.target_latency_ms).label("max_latency"),
+            func.count(attack_executions.c.id).label("exec_count"),
         )
         .group_by(attack_executions.c.run_id)
+        .subquery()
+    )
+    first_exec = (
+        select(
+            attack_executions.c.run_id,
+            attacks.c.category.label("category"),
+            attacks.c.payload.label("attack_payload"),
+            func.row_number()
+            .over(
+                partition_by=attack_executions.c.run_id,
+                order_by=(attack_executions.c.seed_idx, attack_executions.c.created_at),
+            )
+            .label("rn"),
+        )
+        .select_from(attack_executions.join(attacks, attacks.c.id == attack_executions.c.attack_id))
+        .subquery()
+    )
+    first_exec_filtered = (
+        select(
+            first_exec.c.run_id,
+            first_exec.c.category,
+            first_exec.c.attack_payload,
+        )
+        .where(first_exec.c.rn == 1)
         .subquery()
     )
     rows = (
@@ -260,27 +295,40 @@ async def list_runs_for_campaign(
                 runs.c.status,
                 runs.c.started_at,
                 runs.c.ended_at,
-                runs.c.attacks_fired,
                 runs.c.budget_consumed_usd,
-                max_latency.c.max_latency,
+                exec_stats.c.max_latency,
+                exec_stats.c.exec_count,
+                first_exec_filtered.c.category,
+                first_exec_filtered.c.attack_payload,
             )
-            .select_from(runs.outerjoin(max_latency, runs.c.id == max_latency.c.run_id))
+            .select_from(
+                runs.outerjoin(exec_stats, runs.c.id == exec_stats.c.run_id).outerjoin(
+                    first_exec_filtered, runs.c.id == first_exec_filtered.c.run_id
+                )
+            )
             .where(runs.c.campaign_id == campaign_id)
             .order_by(desc(runs.c.created_at))
         )
     ).all()
-    return [
-        {
-            "id": r.id,
-            "status": r.status,
-            "started_at": r.started_at,
-            "ended_at": r.ended_at,
-            "attacks_fired": r.attacks_fired,
-            "budget_consumed_usd": r.budget_consumed_usd,
-            "max_target_latency_ms": r.max_latency,
-        }
-        for r in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        technique = ""
+        if isinstance(r.attack_payload, dict):
+            technique = str(r.attack_payload.get("technique", ""))
+        out.append(
+            {
+                "id": r.id,
+                "status": r.status,
+                "started_at": r.started_at,
+                "ended_at": r.ended_at,
+                "attacks_fired": int(r.exec_count or 0),
+                "budget_consumed_usd": r.budget_consumed_usd,
+                "max_target_latency_ms": r.max_latency,
+                "category": r.category or "",
+                "technique": technique,
+            }
+        )
+    return out
 
 
 async def list_findings_for_run(session: AsyncSession, *, run_id: UUID) -> list[dict[str, Any]]:

@@ -359,8 +359,14 @@
     if (!tbody) return false;
     showRunsTable();
     const p = env.payload || {};
-    const tech =
-      p.category && p.technique ? `${p.category} · ${p.technique}` : "—";
+    let techCell = `<td class="run-technique mono muted">—</td>`;
+    if (p.technique) {
+      const cat = p.category
+        ? ` <span class="muted">· ${escapeHtml(p.category)}</span>`
+        : "";
+      techCell =
+        `<td class="run-technique mono">${escapeHtml(p.technique)}${cat}</td>`;
+    }
     const ts = fmtTs(env.at);
     const tr = document.createElement("tr");
     tr.setAttribute("data-run-id", env.run_id);
@@ -368,7 +374,7 @@
     tr.innerHTML =
       `<td class="mono"><a class="nav-link" href="/campaigns/${escapeHtml(campaignId)}/runs/${escapeHtml(env.run_id)}">${escapeHtml(shortId(env.run_id))}</a></td>` +
       `<td class="run-status-cell"><span class="dot amber pulse"></span> <span class="run-status-text">running</span></td>` +
-      `<td class="run-technique mono">${escapeHtml(tech)}</td>` +
+      techCell +
       `<td class="num run-attacks">0</td>` +
       `<td class="num mono run-spend">$0.0000</td>` +
       `<td class="num mono run-slowest">—</td>` +
