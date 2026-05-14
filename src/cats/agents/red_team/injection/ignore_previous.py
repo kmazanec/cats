@@ -24,6 +24,7 @@ async def propose(
     llm: LLMClient,
     seed_idx: int = 0,
     prior_user_messages: list[str] | None = None,
+    prior_target_responses: list[str] | None = None,
 ) -> InjectionProposal:
     canary = new_canary()
     parsed, llm_result = await run_specialist_llm(
@@ -32,5 +33,6 @@ async def propose(
         canary=canary,
         seed_idx=seed_idx,
         prior_user_messages=prior_user_messages,
+        prior_target_responses=prior_target_responses,
     )
     return build_proposal(parsed=parsed, canary=canary, technique=TECHNIQUE, llm_result=llm_result)

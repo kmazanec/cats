@@ -24,7 +24,11 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cats.agents.judge.verifier import gather_evidence, judge_llm
+from cats.agents.judge.verifier import (
+    JudgeTranscriptTurn,
+    gather_evidence,
+    judge_llm,
+)
 from cats.db.repositories.rubric_repo import ensure_rubric_version
 from cats.db.repositories.run_repo import record_verdict, set_execution_verdict
 from cats.graph.events import publish
@@ -71,28 +75,57 @@ class JudgeWorker(Worker):
         *,
         trace_id: str,
     ) -> None:
-        # Gather deterministic evidence (canary echo, marker leaks,
-        # response shape). NEVER a verdict — just observations the
-        # Judge LLM weighs.
+        # R10 — when the Red Team shipped a multi-turn transcript, run
+        # evidence collection over the concatenated transcript so canary
+        # / marker scans see every turn, not just the last. The legacy
+        # single-turn path (empty transcript) keeps using the latest
+        # turn's response verbatim.
+        transcript_turns: list[JudgeTranscriptTurn] = []
+        if payload.transcript:
+            transcript_turns = [
+                JudgeTranscriptTurn(
+                    seed_idx=t.seed_idx,
+                    user_message=t.user_message,
+                    target_response=t.target_response,
+                )
+                for t in payload.transcript
+            ]
+        total_seeds = max(1, len(transcript_turns)) if transcript_turns else 1
+
+        if transcript_turns:
+            full_response = "\n\n".join(t.target_response for t in transcript_turns)
+            full_user_message = "\n\n".join(
+                f"[Turn {t.seed_idx}]\n{t.user_message}" for t in transcript_turns
+            )
+        else:
+            full_response = payload.target_response
+            full_user_message = payload.payload
+
         evidence = gather_evidence(
             category=payload.category,
             attack_payload={
-                "user_message": payload.payload,
+                "user_message": full_user_message,
                 "canary": payload.canary,
                 "technique": payload.technique,
             },
-            target_response_text=payload.target_response,
+            target_response_text=full_response,
         )
 
         # Short-circuit: the target rejected the call (4xx/5xx) or the
-        # transport raised an error. Burning an LLM call on an empty
-        # response would yield a confused `error` verdict the operator
-        # can't distinguish from "judge can't decide." Emit `fail`
-        # (defense held — the attack didn't land) and tag the evidence
-        # so the operator sees it was a target-side rejection.
+        # transport raised an error on the *final* turn — for multi-turn,
+        # we still want to judge the conversation up to the failure if
+        # any earlier turn produced content, but a final-turn transport
+        # error with an empty transcript is a clear "couldn't evaluate."
         target_rejected = bool(payload.target_error) or (
             payload.target_status_code != 0 and payload.target_status_code >= 400
         )
+        # Multi-turn: only short-circuit when EVERY turn failed; if any
+        # turn produced content the Judge can rule on the conversation.
+        if transcript_turns:
+            target_rejected = target_rejected and all(
+                bool(t.target_error) or (t.target_status_code != 0 and t.target_status_code >= 400)
+                for t in payload.transcript
+            )
         if target_rejected:
             verdict: str = "fail"
             rationale = (
@@ -105,10 +138,13 @@ class JudgeWorker(Worker):
                 "target_status_code": payload.target_status_code,
                 "target_error": payload.target_error,
                 "observed": evidence,
+                "decisive_seed_idx": None,
+                "total_seeds": total_seeds,
             }
             llm_result = None
         else:
-            # Single LLM call decides the verdict.
+            # Single LLM call decides the verdict over the full
+            # transcript (or the lone exchange, for single-turn).
             (verdict, rationale, judge_evidence), llm_result = await judge_llm(
                 llm=get_llm(),
                 category=payload.category,
@@ -116,6 +152,7 @@ class JudgeWorker(Worker):
                 target_response_text=payload.target_response,
                 evidence=evidence,
                 canary=payload.canary,
+                transcript=transcript_turns or None,
             )
 
         # Cost-amplification / DoS signal. Tag as evidence only — the
@@ -131,6 +168,22 @@ class JudgeWorker(Worker):
             session, category=payload.category, version="v1"
         )
 
+        # Read decisive_seed_idx back out of the evidence — the verifier
+        # stashes it there (and on the multi-turn-aware short-circuit
+        # path above we set it ourselves).
+        raw_dsi = judge_evidence.get("decisive_seed_idx")
+        decisive_seed_idx: int | None
+        if isinstance(raw_dsi, bool) or not isinstance(raw_dsi, int):
+            decisive_seed_idx = None
+        else:
+            decisive_seed_idx = raw_dsi
+        # Pass/partial verdicts on multi-turn conversations should name
+        # a turn; if the verifier didn't pick one (parse drift, weird
+        # output) default to the last turn so the finding still has a
+        # pointer. Single-turn (total_seeds==1) defaults to 0 already.
+        if verdict in ("pass", "partial") and decisive_seed_idx is None and total_seeds > 1:
+            decisive_seed_idx = total_seeds - 1
+
         verdict_id = await record_verdict(
             session,
             verdict=verdict,
@@ -142,6 +195,8 @@ class JudgeWorker(Worker):
             evidence=judge_evidence,
             judge_model=llm_result.model if llm_result is not None else "",
             rubric_version_id=rubric_version_id,
+            decisive_seed_idx=decisive_seed_idx,
+            total_seeds=total_seeds,
         )
         await set_execution_verdict(
             session,
@@ -172,6 +227,8 @@ class JudgeWorker(Worker):
                 is_deterministic=False,
                 iteration=payload.iteration,
                 seed_idx=payload.seed_idx,
+                decisive_seed_idx=decisive_seed_idx,
+                total_seeds=total_seeds,
             ),
             trace_id=trace_id,
             campaign_id=payload.campaign_id,

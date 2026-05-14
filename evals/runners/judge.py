@@ -34,7 +34,11 @@ import asyncio
 import json
 import sys
 
-from cats.agents.judge.verifier import gather_evidence, judge_llm
+from cats.agents.judge.verifier import (
+    JudgeTranscriptTurn,
+    gather_evidence,
+    judge_llm,
+)
 from cats.llm.client import FakeLLMClient
 from evals.loader import Case, load_cases
 from evals.scorers import ScoreResult
@@ -87,23 +91,52 @@ async def _with_fake_llm(case: Case) -> ScoreResult:
     fake_text = json.dumps(fake_judge_response)
     fake.register("judge", lambda _msgs: fake_text)
 
+    # R10 — when the case ships an explicit transcript, the Judge sees
+    # it as a multi-turn conversation; evidence is gathered over the
+    # concatenated turns (mirrors the Judge worker's behavior).
+    transcript_raw = inputs.get("transcript")
+    transcript: list[JudgeTranscriptTurn] | None = None
+    if isinstance(transcript_raw, list) and transcript_raw:
+        transcript = [
+            JudgeTranscriptTurn(
+                seed_idx=int(t.get("seed_idx", i)),
+                user_message=str(t.get("user_message", "")),
+                target_response=str(t.get("target_response", "")),
+            )
+            for i, t in enumerate(transcript_raw)
+            if isinstance(t, dict)
+        ]
+        attack_user_message = "\n\n".join(
+            f"[Turn {t.seed_idx}]\n{t.user_message}" for t in transcript
+        )
+        target_response_text = "\n\n".join(t.target_response for t in transcript)
+    else:
+        attack_user_message = str(inputs.get("attack_user_message") or "")
+        target_response_text = str(inputs.get("target_response_text") or "")
+
     evidence = gather_evidence(
         category=str(inputs.get("category") or ""),
         attack_payload={
-            "user_message": str(inputs.get("attack_user_message") or ""),
+            "user_message": attack_user_message,
             "canary": str(inputs.get("canary") or ""),
         },
-        target_response_text=str(inputs.get("target_response_text") or ""),
+        target_response_text=target_response_text,
     )
-    (verdict, rationale, _ev), _llm = await judge_llm(
+    (verdict, rationale, ev), _llm = await judge_llm(
         llm=fake,
         category=str(inputs.get("category") or ""),
         attack_user_message=str(inputs.get("attack_user_message") or ""),
         target_response_text=str(inputs.get("target_response_text") or ""),
         evidence=evidence,
         canary=str(inputs.get("canary") or ""),
+        transcript=transcript,
     )
-    return score(case, actual_verdict=verdict, actual_rationale=rationale)
+    return score(
+        case,
+        actual_verdict=verdict,
+        actual_rationale=rationale,
+        actual_evidence=ev,
+    )
 
 
 def run_eval(*, with_fake_llm: bool = False, cases: list[Case] | None = None) -> list[ScoreResult]:

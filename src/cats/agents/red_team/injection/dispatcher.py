@@ -80,6 +80,7 @@ async def propose_technique(
     llm: LLMClient,
     seed_idx: int = 0,
     prior_user_messages: list[str] | None = None,
+    prior_target_responses: list[str] | None = None,
 ) -> InjectionProposal:
     """Run one specific specialist. Raises ``KeyError`` if the technique
     is not registered — fail loud so a typo in fixtures surfaces
@@ -87,7 +88,12 @@ async def propose_technique(
 
     ``seed_idx`` + ``prior_user_messages`` let the Red Team probe a
     single technique from K distinct angles per plan attempt; see
-    :func:`cats.agents.red_team.injection.base.run_specialist_llm`."""
+    :func:`cats.agents.red_team.injection.base.run_specialist_llm`.
+
+    R10 — ``prior_target_responses`` upgrades the prior-message
+    threading to a true multi-turn conversation: when supplied, the
+    specialist sees what the target said in response to each prior
+    turn and crafts a follow-up that reacts to that response."""
     if technique not in _PROPOSERS:
         raise KeyError(
             f"unknown injection technique {technique!r}; known: {sorted(KNOWN_TECHNIQUES)}"
@@ -96,6 +102,7 @@ async def propose_technique(
         llm=llm,
         seed_idx=seed_idx,
         prior_user_messages=prior_user_messages,
+        prior_target_responses=prior_target_responses,
     )
 
 

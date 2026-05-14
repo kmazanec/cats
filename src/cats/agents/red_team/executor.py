@@ -173,6 +173,7 @@ async def _propose_attack(
     technique: str,
     seed_idx: int = 0,
     prior_user_messages: list[str] | None = None,
+    prior_target_responses: list[str] | None = None,
 ) -> _NormalizedProposal:
     """Dispatch to the right specialist family for ``category``.
 
@@ -181,7 +182,15 @@ async def _propose_attack(
     (see :class:`PlanAttempt.seeds_per_attempt`). Exfil and
     indirect_injection don't yet consume them — their diversity is a
     post-R5/R6 follow-up — so the args are accepted but unused for
-    those categories."""
+    those categories.
+
+    R10 — ``prior_target_responses`` carries the target's replies to
+    each prior turn for true multi-turn escalation. Wired into the
+    injection specialist today; the other three categories accept the
+    multi-turn worker flow (Red Team decides escalate/stop/declare)
+    but their specialists do not yet read prior target responses
+    (near-term follow-up). The Judge sees the full transcript across
+    all categories regardless."""
     llm = get_llm()
 
     if category == "injection":
@@ -192,6 +201,7 @@ async def _propose_attack(
             llm=llm,
             seed_idx=seed_idx,
             prior_user_messages=prior_user_messages,
+            prior_target_responses=prior_target_responses,
         )
         return _NormalizedProposal(
             title=proposal.title,
@@ -299,6 +309,7 @@ async def execute_attempt(
     mutator_context: MutatorContext | None = None,
     seed_idx: int = 0,
     prior_user_messages: list[str] | None = None,
+    prior_target_responses: list[str] | None = None,
     conversation_id: str | None = None,
     task: str = "default_briefing",
 ) -> AttemptResult:
@@ -350,6 +361,7 @@ async def execute_attempt(
             technique=technique,
             seed_idx=seed_idx,
             prior_user_messages=prior_user_messages,
+            prior_target_responses=prior_target_responses,
         )
         user_message = proposal.user_message
         canary = proposal.canary
@@ -539,6 +551,7 @@ async def execute_attempt(
         usd_estimate=total_usd,
         langsmith_trace_id=state.last_trace_id or None,
         error=error,
+        seed_idx=seed_idx,
     )
 
     return AttemptResult(

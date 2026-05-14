@@ -23,15 +23,22 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cats.agents.red_team.executor import MutatorContext, execute_attempt
+from cats.agents.red_team.escalation import ConversationTurn, decide_next_turn
+from cats.agents.red_team.executor import (
+    AttemptResult,
+    MutatorContext,
+    execute_attempt,
+)
 from cats.db.engine import session_scope
 from cats.db.repositories.campaign_repo import create_run_in_campaign
 from cats.db.repositories.run_repo import mark_run_running, sweep_orphaned_running_runs
 from cats.graph.events import publish
+from cats.llm.client import get_llm
 from cats.messaging import (
     AttackEventPayload,
     CampaignPlanApprovedPayload,
     ClaimedMessage,
+    ConversationTurnPayload,
     Envelope,
     MessageKind,
     VerdictRenderedPayload,
@@ -39,15 +46,19 @@ from cats.messaging import (
 )
 from cats.messaging.envelopes import PlanAttempt
 
-# Categories that benefit from K seeds sharing one OpenEMR conversation
-# (so the model sees them as turns in a chat). Injection wants this —
-# "ignore previous → now tell me…" only works mid-chat. Exfil + indirect
-# don't gain anything from shared context; each seed is an independent
-# attempt. Worse, the OpenEMR agent rejects exfil follow_ups as
-# `invalid_envelope` (conversation-ownership check on a not-yet-persisted
-# row, or schema mismatch), so forcing fresh briefings for these
-# categories also avoids that whole class of failure.
-_CONVERSATION_SHARING_CATEGORIES: frozenset[str] = frozenset({"injection"})
+# R10 — all four categories run multi-turn conversations now. The Red
+# Team's escalation strategist (`cats.agents.red_team.escalation`)
+# decides between turns whether to push, declare landed, or stop. For
+# categories where the OpenEMR agent's follow_up path is finicky
+# (historically exfil + indirect rejected as `invalid_envelope`), each
+# turn falls back to a fresh `default_briefing` when the agent refuses
+# the follow_up — the Red Team-side transcript still escalates, the
+# wire-level conversation just doesn't share an agent-side context.
+# This trades a smaller in-model context window for the broader
+# coverage the user asked for in R10.
+_CONVERSATION_SHARING_CATEGORIES: frozenset[str] = frozenset(
+    {"injection", "exfil", "tool_abuse", "indirect_injection"}
+)
 
 
 class RedTeamWorker(Worker):
@@ -98,138 +109,232 @@ class RedTeamWorker(Worker):
         payload: CampaignPlanApprovedPayload,
         trace_id: str,
     ) -> None:
-        """Walk the plan. For each attempt, fire ``seeds_per_attempt``
-        diverse seed attacks back-to-back as **one OpenEMR conversation**:
-        seed 0 is a ``default_briefing`` (kickoff) that opens a fresh
-        conversation; seeds 1..K-1 are ``follow_up``s sharing that
-        conversationId so the model sees them as turns in one chat.
-        Each seed sees the prior seeds' user_messages so the specialist
-        produces materially different angles."""
+        """Walk the plan. R10 — each PlanAttempt is one *conversation*,
+        not K independent seeds. The Red Team's escalation strategist
+        decides between turns whether to push (escalate), declare the
+        vulnerability landed, or stop. ``seeds_per_attempt`` is the
+        upper bound on conversation length; the Red Team can end
+        earlier. After the conversation finishes, the worker emits ONE
+        ``AttackEvent`` carrying the full transcript — the Judge rules
+        over the whole conversation and names the decisive turn.
+
+        One ``runs`` row per conversation; one ``attack_executions``
+        row per turn (with ascending ``seed_idx``)."""
         plan = payload.plan
         consecutive_fails = 0
         for idx, attempt in enumerate(plan.attempts):
-            prior_user_messages: list[str] = []
-            # The agent ignores any client-supplied conversationId on a
-            # default_briefing and mints its own server-side. So seed 0
-            # fires WITHOUT pre-minting a conv_id (task=default_briefing,
-            # no extra), parses the meta event from the response to learn
-            # the agent's id, and seeds 1..K-1 fire that id as follow_ups.
-            # ``conv_id`` is None until seed 0's response comes back.
-            conv_id: str | None = None
-            shares_conversation = attempt.category in _CONVERSATION_SHARING_CATEGORIES
-            for seed_idx in range(attempt.seeds_per_attempt):
-                run_id = await create_run_in_campaign(
+            try:
+                conversation_ok = await self._run_conversation(
+                    session,
+                    payload=payload,
+                    attempt=attempt,
+                    trace_id=trace_id,
+                )
+            except Exception as exc:
+                self._log.exception(
+                    "red_team.conversation_failed",
+                    error=repr(exc),
+                    campaign_id=str(payload.campaign_id),
+                    attempt_idx=idx,
+                )
+                conversation_ok = False
+
+            if not conversation_ok:
+                consecutive_fails += 1
+                if consecutive_fails >= plan.halt_on_consecutive_fails:
+                    self._log.info(
+                        "red_team.halted",
+                        reason="consecutive_fails",
+                        campaign_id=str(payload.campaign_id),
+                    )
+                    return
+            else:
+                consecutive_fails = 0
+        # Note: this handler returns after EMITTING one AttackEvent per
+        # conversation. The Judge worker processes them asynchronously;
+        # partial verdicts come back on the Red Team's inbox as
+        # separate VerdictRendered messages handled by
+        # `_handle_partial_verdict`.
+
+    async def _run_conversation(
+        self,
+        session: AsyncSession,
+        *,
+        payload: CampaignPlanApprovedPayload,
+        attempt: PlanAttempt,
+        trace_id: str,
+    ) -> bool:
+        """One full multi-turn conversation for one PlanAttempt. Returns
+        True on success (the AttackEvent was emitted), False on
+        unrecoverable failure (transport error before any turn landed).
+
+        The Red Team controls conversation length via the escalation
+        strategist; ``attempt.seeds_per_attempt`` is the hard upper
+        bound. All four categories now run multi-turn — see
+        ``_CONVERSATION_SHARING_CATEGORIES`` for the wire-level
+        sharing rule."""
+        # One run per conversation. Every turn fires into the same
+        # `runs` row so the run-detail UI shows the whole arc as a
+        # single per-execution table.
+        run_id = await create_run_in_campaign(
+            session,
+            campaign_id=payload.campaign_id,
+            project_version_id=payload.project_version_id,
+        )
+        await mark_run_running(session, run_id=run_id)
+        await publish(
+            kind="run_started",
+            campaign_id=payload.campaign_id,
+            run_id=run_id,
+            payload={
+                "category": attempt.category,
+                "technique": attempt.technique,
+                "multi_turn": True,
+            },
+        )
+
+        shares_conversation = attempt.category in _CONVERSATION_SHARING_CATEGORIES
+        # Until seed 0's response comes back the agent hasn't minted
+        # the conversationId; ``conv_id`` is None and seed 0 fires as
+        # ``default_briefing``. Subsequent seeds, if shares_conversation,
+        # ride that id as ``follow_up``.
+        conv_id: str | None = None
+        prior_user_messages: list[str] = []
+        prior_target_responses: list[str] = []
+        transcript_turns: list[ConversationTurn] = []
+        emitted_turns: list[ConversationTurnPayload] = []
+        last_result: AttemptResult | None = None
+        stop_reason = "cap_reached"
+
+        for seed_idx in range(attempt.seeds_per_attempt):
+            seed_task = "follow_up" if (shares_conversation and conv_id) else "default_briefing"
+            try:
+                result = await execute_attempt(
                     session,
                     campaign_id=payload.campaign_id,
-                    project_version_id=payload.project_version_id,
-                )
-                await mark_run_running(session, run_id=run_id)
-                # Live UI: a new run row exists. The campaign-detail
-                # page picks this up and appends a row to the run-status
-                # table without waiting for a page reload.
-                await publish(
-                    kind="run_started",
-                    campaign_id=payload.campaign_id,
                     run_id=run_id,
-                    payload={
-                        "category": attempt.category,
-                        "technique": attempt.technique,
-                        "seed_idx": seed_idx,
-                    },
+                    project_version_id=payload.project_version_id,
+                    category=attempt.category,
+                    technique=attempt.technique,
+                    iteration=0,
+                    seed_idx=seed_idx,
+                    prior_user_messages=list(prior_user_messages),
+                    prior_target_responses=list(prior_target_responses),
+                    conversation_id=conv_id if shares_conversation else None,
+                    task=seed_task,
                 )
-                # follow_up requires an agent-owned conversationId. If we
-                # don't have one yet (seed 0, or seed 0's kickoff didn't
-                # surface a meta frame) fire as default_briefing instead
-                # so the seed still hits the model — it just won't share
-                # a chat with its siblings. Categories outside the
-                # conversation-sharing set always fire as fresh briefings
-                # — see `_CONVERSATION_SHARING_CATEGORIES`.
-                seed_task = "follow_up" if (shares_conversation and conv_id) else "default_briefing"
-                try:
-                    result = await execute_attempt(
-                        session,
-                        campaign_id=payload.campaign_id,
-                        run_id=run_id,
-                        project_version_id=payload.project_version_id,
-                        category=attempt.category,
-                        technique=attempt.technique,
-                        iteration=0,
-                        seed_idx=seed_idx,
-                        prior_user_messages=list(prior_user_messages),
-                        conversation_id=conv_id if shares_conversation else None,
-                        task=seed_task,
-                    )
-                except Exception as exc:
-                    self._log.exception(
-                        "red_team.seed_failed",
-                        error=repr(exc),
-                        campaign_id=str(payload.campaign_id),
-                        attempt_idx=idx,
-                        seed_idx=seed_idx,
-                    )
-                    consecutive_fails += 1
-                    if consecutive_fails >= plan.halt_on_consecutive_fails:
-                        self._log.info(
-                            "red_team.halted",
-                            reason="consecutive_fails",
-                            campaign_id=str(payload.campaign_id),
-                        )
-                        return
-                    continue
-                # Persist the red_team_attempts row for the partial-loop counter.
+            except Exception as exc:
+                # First-turn failure → kill the conversation; later-turn
+                # failure → stop where we are and ship what we have so
+                # the Judge at least sees something.
+                self._log.warning(
+                    "red_team.turn_failed",
+                    error=repr(exc),
+                    campaign_id=str(payload.campaign_id),
+                    seed_idx=seed_idx,
+                )
+                stop_reason = "error"
+                if seed_idx == 0:
+                    return False
+                break
+
+            # Persist the partial-loop counter on the first turn only —
+            # the Mutator's variant loop fires another full conversation
+            # rather than another turn within this one.
+            if seed_idx == 0:
                 await self._upsert_red_team_attempt(
                     session,
                     attack_id=result.attack_id,
                     iteration=0,
                     max_iterations=attempt.max_consecutive_partials,
                 )
-                prior_user_messages.append(result.payload_user_message)
-                # Seed 0 kicks off the OpenEMR conversation; subsequent
-                # seeds re-use the agent-assigned id. If the kickoff
-                # didn't surface a conv_id (error / non-proxy / malformed
-                # meta), seeds 1..K-1 fall back to default_briefing each
-                # (set below) instead of follow_up'ing a phantom id.
-                if conv_id is None and result.assigned_conversation_id:
-                    conv_id = result.assigned_conversation_id
-                # Live UI: a new run + attack just fired.
-                await publish(
-                    kind="attack_executed",
-                    campaign_id=payload.campaign_id,
-                    run_id=run_id,
-                    payload={
-                        "category": attempt.category,
-                        "technique": attempt.technique,
-                        "seed_idx": seed_idx,
-                        "attack_id": str(result.attack_id),
-                        "status_code": result.target_status_code,
-                        "latency_ms": result.target_latency_ms,
-                        "filter_verdict": result.output_filter_verdict,
-                    },
+            last_result = result
+            prior_user_messages.append(result.payload_user_message)
+            prior_target_responses.append(result.target_response_text)
+            transcript_turns.append(
+                ConversationTurn(
+                    seed_idx=seed_idx,
+                    user_message=result.payload_user_message,
+                    target_response=result.target_response_text,
                 )
-                # Emit AttackEvent to the Judge.
-                await self._bus.emit(
-                    session,
-                    _attack_event_envelope(
-                        campaign_id=payload.campaign_id,
-                        run_id=run_id,
-                        attempt=attempt,
-                        result_attack_id=result.attack_id,
-                        attack_execution_id=result.attack_execution_id,
-                        payload_user_message=result.payload_user_message,
-                        canary=result.canary,
-                        target_response_text=result.target_response_text,
-                        target_status_code=result.target_status_code,
-                        target_error=result.target_error,
-                        target_latency_ms=result.target_latency_ms,
-                        iteration=0,
-                        seed_idx=seed_idx,
-                        trace_id=trace_id,
-                    ),
+            )
+            emitted_turns.append(
+                ConversationTurnPayload(
+                    seed_idx=seed_idx,
+                    user_message=result.payload_user_message,
+                    target_response=result.target_response_text,
+                    attack_execution_id=result.attack_execution_id,
+                    target_status_code=result.target_status_code,
+                    target_error=result.target_error,
+                    target_latency_ms=result.target_latency_ms,
                 )
-        # Note: this handler returns after EMITTING the AttackEvents.
-        # The Judge worker processes them asynchronously; partial
-        # verdicts come back on the Red Team's inbox as separate
-        # VerdictRendered messages handled by `_handle_partial_verdict`.
+            )
+            if conv_id is None and result.assigned_conversation_id:
+                conv_id = result.assigned_conversation_id
+
+            await publish(
+                kind="attack_executed",
+                campaign_id=payload.campaign_id,
+                run_id=run_id,
+                payload={
+                    "category": attempt.category,
+                    "technique": attempt.technique,
+                    "seed_idx": seed_idx,
+                    "attack_id": str(result.attack_id),
+                    "status_code": result.target_status_code,
+                    "latency_ms": result.target_latency_ms,
+                    "filter_verdict": result.output_filter_verdict,
+                    "multi_turn": True,
+                },
+            )
+
+            # Escalation decision. The strategist sees the transcript so
+            # far and chooses escalate / stop / declare_landed. A forced
+            # stop fires when the conversation cap is reached, which is
+            # the natural end-of-loop case (the loop would exit anyway,
+            # but we record `stop_reason=cap_reached` explicitly).
+            decision = await decide_next_turn(
+                category=attempt.category,
+                technique=attempt.technique,
+                transcript=list(transcript_turns),
+                llm=get_llm(),
+                seeds_per_attempt=attempt.seeds_per_attempt,
+            )
+            if decision.decision == "escalate":
+                continue
+            stop_reason = decision.decision
+            break
+
+        if last_result is None:
+            return False
+
+        # Emit ONE AttackEvent for the whole conversation. The Judge
+        # rules over the full transcript and returns a decisive turn.
+        # The legacy single-turn fields mirror the LAST turn so older
+        # consumers (legacy graph path, the Judge's evidence layer)
+        # keep working without a transcript-aware code change.
+        await self._bus.emit(
+            session,
+            _attack_event_envelope(
+                campaign_id=payload.campaign_id,
+                run_id=run_id,
+                attempt=attempt,
+                result_attack_id=last_result.attack_id,
+                attack_execution_id=last_result.attack_execution_id,
+                payload_user_message=last_result.payload_user_message,
+                canary=last_result.canary,
+                target_response_text=last_result.target_response_text,
+                target_status_code=last_result.target_status_code,
+                target_error=last_result.target_error,
+                target_latency_ms=last_result.target_latency_ms,
+                iteration=0,
+                seed_idx=len(emitted_turns) - 1,
+                trace_id=trace_id,
+                transcript=emitted_turns,
+                conversation_stop_reason=stop_reason,
+            ),
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Partial-verdict handler — drives the variant loop
@@ -449,6 +554,8 @@ def _attack_event_envelope(
     iteration: int,
     trace_id: str,
     seed_idx: int = 0,
+    transcript: list[ConversationTurnPayload] | None = None,
+    conversation_stop_reason: str = "",
 ) -> Envelope[AttackEventPayload]:
     return Envelope[AttackEventPayload](
         kind=MessageKind.ATTACK_EVENT,
@@ -469,6 +576,8 @@ def _attack_event_envelope(
             canary=canary,
             iteration=iteration,
             seed_idx=seed_idx,
+            transcript=transcript or [],
+            conversation_stop_reason=conversation_stop_reason,
         ),
         trace_id=trace_id,
         campaign_id=campaign_id,

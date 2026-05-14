@@ -2853,17 +2853,220 @@ Out:
 
 **Tasks.** *(builder fills in as completed)*
 
-- [ ] _to be filled by R10 builder_
+**R10 — landed on `feat/round-10-multi-turn-attacks`, 2026-05-13:**
+
+- [x] Schema + alembic migration `20260513_0008_multi_turn.py` — adds
+      `judge_verdicts.decisive_seed_idx` (nullable int) +
+      `total_seeds` (int default 1), `findings.decisive_seed_idx`
+      (nullable int) + `total_seeds` (int default 1), and
+      `attack_executions.seed_idx` (int default 0). Schema mirror in
+      `src/cats/db/schema.py`. Existing rows default to single-turn.
+- [x] `cats.agents.red_team.escalation` — LLM-driven strategist that
+      decides between turns whether to ``escalate`` / ``stop`` /
+      ``declare_landed`` based on the transcript so far. Defensive
+      defaults: empty transcript → stop, ``seeds_per_attempt`` cap →
+      stop without an LLM call, empty target response → stop without
+      an LLM call, unparseable JSON / unknown decision → stop. 8 unit
+      tests (`test_escalation_decision.py`).
+- [x] Injection specialist + dispatcher accept
+      `prior_target_responses` alongside `prior_user_messages` and
+      switch the prompt to the multi-turn framing ("REACT to the
+      assistant's latest response") when both are supplied with
+      matching length. Falls back to the R3 diversity framing when
+      only `prior_user_messages` is supplied. 3 unit tests
+      (`test_injection_multi_turn_specialist.py`).
+- [x] `AttackEventPayload` carries `transcript: list[ConversationTurnPayload]`
+      + `conversation_stop_reason` (R10). `payload_version` bumped to
+      2; legacy single-turn-only consumers still work because the
+      old `payload` / `target_response` / `canary` triple mirrors the
+      last turn.
+- [x] `VerdictRenderedPayload` carries `decisive_seed_idx` +
+      `total_seeds` (R10). `payload_version` bumped to 2.
+- [x] Red Team worker reworked to a conversation-centric loop —
+      `_handle_plan_approved` walks PlanAttempts; each PlanAttempt is
+      one conversation; `_run_conversation` runs a turn → escalation
+      decision → turn loop bounded by `seeds_per_attempt`. One
+      ``runs`` row per conversation; one ``attack_executions`` row per
+      turn (with ascending ``seed_idx``). All four categories now
+      share a conversationId on the wire when `follow_up` succeeds.
+- [x] Judge consumes `payload.transcript` and runs `judge_llm` with
+      the full transcript. The prompt switches to a multi-turn
+      framing (one ``## Turn N`` block per turn) and the strict-JSON
+      response carries `decisive_seed_idx`. The verifier stashes
+      `decisive_seed_idx` + `total_seeds` into `evidence`; the worker
+      reads them back and writes them to the `judge_verdicts` row +
+      the `VerdictRendered` envelope. 5 unit tests
+      (`test_judge_multi_turn.py`).
+- [x] Documentation worker propagates `decisive_seed_idx` +
+      `total_seeds` from the verdict envelope onto the Finding row
+      via `upsert_finding`. The writer (`write_report`) surfaces the
+      decisive turn in the Reproduction section when the finding is
+      multi-turn.
+- [x] UI — `run_detail.html` gains a `Turn` column on the
+      per-execution cost table (reads `attack_executions.seed_idx`).
+      `finding_detail.html` gains a "decisive turn: T<n> of <total>"
+      pill on multi-turn findings; falls back to "multi-turn: N turns"
+      when no single turn was named decisive.
+- [x] Evals — 2 red-team cases (`07_injection_multi_turn_escalation`,
+      `08_injection_multi_turn_no_prior_responses_falls_back`) +
+      2 judge cases (`11_multi_turn_decisive_turn_identified`,
+      `12_multi_turn_holds_no_decisive_turn`). The red-team eval
+      runner now captures the specialist's user prompt so cases can
+      assert that the multi-turn framing actually reached the
+      prompt; the judge eval runner forwards `transcript` and
+      `evidence` so cases can assert `decisive_seed_idx`. `evals.suite`
+      passes 35/35 at 1.000.
+- [x] Integration test `tests/integration/test_multi_turn_e2e.py` —
+      drives the four worker processes against a fake OpenEMR that
+      returns escalating responses; FakeLLMClient scripts orchestrator
+      / specialist / escalation / judge. Asserts: one AttackEvent per
+      conversation, three turns share one run, ascending seed_idx,
+      one judge verdict with decisive_seed_idx + total_seeds, the
+      Red Team stopped on `declare_landed` before the cap. Requires
+      postgres + redis; verified to start cleanly under `alembic
+      upgrade head` on the worktree (full e2e not run in this session
+      because the worktree didn't have credentials for the shared
+      test DB role — flagged in the commit body and the retro).
 
 **Decisions.** *(builder records as made)*
 
-- _to be filled by R10 builder_
+- **2026-05-13 — Red Team agentic escalation between turns, not a
+  fixed K-seed independent-angles loop.** Per direct user direction:
+  the Red Team itself decides whether to push, declare landed, or
+  stop after each turn, rather than always firing `seeds_per_attempt`
+  seeds. `seeds_per_attempt` (default 5, cap 10) becomes the **upper
+  bound** on conversation length. The conversation can finish earlier
+  on `declare_landed` (the strategist saw the vulnerability land) or
+  `stop` (the angle is dead). Rationale: matches the user's framing
+  of "the red team should try to break in or expose the vulnerability
+  and may need multiple turns to do so — it should decide when to
+  escalate and when to give up." This is the load-bearing R10 design
+  call.
+- **2026-05-13 — Judge runs once per conversation, not per turn.**
+  Also direct user direction: the Judge sees the full transcript at
+  end-of-conversation and renders one verdict over the whole
+  conversation. The Red Team emits ONE `AttackEvent` per conversation
+  with `transcript: list[ConversationTurnPayload]` bundling every
+  turn. Rationale: "I don't see the value in having the judge operate
+  on in-flight conversations." Side-benefit: cheaper (1 Judge LLM
+  call per conversation instead of N), simpler decisive-turn
+  attribution, and the Judge gets full context for rulings that
+  wouldn't be obvious from any single turn.
+- **2026-05-13 — All four categories run multi-turn at the worker
+  level.** `_CONVERSATION_SHARING_CATEGORIES` extended from
+  `{injection}` to `{injection, exfil, tool_abuse, indirect_injection}`.
+  For categories where the OpenEMR agent rejects `follow_up` with
+  `invalid_envelope` (historically exfil + indirect), each turn falls
+  back to a fresh `default_briefing` — the Red Team-side transcript
+  still escalates and the Judge still sees every turn; the wire-level
+  conversation just doesn't share an agent-side context. Documented
+  as a known trade-off in `red_team.py`'s
+  `_CONVERSATION_SHARING_CATEGORIES` comment.
+- **2026-05-13 — Specialist-level multi-turn ("react to prior
+  response") is implemented for injection only.** The user's R10
+  direction was "all categories"; that's how the *worker* behaves,
+  but only the injection specialist today reads
+  `prior_target_responses` and switches its prompt framing
+  accordingly. Exfil, tool_abuse, and indirect_injection specialists
+  accept the parameter through the dispatcher chain but ignore it for
+  now — their multi-turn prompt work is a near-term follow-up.
+  Rationale: keeps the R10 surface area bounded; the load-bearing
+  agentic-escalation behavior is at the *worker* layer (the
+  strategist decides escalate/stop/declare_landed for all four
+  categories), and the Judge already sees the full transcript across
+  all four.
+- **2026-05-13 — `decisive_seed_idx` is a first-class column on
+  `judge_verdicts` + `findings`, not just an evidence-dict key.** Lets
+  the finding-detail page surface "decisive turn: T<n>" without
+  joining through evidence JSONB and without ever having to parse a
+  free-form dict. The verifier *also* stashes the value in `evidence`
+  so older consumers see it; the column is the source of truth.
+- **2026-05-13 — One ``runs`` row per conversation, not per turn.**
+  R9-era code emitted one `run_started` event per seed. With
+  multi-turn conversations sharing the same run, the run-detail UI's
+  per-execution table now naturally shows the whole escalation arc as
+  ascending `seed_idx` rows. The `attack_executions.seed_idx` column
+  makes this queryable without joins. Side-benefit: cost rollups
+  (`runs.budget_consumed_usd`) sum the whole conversation, which is
+  what an operator actually wants for the DoD's "per-turn cost is
+  visible" gate.
+- **2026-05-13 — Defense-in-depth cap of `MAX_CONVERSATION_TURNS=10`
+  in `escalation.py`.** Even if `seeds_per_attempt` were set to 10
+  (its schema cap), the strategist could oscillate `escalate` forever
+  in a degenerate failure mode. The 10-turn hard cap is an
+  *additional* floor that forces stop without an LLM call. In
+  practice the `seeds_per_attempt` cap fires first.
+- **2026-05-13 — Escalation strategist uses the `mutator` model
+  (DeepSeek).** Cheap per-call (mutator is already used for variant
+  generation), fast, and family-distinct from the Judge so the
+  family-diversity policy (Judge ≠ Red Team) holds even when the Red
+  Team is making strategic conversation-level decisions, not just
+  attack-level ones.
 
 **Retrospective.** *(builder fills in after R10 ships)*
 
-- What went well: _
-- What didn't: _
-- What to change for R11: _
+- What went well:
+  - **The R9-era multi-seed conversation infrastructure paid off
+    hard.** The target client already supported `task=follow_up` +
+    `conversation_id`; the executor already accepted
+    `prior_user_messages`; the worker already threaded a shared
+    conversationId across seeds. R10's job was to *upgrade the
+    semantics* — turn the K-seed loop into an agentic escalation
+    loop, route prior target responses to the specialist, and emit
+    one AttackEvent per conversation. Reusing the wire-level
+    infrastructure cut the actual code churn for "make it multi-turn"
+    to a focused rewrite of `_handle_plan_approved` rather than a
+    target-client rework.
+  - **The decisive-turn surfacing landed clean across three layers.**
+    `judge_verdicts.decisive_seed_idx` + `findings.decisive_seed_idx`
+    + the finding-detail pill + the `write_report` prompt block — all
+    threaded through with the same nullable-int semantics. The R8
+    pattern of "first-class column + evidence-dict mirror" served
+    well; it's now the project's idiom for surfacing Judge metadata.
+  - **Eval coverage is honest.** The red-team multi-turn cases assert
+    against the *specialist's user prompt content* (via the runner's
+    new prompt-capture seam), not just the produced user_message.
+    That means a regression that quietly drops the multi-turn prompt
+    framing will fail the eval — exactly the kind of thing the eval
+    suite is there to catch.
+- What didn't:
+  - **Worktree had no shared test DB credentials, so the full
+    integration test ran only at `alembic upgrade head`, not as an
+    e2e.** The test file is written, the migration applies cleanly,
+    all 574 unit tests + 35 eval cases are green, but the actual
+    four-worker e2e over postgres + redis was not executed in this
+    session. CI or the user's local env will exercise it. R11 should
+    standardize "worktree DB credentials" handling so this doesn't
+    recur.
+  - **The escalation strategist call adds a per-turn LLM cost that
+    isn't yet attributed in the per-turn cost rollup.** It's the
+    mutator role's cost (which already appears in the cost-by-agent
+    rollup on `run_detail`), but on multi-turn runs the strategist
+    fires once per *intermediate* turn — operator might be surprised
+    to see mutator-role costs on what looks like an injection run.
+    Worth a dashboard-side rename or a small "stop reason" surface in
+    a follow-up.
+  - **Specialist-level multi-turn is injection-only.** Acknowledged
+    in the Decisions section; exfil / tool_abuse / indirect_injection
+    specialists need their own "react to prior response" prompts. The
+    worker-level escalation flow works for all four; specialists
+    catching up is a clear, scoped follow-up.
+- What to change for R11:
+  - **Wire `prior_target_responses` into exfil / tool_abuse /
+    indirect_injection specialists.** The dispatcher signatures
+    already accept it; just need the per-category prompt updates.
+    Small, parallelizable.
+  - **Add a "stop reason" column on `runs` (or a UI pill).**
+    `AttackEventPayload.conversation_stop_reason` is on the wire but
+    not yet persisted or shown. An operator looking at a conversation
+    that stopped at 2/5 turns should be able to tell whether the
+    strategist declared the canary landed, the angle was dead, or a
+    transport error truncated the conversation.
+  - **Standardize worktree test-DB credential handling.** Multiple
+    rounds in a row have hit "the worktree doesn't have the test DB
+    role" as a friction point at integration-test time. A `make
+    worktree-init` that copies `.env` (or sets up a worktree-local
+    one with the shared test DB role) would close it.
 
 ---
 

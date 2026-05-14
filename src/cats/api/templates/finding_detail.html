@@ -32,6 +32,17 @@
         {% elif finding.status == 'regressed' %}<span class="pill red">regressed</span>
         {% elif finding.status == 'wont_fix' %}<span class="pill">won't fix</span>
         {% else %}<span class="pill">{{ finding.status }}</span>{% endif %}
+        {% if finding.total_seeds and finding.total_seeds > 1 %}
+          {% if finding.decisive_seed_idx is not none %}
+            <span class="pill cyan" title="Multi-turn finding — the Judge identified turn {{ finding.decisive_seed_idx }} of {{ finding.total_seeds }} as the one that crossed the line">
+              decisive turn: T{{ finding.decisive_seed_idx }} of {{ finding.total_seeds }}
+            </span>
+          {% else %}
+            <span class="pill" title="Multi-turn conversation; no single turn was named decisive">
+              multi-turn: {{ finding.total_seeds }} turns
+            </span>
+          {% endif %}
+        {% endif %}
       </div>
     </div>
     {% if finding.summary %}

@@ -23,6 +23,10 @@ Recognized keys under ``## Expected``:
 - ``output_filter`` ("safe" | "attack_payload" | "dangerous"):
   what the deterministic Output Filter must classify the
   ``user_message`` as. Default is no check.
+- ``prompt_must_contain`` (list[str], R10): each string must appear
+  in the user-prompt the specialist saw. Lets multi-turn fixtures
+  assert the specialist actually received prior turns' transcript
+  in its prompt (and presumably reacted to them).
 """
 
 from __future__ import annotations
@@ -90,6 +94,14 @@ def score(case: Case, proposal: dict[str, Any]) -> ScoreResult:
             "output_filter",
             scan.verdict == exp["output_filter"],
             f"scanner verdict={scan.verdict!r} reason={scan.reason!r}",
+        )
+
+    captured_prompt = str(proposal.get("_captured_prompt") or "")
+    for phrase in exp.get("prompt_must_contain", []) or []:
+        result.add(
+            f"prompt_contains[{phrase}]",
+            phrase in captured_prompt,
+            "" if phrase in captured_prompt else f"{phrase!r} missing from specialist prompt",
         )
 
     if not result.checks:

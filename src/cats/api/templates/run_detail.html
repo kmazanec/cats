@@ -69,6 +69,7 @@
           <thead>
             <tr>
               <th style="width: 90px;">Attack</th>
+              <th style="width: 60px;">Turn</th>
               <th>Title</th>
               <th style="width: 130px;">Agent role</th>
               <th style="width: 90px;">Target</th>
@@ -87,6 +88,7 @@
                   hx-swap="innerHTML"
                   hx-on::after-request="document.getElementById('exec-detail').scrollIntoView({behavior:'smooth', block:'start'});">
                 <td class="mono muted">{{ (e.id|string)[:8] }}</td>
+                <td class="mono num">T{{ e.seed_idx if e.seed_idx is not none else 0 }}</td>
                 <td>
                   <strong>{{ e.attack_title }}</strong>
                   <div class="muted mono" style="font-size: 11px;">{{ e.attack_signature }}</div>

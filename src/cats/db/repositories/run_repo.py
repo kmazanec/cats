@@ -79,6 +79,8 @@ async def record_verdict(
     evidence: dict[str, Any],
     judge_model: str,
     rubric_version_id: UUID | None = None,
+    decisive_seed_idx: int | None = None,
+    total_seeds: int = 1,
 ) -> UUID:
     new_id = uuid4()
     from sqlalchemy import insert
@@ -92,6 +94,8 @@ async def record_verdict(
             evidence=evidence,
             judge_model=judge_model[:120],
             rubric_version_id=rubric_version_id,
+            decisive_seed_idx=decisive_seed_idx,
+            total_seeds=total_seeds,
         )
     )
     return new_id
@@ -116,6 +120,7 @@ async def record_execution(
     usd_estimate: float,
     langsmith_trace_id: str | None,
     error: str | None = None,
+    seed_idx: int = 0,
 ) -> UUID:
     new_id = uuid4()
     now = _utcnow()
@@ -142,6 +147,7 @@ async def record_execution(
             started_at=now,
             ended_at=now,
             error=error,
+            seed_idx=seed_idx,
         )
     )
     return new_id
@@ -173,6 +179,8 @@ async def upsert_finding(
     summary: str = "",
     atlas_technique_id: str | None = "AML.T0051",
     owasp_llm_id: str | None = "LLM01",
+    decisive_seed_idx: int | None = None,
+    total_seeds: int = 1,
 ) -> UUID:
     stmt = (
         pg_insert(findings)
@@ -185,6 +193,8 @@ async def upsert_finding(
             summary=summary[:2000],
             atlas_technique_id=atlas_technique_id,
             owasp_llm_id=owasp_llm_id,
+            decisive_seed_idx=decisive_seed_idx,
+            total_seeds=total_seeds,
         )
         .on_conflict_do_nothing(index_elements=["run_id", "category", "signature"])
         .returning(findings.c.id)

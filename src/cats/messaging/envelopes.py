@@ -142,8 +142,36 @@ class CampaignPlanApprovedPayload(BaseModel):
     project_version_id: UUID
 
 
+class ConversationTurnPayload(BaseModel):
+    """R10 — one turn of a multi-turn attack conversation. Bundled into
+    :class:`AttackEventPayload.transcript` so the Judge sees the full
+    conversation, not just the latest turn.
+
+    ``attack_execution_id`` is the per-turn execution row; on a
+    multi-turn finding the Judge can use it to attribute the decisive
+    turn back to the precise execution the operator inspects."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seed_idx: int
+    user_message: str
+    target_response: str
+    attack_execution_id: UUID
+    target_status_code: int = 0
+    target_error: str | None = None
+    target_latency_ms: int = 0
+
+
 class AttackEventPayload(BaseModel):
-    """Red Team → Judge. One attempted attack against the live target.
+    """Red Team → Judge. One conversation against the live target.
+
+    R10 — what used to be one envelope per (attack, response) pair is
+    now one envelope per *conversation*. ``transcript`` carries every
+    turn the Red Team chose to fire; the Judge rules over the whole
+    transcript and returns a decisive turn index. The legacy
+    ``payload`` / ``target_response`` / ``canary`` fields mirror the
+    *last* turn (the one whose response triggered the conversation
+    stop) so single-turn-aware consumers keep working.
 
     ``seed_idx`` distinguishes the K seeds the Red Team fires per plan
     attempt; ``iteration`` distinguishes Mutator variants of a single
@@ -152,7 +180,7 @@ class AttackEventPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    payload_version: int = 1
+    payload_version: int = 2  # R10 — added `transcript`.
     campaign_id: UUID
     run_id: UUID
     attack_id: UUID
@@ -178,6 +206,18 @@ class AttackEventPayload(BaseModel):
     # §8.1-8.7) on its `evidence` payload without inventing a new
     # verdict tier. A full DoS attack family lives in a future round.
     target_latency_ms: int = 0
+    # R10 — the full conversation the Red Team fired. Single-turn
+    # callers leave this empty (the Judge falls back to the legacy
+    # ``payload``/``target_response``/``canary`` triple). Multi-turn
+    # callers populate every turn the Red Team chose to send.
+    transcript: list[ConversationTurnPayload] = Field(default_factory=list)
+    # R10 — stop reason from the Red Team's escalation decision:
+    # ``cap_reached`` (seeds_per_attempt cap), ``stop`` (strategist said
+    # stop), ``declare_landed`` (strategist said the vulnerability
+    # landed), ``error`` (transport failure short-circuited the loop).
+    # Surfaced on the campaign-detail UI; not load-bearing for the
+    # Judge's verdict.
+    conversation_stop_reason: str = ""
 
 
 VerdictKind = Literal["pass", "fail", "partial", "error"]
@@ -195,7 +235,7 @@ class VerdictRenderedPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    payload_version: int = 1
+    payload_version: int = 2  # R10 — added decisive_seed_idx + total_seeds.
     campaign_id: UUID
     run_id: UUID
     attack_id: UUID
@@ -208,6 +248,12 @@ class VerdictRenderedPayload(BaseModel):
     is_deterministic: bool = False
     iteration: int = 0
     seed_idx: int = 0
+    # R10 — when the Judge ruled over a multi-turn conversation, this
+    # names the turn it judged decisive. ``None`` for single-turn
+    # findings and multi-turn fails. ``total_seeds`` is the
+    # conversation length the Judge weighed (always >= 1).
+    decisive_seed_idx: int | None = None
+    total_seeds: int = 1
 
 
 class CampaignReportRequestedPayload(BaseModel):

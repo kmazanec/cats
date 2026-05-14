@@ -84,15 +84,46 @@ async def _run_case(case: Case) -> dict[str, Any]:
             f"{case.case_id}: inputs.fake_specialist_response required (object the specialist's LLM returns)"
         )
 
+    # R10 — multi-turn fixtures pass prior_user_messages +
+    # prior_target_responses + seed_idx so the specialist's prompt
+    # exercises the multi-turn framing. The scorer can then inspect
+    # the captured prompt to assert the specialist saw / reacted to
+    # the prior turn.
+    prior_user_messages = case.inputs.get("prior_user_messages")
+    prior_target_responses = case.inputs.get("prior_target_responses")
+    seed_idx = int(case.inputs.get("seed_idx") or 0)
+
     fake = FakeLLMClient()
     fake_text = json.dumps(fake_response)
-    fake.register(_ROLE_BY_CATEGORY[category], lambda _msgs: fake_text)
+    captured: dict[str, Any] = {}
+
+    def _r(messages: list[dict[str, Any]]) -> str:
+        captured["last_user_prompt"] = (
+            next((m for m in messages if m.get("role") == "user"), {}).get("content") or ""
+        )
+        return fake_text
+
+    fake.register(_ROLE_BY_CATEGORY[category], _r)
     install_override(fake)
     try:
-        proposal = await _DISPATCH_BY_CATEGORY[category](technique=technique, llm=fake)
+        # Only the injection dispatcher today accepts the multi-turn
+        # context. Other categories' multi-turn specialist work is a
+        # near-term follow-up — they still run the eval as single-turn.
+        if category == "injection":
+            proposal = await _DISPATCH_BY_CATEGORY[category](
+                technique=technique,
+                llm=fake,
+                seed_idx=seed_idx,
+                prior_user_messages=prior_user_messages,
+                prior_target_responses=prior_target_responses,
+            )
+        else:
+            proposal = await _DISPATCH_BY_CATEGORY[category](technique=technique, llm=fake)
     finally:
         install_override(None)
-    return _proposal_to_dict(proposal)
+    out = _proposal_to_dict(proposal)
+    out["_captured_prompt"] = captured.get("last_user_prompt", "")
+    return out
 
 
 def run_eval(cases: list[Case] | None = None) -> list[ScoreResult]:

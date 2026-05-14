@@ -175,6 +175,8 @@ class DocumentationWorker(Worker):
             summary=payload.rationale,
             atlas_technique_id=label.atlas_technique_id,
             owasp_llm_id=label.owasp_llm_id,
+            decisive_seed_idx=payload.decisive_seed_idx,
+            total_seeds=payload.total_seeds,
         )
         # R8 — auto-promote confirmed findings into RegressionCases so the
         # deploy-time sweep has something to re-run. Pins the rubric
@@ -194,6 +196,8 @@ class DocumentationWorker(Worker):
             target_response_text=response_text,
             verdict=payload.verdict,
             rationale=payload.rationale,
+            decisive_seed_idx=payload.decisive_seed_idx,
+            total_seeds=payload.total_seeds,
         )
         report_id = await record_report(
             session,

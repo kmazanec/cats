@@ -218,6 +218,12 @@ judge_verdicts = Table(
     Column("is_deterministic", Boolean, nullable=False, server_default=text("false")),
     Column("evidence", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("rationale", Text, nullable=False, server_default=""),
+    # R10 — when the Judge rules over a multi-turn conversation, this
+    # names the turn it judged decisive (the one that crossed the line).
+    # Null on single-turn rows and on multi-turn fails. ``total_seeds``
+    # is the conversation length the verdict was rendered over (>= 1).
+    Column("decisive_seed_idx", Integer, nullable=True),
+    Column("total_seeds", Integer, nullable=False, server_default="1"),
     _ts(),
     CheckConstraint(
         "verdict IN ('pass','fail','partial','error')",
@@ -269,6 +275,11 @@ attack_executions = Table(
     # R2 — which agent role's LLM call produced this row, for per-role cost
     # breakdown ('redteam_injection', 'judge', 'documentation', etc.).
     Column("agent_role", String(64), nullable=False, server_default=""),
+    # R10 — which turn of a multi-turn conversation this execution is.
+    # 0 for the first (or only) turn; the Red Team's agentic escalation
+    # loop bumps this as it fires follow_ups in the same OpenEMR
+    # conversation. Lets the run-detail UI surface per-turn cost.
+    Column("seed_idx", Integer, nullable=False, server_default="0"),
     _ts(),
     Index("ix_attack_executions_run_id", "run_id"),
     Index("ix_attack_executions_attack_id", "attack_id"),
@@ -296,6 +307,11 @@ findings = Table(
     Column("summary", Text, nullable=False, server_default=""),
     Column("atlas_technique_id", String(64), nullable=True),
     Column("owasp_llm_id", String(32), nullable=True),
+    # R10 — multi-turn surface. Mirror of judge_verdicts.decisive_seed_idx
+    # so the finding-detail page can name the turn that crossed the line
+    # without joining through the verdict.
+    Column("decisive_seed_idx", Integer, nullable=True),
+    Column("total_seeds", Integer, nullable=False, server_default="1"),
     _ts(),
     Column("updated_at", DateTime(timezone=True), nullable=False, default=_utcnow),
     UniqueConstraint("run_id", "category", "signature", name="uq_findings_run_cat_sig"),
