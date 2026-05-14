@@ -206,7 +206,7 @@ async def test_agent_drives_propose_fire_mutate_fire_submit(
     _ = (fake_propose, fake_mutator)
     fake = FakeLLMClient()
     fake.register_sequence(
-        "redteam_injection",
+        "redteam_supervisor",
         _script_tool_sequence(
             {
                 "id": "c1",
@@ -291,7 +291,7 @@ async def test_agent_force_submits_on_turn_cap(
     monkeypatch.setattr(agent_mod, "MAX_TURNS_SOFT", 2)
     fake = FakeLLMClient()
     fake.register_sequence(
-        "redteam_injection",
+        "redteam_supervisor",
         _script_tool_sequence(
             {
                 "id": "c1",
@@ -354,7 +354,7 @@ async def test_agent_submit_without_firing_is_recorded_with_no_turns(
     _ = (fake_propose, fake_mutator)
     fake = FakeLLMClient()
     fake.register_sequence(
-        "redteam_injection",
+        "redteam_supervisor",
         _script_tool_sequence(
             {
                 "id": "c1",
@@ -403,7 +403,7 @@ async def test_agent_audit_log_records_submission(
     audit_log = _silence_audit
     fake = FakeLLMClient()
     fake.register_sequence(
-        "redteam_injection",
+        "redteam_supervisor",
         _script_tool_sequence(
             {
                 "id": "c1",
@@ -462,7 +462,7 @@ async def test_agent_unknown_tool_call_returns_error_payload(
     _ = (fake_propose, fake_mutator, fake_fire)
     fake = FakeLLMClient()
     fake.register_sequence(
-        "redteam_injection",
+        "redteam_supervisor",
         _script_tool_sequence(
             {
                 "id": "c1",
@@ -569,7 +569,7 @@ async def test_agent_halts_mid_batch_when_parallel_tool_calls_blow_the_cap(
             )(),
         ]
 
-    fake.register_sequence("redteam_injection", _seq())
+    fake.register_sequence("redteam_supervisor", _seq())
     install_override(fake)
     try:
         result = await run_red_team_agent(
@@ -601,11 +601,16 @@ def test_all_tools_have_unique_names() -> None:
     assert len(names) == len(set(names)), f"duplicate tool name: {names}"
 
 
-def test_role_for_category_falls_back_to_injection() -> None:
-    """Unknown categories must not crash the agent; they map to the
-    injection role so the LLM call still happens with a valid model."""
-    assert tools_mod.role_for_category("does-not-exist") == "redteam_injection"
-    assert tools_mod.role_for_category("exfil") == "redteam_exfil"
+def test_role_for_category_returns_supervisor_for_every_category() -> None:
+    """The agent's attacker LLM always uses the supervisor role —
+    one tool-capable model across all four categories. The per-category
+    specialist roles are used inside propose_attack (executor.py), not
+    here."""
+    assert tools_mod.role_for_category("injection") == "redteam_supervisor"
+    assert tools_mod.role_for_category("indirect_injection") == "redteam_supervisor"
+    assert tools_mod.role_for_category("exfil") == "redteam_supervisor"
+    assert tools_mod.role_for_category("tool_abuse") == "redteam_supervisor"
+    assert tools_mod.role_for_category("does-not-exist") == "redteam_supervisor"
 
 
 def test_system_prompt_interpolates_assignment() -> None:
@@ -642,7 +647,7 @@ async def test_propose_attack_rejected_when_called_twice(
     _ = (fake_propose, fake_mutator, fake_fire)
     fake = FakeLLMClient()
     fake.register_sequence(
-        "redteam_injection",
+        "redteam_supervisor",
         _script_tool_sequence(
             {
                 "id": "c1",

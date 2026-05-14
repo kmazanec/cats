@@ -117,13 +117,13 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
             }
         ),
     )
-    # R10-follow-up — the redteam_injection role serves TWO purposes
-    # under the LangGraph agent topology: (a) the agent's *attacker*
-    # turn (responses must be tool calls) and (b) the injection
-    # specialist's JSON proposal (called from inside the agent's
-    # ``propose_attack`` tool). Disambiguate by the system prompt:
-    # "Red Team agent" appears in the agent's prompt but not in
-    # the specialist's. The attacker sequence here drives:
+    # R10-followup (revised) — two distinct LLM roles:
+    # (a) ``redteam_supervisor`` — the agent's *attacker* node. Returns
+    #     tool_calls; one model across all four categories.
+    # (b) ``redteam_injection`` — the per-category attack generator,
+    #     called inside the agent's ``propose_attack`` tool. Returns
+    #     strict JSON; no tool calls.
+    # The attacker script drives:
     # lookup_regression_history → propose_attack → fire_at_target →
     # submit_for_judgment.
     attacker_script: list[dict[str, Any]] = [
@@ -149,18 +149,18 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     attacker_counter = {"n": 0}
 
-    def _injection_responder(messages: list[dict[str, Any]]) -> Any:
-        system = next(
-            (str(m.get("content", "")) for m in messages if m.get("role") == "system"),
-            "",
-        )
-        if "Red Team agent" in system:
-            idx = attacker_counter["n"]
-            attacker_counter["n"] += 1
-            if idx < len(attacker_script):
-                return {"text": "", "tool_calls": [attacker_script[idx]]}
-            return {"text": "(no further moves)"}
-        return json.dumps(
+    def _supervisor_responder(messages: list[dict[str, Any]]) -> Any:
+        _ = messages
+        idx = attacker_counter["n"]
+        attacker_counter["n"] += 1
+        if idx < len(attacker_script):
+            return {"text": "", "tool_calls": [attacker_script[idx]]}
+        return {"text": "(no further moves)"}
+
+    fake.register("redteam_supervisor", _supervisor_responder)
+    fake.register(
+        "redteam_injection",
+        lambda _m: json.dumps(
             {
                 "title": "ignore previous probe",
                 "description": "test ignore_previous specialist",
@@ -171,9 +171,8 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
                 ),
                 "canary": "R4-CANARY",
             }
-        )
-
-    fake.register("redteam_injection", _injection_responder)
+        ),
+    )
     fake.register(
         "documentation",
         lambda _m: "# Finding\n\nDeterministic pass via canary echo.",

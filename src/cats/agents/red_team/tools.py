@@ -636,18 +636,24 @@ def transcript_payload(ctx: AgentContext) -> list[ConversationTurnPayload]:
     ]
 
 
-# Per-category role used for the attacker LLM call. The agent reuses
-# the existing per-category roles so the family-diversity policy
-# (Judge ≠ Red Team family) keeps holding. The mutator role is reused
-# for mutate_attack's internal LLM call (matches today's mutator
-# behavior). Categories not in this map fall back to injection.
-ROLE_FOR_CATEGORY: dict[str, AgentRole] = {
-    "injection": "redteam_injection",
-    "indirect_injection": "redteam_indirect_injection",
-    "exfil": "redteam_exfil",
-    "tool_abuse": "redteam_toolabuse",
-}
+# The agent's attacker LLM call goes through a single supervisor
+# role across all four categories. This is the *brain* of the agent
+# (picks tools, owns the conversation); it does NOT author the
+# actual attack content. The attack content is authored by the
+# per-category specialist role inside the propose_attack tool —
+# see ``_propose_attack`` in executor.py for the dispatch.
+#
+# The split exists because the two jobs need different models: the
+# supervisor must support function calling (so the agent can call
+# tools), while the per-category generators are JSON-output-only
+# and benefit from low-refusal adversarial models that don't
+# necessarily have tool support on OpenRouter.
+SUPERVISOR_ROLE: AgentRole = "redteam_supervisor"
 
 
 def role_for_category(category: str) -> AgentRole:
-    return ROLE_FOR_CATEGORY.get(category, "redteam_injection")
+    """Return the role for the agent's attacker LLM. Currently one
+    supervisor role across all categories; the per-category split is
+    enforced in the specialist dispatch (executor.py)."""
+    _ = category  # kept on the signature in case we want per-category supervisors later
+    return SUPERVISOR_ROLE

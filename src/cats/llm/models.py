@@ -11,6 +11,17 @@ from typing import Literal
 
 AgentRole = Literal[
     "orchestrator",
+    # The Red Team agent's *brain*. Drives the attacker LangGraph
+    # node, picks tools, owns the conversation. Needs function-calling
+    # support, not adversarial creativity — the actual attack content
+    # is authored by the per-category specialist below. One supervisor
+    # role across all four categories so the agent's reasoning style
+    # stays consistent.
+    "redteam_supervisor",
+    # Per-category attack *generators*. Each produces one JSON
+    # payload (no tool calls advertised) when the agent invokes the
+    # propose_attack tool. Low-refusal models matter here — this is
+    # the LLM that has to actually write the adversarial content.
     "redteam_injection",
     "redteam_indirect_injection",
     "redteam_exfil",
@@ -36,41 +47,48 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
         fallback="openai/gpt-5",
         notes="Strict-JSON campaign plans; once-per-campaign so cost is low.",
     ),
-    # R10-followup (revised) — every redteam_* role MUST use a model
-    # whose OpenRouter endpoints advertise ``tools`` support, because
-    # the agent's attacker node calls ``chat(..., tools=ALL_TOOLS)``.
-    # Hermes 4 405B (the original primary across the redteam roles) is
-    # served only by Nebius on OpenRouter, which doesn't expose tools
-    # — `chat/completions` returns HTTP 404 ("No endpoints found that
-    # support tool use") for any redteam call. We rotate to a
-    # DeepSeek / Qwen / Llama trio: all three support tools, are
-    # cheap, and reflect the brief's preference for smaller /
-    # open-source / lower-refusal models. Tool-capable models filter:
-    #   - deepseek/deepseek-chat            tools=True
-    #   - qwen/qwen-2.5-72b-instruct        tools=True
-    #   - meta-llama/llama-3.3-70b-instruct tools=True
-    #
-    # The per-role split keeps a different model for each category so
-    # one provider going down doesn't kill the whole campaign.
-    "redteam_injection": ModelChoice(
+    # The Red Team agent's *brain* (orchestrator-of-the-attack, not to
+    # be confused with the platform-level Orchestrator that builds the
+    # campaign plan). One model across all 4 categories. MUST support
+    # function calling on OpenRouter — the agent's attacker LangGraph
+    # node calls ``chat(..., tools=ALL_TOOLS)`` on every turn.
+    # DeepSeek (tools=True) is cheap, strong at tool reasoning, and
+    # has the lowest refusal rate of the tool-capable open models on
+    # OpenRouter today. Qwen 2.5 72B as fallback for provider
+    # diversity (also tools=True).
+    "redteam_supervisor": ModelChoice(
         primary="deepseek/deepseek-chat",
         fallback="qwen/qwen-2.5-72b-instruct",
-        notes="DeepSeek primary (cheap, tool-capable, low refusal). Qwen fallback for provider diversity.",
+        notes="Tool-capable supervisor for the agent's attacker loop. Reasoning-only; the attack content itself is authored by the per-category specialist roles below.",
+    ),
+    # Per-category attack *generators*. Each produces one JSON
+    # proposal per propose_attack tool call (no tools= advertised on
+    # this LLM call, so they don't need OpenRouter tool support).
+    # Picked for low refusal on adversarial content — these are the
+    # models that actually write the prompts the platform fires.
+    # Hermes 4 405B is the lowest-refusal-rate open model with
+    # acceptable JSON output for this; Dolphin-Venice serves as the
+    # ~2%-refusal escape hatch when Hermes hedges. Sonnet 4.5 fallback
+    # for exfil because the wording needs clinical realism.
+    "redteam_injection": ModelChoice(
+        primary="nousresearch/hermes-4-405b",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+        notes="Low-refusal direct-injection content. JSON output only; no tool calls.",
     ),
     "redteam_indirect_injection": ModelChoice(
-        primary="qwen/qwen-2.5-72b-instruct",
-        fallback="deepseek/deepseek-chat",
-        notes="Qwen primary (the LLM only authors the visible_text + hidden_instruction; need tool calls to assemble the docx via fire_at_target).",
+        primary="nousresearch/hermes-4-405b",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+        notes="Low-refusal visible_text + hidden_instruction content for the docx. Same refusal concern as direct injection.",
     ),
     "redteam_exfil": ModelChoice(
-        primary="meta-llama/llama-3.3-70b-instruct",
-        fallback="deepseek/deepseek-chat",
-        notes="Llama 3.3 70B (tool-capable, clinical-realistic). DeepSeek fallback.",
+        primary="nousresearch/hermes-4-405b",
+        fallback="anthropic/claude-sonnet-4.5",
+        notes="Low-refusal exfil framing. Sonnet fallback w/ authorized-pentest framing when Hermes hedges on realistic clinical wording.",
     ),
     "redteam_toolabuse": ModelChoice(
         primary="deepseek/deepseek-chat",
-        fallback="qwen/qwen-2.5-72b-instruct",
-        notes="DeepSeek strong tool-use reasoning + low refusal + cheap. Qwen fallback (also tool-capable).",
+        fallback="nousresearch/hermes-4-405b",
+        notes="DeepSeek's tool-use reasoning is the right shape for crafting tool-abuse prompts (parameter tampering, recursive calls). Hermes fallback if DeepSeek refuses.",
     ),
     "mutator": ModelChoice(
         primary="deepseek/deepseek-chat",

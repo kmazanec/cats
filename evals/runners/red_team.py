@@ -225,7 +225,9 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
         saved_max_turns_soft = agent_mod.MAX_TURNS_SOFT
         agent_mod.MAX_TURNS_SOFT = int(max_turns_soft_override)
     fake = FakeLLMClient()
-    fake.register_sequence("redteam_injection", _build_attacker_sequence(scripted))
+    # Attacker LLM calls go through the supervisor role across all
+    # categories (R10-followup revised).
+    fake.register_sequence("redteam_supervisor", _build_attacker_sequence(scripted))
     install_override(fake)
     try:
         result = await run_red_team_agent(
@@ -295,19 +297,10 @@ async def _run_multi_attempt_case(case: Case) -> dict[str, Any]:
             if not isinstance(scripted, list) or not scripted:
                 raise ValueError(f"{case.case_id}: attempts[{idx}].scripted_tool_calls required")
             fake = FakeLLMClient()
-            # Register the same scripted sequence under every Red Team
-            # role — the agent picks its attacker role based on the
-            # PlanAttempt's category (``redteam_injection`` /
-            # ``redteam_exfil`` / etc.), so a single per-role registration
-            # would miss cross-category multi-attempt sessions.
+            # Attacker LLM calls go through the supervisor role across
+            # all categories (R10-followup revised).
             attacker_seq = _build_attacker_sequence(scripted)
-            for role in (
-                "redteam_injection",
-                "redteam_exfil",
-                "redteam_toolabuse",
-                "redteam_indirect_injection",
-            ):
-                fake.register_sequence(role, list(attacker_seq))
+            fake.register_sequence("redteam_supervisor", list(attacker_seq))
             install_override(fake)
             result = await run_red_team_agent(
                 session=session,
