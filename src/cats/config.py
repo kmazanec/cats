@@ -109,14 +109,6 @@ class Settings(BaseSettings):
     eval_nightly_budget_usd: float = Field(default=2.00, alias="CATS_EVAL_NIGHTLY_BUDGET_USD")
     eval_accuracy_threshold: float = Field(default=0.85, alias="CATS_EVAL_ACCURACY_THRESHOLD")
 
-    # Where the Documentation Agent writes campaign-report SVG artifacts.
-    # The DB stores paths relative to this root; the API route serves
-    # the SVGs straight off disk. Configurable so prod can mount a
-    # persistent volume here while local dev writes into /tmp.
-    campaign_reports_dir: str = Field(
-        default="/tmp/cats-campaign-reports",
-        alias="CATS_CAMPAIGN_REPORTS_DIR",
-    )
     # Max turns the campaign-report tool loop will take before forcing
     # the LLM to call ``finish_report``. Keeps cost bounded.
     campaign_report_max_turns: int = Field(default=16, alias="CATS_CAMPAIGN_REPORT_MAX_TURNS")

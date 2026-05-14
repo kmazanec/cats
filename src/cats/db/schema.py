@@ -747,6 +747,37 @@ campaign_reports = Table(
 )
 
 
+# Per-campaign report artifacts (SVG charts the documenter renders +
+# embeds in body_markdown via ![alt](name)). Stored in Postgres so the
+# api container can serve them without sharing a filesystem with the
+# documentation worker that wrote them — the prior on-disk layout
+# (settings.campaign_reports_dir) didn't survive a multi-container
+# deployment because each container had its own /tmp. Body is text
+# (SVG is XML); the unique index on (campaign_id, name) lets the
+# documenter idempotently re-render an artifact under the same name
+# across regeneration cycles.
+campaign_report_artifacts = Table(
+    "campaign_report_artifacts",
+    metadata,
+    _uuid_pk(),
+    Column(
+        "campaign_id",
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("name", String(120), nullable=False),
+    Column("kind", String(64), nullable=False, server_default=""),
+    Column("title", String(300), nullable=False, server_default=""),
+    Column("alt", String(300), nullable=False, server_default=""),
+    Column("content_type", String(80), nullable=False, server_default="image/svg+xml"),
+    Column("body", Text, nullable=False, server_default=""),
+    _ts(),
+    UniqueConstraint("campaign_id", "name", name="uq_campaign_report_artifacts_campaign_id_name"),
+    Index("ix_campaign_report_artifacts_campaign_id", "campaign_id"),
+)
+
+
 __all__ = [
     "agent_dead_letters",
     "agent_messages",
@@ -754,6 +785,7 @@ __all__ = [
     "attacks",
     "audit_log",
     "campaign_plans",
+    "campaign_report_artifacts",
     "campaign_reports",
     "campaigns",
     "documentation_drafts",

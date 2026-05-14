@@ -44,7 +44,7 @@ def test_verdict_histogram_handles_empty_input() -> None:
     svg = render_verdict_histogram({"by_category": {}})
     root = _parse_svg(svg)
     assert root.tag.endswith("svg")
-    assert "No attacks" in ET.tostring(root, encoding="unicode")
+    assert "No runs" in ET.tostring(root, encoding="unicode")
 
 
 def test_cost_breakdown_renders_bars_per_role() -> None:

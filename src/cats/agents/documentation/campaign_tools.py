@@ -1,23 +1,34 @@
-"""Data tools the Documentation Agent's campaign-report writer calls.
+"""Data + render tools the Documentation Agent's campaign-report
+writer calls.
 
-Each function in the ``data_*`` family takes a session + a campaign id
-and returns a JSON-serializable dict the LLM can consume. The
-``render_*`` family returns SVG strings the writer saves to disk and
-embeds in the markdown.
+Each ``data_*`` function takes a session + a campaign id and returns
+a JSON-serializable dict the LLM consumes. The ``render_*`` family
+returns SVG strings; the writer persists them under
+``campaign_report_artifacts`` (Postgres, served by the api directly —
+no shared filesystem with the worker).
 
-These functions are *the entire surface* the report writer's LLM sees.
-Anything the LLM wants to know about a campaign has to be queryable
-through one of these tools, by design — the report stays grounded in
-real platform data and the LLM cannot hallucinate fields that the
-queries don't expose.
+The unit of analysis is the **run** (one (category, technique)
+scenario in the Week-3 brief sense), not the attack execution. The
+R10-followup Red Team agent fires N executions inside one run (one
+per conversation turn) and the Judge rules **once** over the whole
+conversation, attaching its verdict to the *decisive* execution row.
+So joining ``attack_executions`` against ``judge_verdicts`` directly
+would tally one verdict per run but N nulls for the non-decisive
+turns — the model would then report "N pending attempts" for a run
+the platform actually finished. These tools always speak in runs.
 
 Verdict semantics reminder (matches the Judge contract):
 
-- ``pass``    — attack succeeded; defense failed.
+- ``pass``    — attack succeeded; defense failed. This is a finding.
 - ``fail``    — attack failed; defense held.
 - ``partial`` — partial compliance; mutator's responsibility.
 - ``error``   — response was not evaluable (target errored, empty body,
   unparseable). NOT a defensive win.
+- ``run_failed`` — the run itself failed (status='failed') and no
+  Judge verdict was rendered. Platform-side issue, not a defense.
+- ``unjudged``  — run finished but no verdict was attached (the agent
+  never submitted, or the Judge dropped the message). Surface
+  separately so they aren't silently bucketed as "pending forever".
 """
 
 from __future__ import annotations
@@ -43,14 +54,132 @@ from cats.db.schema import (
 from cats.llm.client import ToolSpec
 
 # ---------------------------------------------------------------------------
+# Run-centric helpers — used by multiple data tools.
+# ---------------------------------------------------------------------------
+
+# Verdicts the report bucket synthesizes for runs that didn't produce
+# a Judge verdict, so they aren't lost in aggregation.
+_VERDICT_RUN_FAILED = "run_failed"
+_VERDICT_UNJUDGED = "unjudged"
+
+
+async def _per_run_rows(session: AsyncSession, *, campaign_id: UUID) -> list[dict[str, Any]]:
+    """Return one row per run in the campaign, joined to its terminal
+    Judge verdict (if any) and the first attack's (category, technique)
+    so the report has a useful label to write against. The first
+    execution row by ``seed_idx`` defines the run's scenario; the
+    Judge's row is reached through ``judge_verdict_id`` on whichever
+    execution carried the submission.
+
+    Returns rows whose verdict has been canonicalized to one of the
+    extended set documented at the top of this module — never a NULL
+    that the LLM would have to guess at."""
+    # Per-run scenario label: the attack on the first execution
+    # (seed_idx = min) is the prompt the agent led with — the right
+    # name to call the scenario by.
+    label_q = (
+        select(
+            attack_executions.c.run_id.label("run_id"),
+            attacks.c.category.label("category"),
+            attacks.c.payload["technique"].astext.label("technique"),
+            attacks.c.title.label("attack_title"),
+        )
+        .select_from(attack_executions.join(attacks, attacks.c.id == attack_executions.c.attack_id))
+        .where(
+            attack_executions.c.seed_idx
+            == select(func.min(attack_executions.c.seed_idx))
+            .where(attack_executions.c.run_id == runs.c.id)
+            .correlate(runs)
+            .scalar_subquery()
+        )
+        .subquery("run_label")
+    )
+
+    # Per-run verdict: a run has at most one judge_verdicts row reached
+    # via attack_executions.judge_verdict_id. Pick it.
+    verdict_q = (
+        select(
+            attack_executions.c.run_id.label("run_id"),
+            judge_verdicts.c.verdict.label("verdict"),
+            judge_verdicts.c.rationale.label("rationale"),
+            judge_verdicts.c.exploitability.label("exploitability"),
+            judge_verdicts.c.decisive_seed_idx.label("decisive_seed_idx"),
+            judge_verdicts.c.total_seeds.label("total_seeds"),
+        )
+        .select_from(
+            attack_executions.join(
+                judge_verdicts,
+                judge_verdicts.c.id == attack_executions.c.judge_verdict_id,
+            )
+        )
+        .subquery("run_verdict")
+    )
+
+    rows = (
+        await session.execute(
+            select(
+                runs.c.id.label("run_id"),
+                runs.c.status.label("run_status"),
+                runs.c.started_at.label("started_at"),
+                runs.c.ended_at.label("ended_at"),
+                runs.c.attacks_fired.label("attacks_fired"),
+                runs.c.budget_consumed_usd.label("usd_estimate"),
+                label_q.c.category,
+                label_q.c.technique,
+                label_q.c.attack_title,
+                verdict_q.c.verdict,
+                verdict_q.c.rationale,
+                verdict_q.c.exploitability,
+                verdict_q.c.decisive_seed_idx,
+                verdict_q.c.total_seeds,
+            )
+            .select_from(
+                runs.outerjoin(label_q, label_q.c.run_id == runs.c.id).outerjoin(
+                    verdict_q, verdict_q.c.run_id == runs.c.id
+                )
+            )
+            .where(runs.c.campaign_id == campaign_id)
+            .order_by(runs.c.started_at.nulls_last(), runs.c.id)
+        )
+    ).all()
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        verdict = r.verdict
+        if verdict is None:
+            verdict = _VERDICT_RUN_FAILED if r.run_status == "failed" else _VERDICT_UNJUDGED
+        out.append(
+            {
+                "run_id": str(r.run_id),
+                "run_status": r.run_status,
+                "category": r.category,
+                "technique": r.technique,
+                "attack_title": r.attack_title,
+                "attacks_fired": int(r.attacks_fired or 0),
+                "usd_estimate": round(float(r.usd_estimate or 0.0), 4),
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "ended_at": r.ended_at.isoformat() if r.ended_at else None,
+                "verdict": verdict,
+                "judge_rationale": (r.rationale or "")[:400],
+                "exploitability": r.exploitability,
+                "decisive_seed_idx": r.decisive_seed_idx,
+                "total_seeds": r.total_seeds,
+            }
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Data tools — read-only queries.
 # ---------------------------------------------------------------------------
 
 
 async def data_campaign_summary(session: AsyncSession, *, campaign_id: UUID) -> dict[str, Any]:
-    """High-level rollup: project, mode, trigger, when it ran, how many
-    runs / attacks landed in each terminal state, total cost. The
-    headline numbers the report leads with."""
+    """Headline rollup: project, mode, when it ran, run counts broken
+    out by **terminal Judge verdict** (not by execution row), total
+    cost. Runs without a Judge verdict are bucketed as ``run_failed``
+    when the run itself failed, ``unjudged`` otherwise — never silently
+    dropped or grouped as "pending"."""
     cam = (
         await session.execute(
             select(
@@ -70,59 +199,32 @@ async def data_campaign_summary(session: AsyncSession, *, campaign_id: UUID) -> 
     if cam is None:
         return {"error": f"campaign {campaign_id} not found"}
 
-    run_rows = (
-        await session.execute(
-            select(
-                runs.c.status,
-                func.count(runs.c.id).label("n"),
-                func.sum(runs.c.attacks_fired).label("attacks_fired"),
-                func.sum(runs.c.budget_consumed_usd).label("usd"),
-                func.min(runs.c.started_at).label("first_started"),
-                func.max(runs.c.ended_at).label("last_ended"),
-            )
-            .where(runs.c.campaign_id == campaign_id)
-            .group_by(runs.c.status)
-        )
-    ).all()
-    run_status: dict[str, dict[str, Any]] = {}
-    first_started = None
-    last_ended = None
-    total_runs = 0
-    total_usd = 0.0
-    total_attacks = 0
-    for r in run_rows:
-        run_status[r.status] = {
-            "count": int(r.n or 0),
-            "attacks_fired": int(r.attacks_fired or 0),
-            "usd_estimate": float(r.usd or 0.0),
-        }
-        total_runs += int(r.n or 0)
-        total_usd += float(r.usd or 0.0)
-        total_attacks += int(r.attacks_fired or 0)
-        if r.first_started is not None and (
-            first_started is None or r.first_started < first_started
-        ):
-            first_started = r.first_started
-        if r.last_ended is not None and (last_ended is None or r.last_ended > last_ended):
-            last_ended = r.last_ended
-
-    verdict_rows = (
-        await session.execute(
-            select(judge_verdicts.c.verdict, func.count(judge_verdicts.c.id).label("n"))
-            .select_from(
-                attack_executions.join(
-                    judge_verdicts, judge_verdicts.c.id == attack_executions.c.judge_verdict_id
-                ).join(runs, runs.c.id == attack_executions.c.run_id)
-            )
-            .where(runs.c.campaign_id == campaign_id)
-            .group_by(judge_verdicts.c.verdict)
-        )
-    ).all()
-    verdicts = {r.verdict: int(r.n or 0) for r in verdict_rows}
+    per_run = await _per_run_rows(session, campaign_id=campaign_id)
+    total_runs = len(per_run)
+    total_attacks = sum(r["attacks_fired"] for r in per_run)
+    total_usd = sum(r["usd_estimate"] for r in per_run)
+    verdicts: dict[str, int] = defaultdict(int)
+    runs_by_status: dict[str, int] = defaultdict(int)
+    first_started: str | None = None
+    last_ended: str | None = None
+    for r in per_run:
+        verdicts[r["verdict"]] += 1
+        runs_by_status[r["run_status"]] += 1
+        if r["started_at"] and (first_started is None or r["started_at"] < first_started):
+            first_started = r["started_at"]
+        if r["ended_at"] and (last_ended is None or r["ended_at"] > last_ended):
+            last_ended = r["ended_at"]
 
     duration_seconds: float | None = None
-    if first_started is not None and last_ended is not None:
-        duration_seconds = (last_ended - first_started).total_seconds()
+    if first_started and last_ended:
+        from datetime import datetime
+
+        try:
+            t0 = datetime.fromisoformat(first_started.replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat(last_ended.replace("Z", "+00:00"))
+            duration_seconds = (t1 - t0).total_seconds()
+        except ValueError:
+            duration_seconds = None
 
     return {
         "campaign_id": str(cam.id),
@@ -133,48 +235,47 @@ async def data_campaign_summary(session: AsyncSession, *, campaign_id: UUID) -> 
         "trigger": cam.trigger,
         "budget": cam.budget,
         "created_at": cam.created_at.isoformat() if cam.created_at else None,
-        "first_started_at": first_started.isoformat() if first_started else None,
-        "last_ended_at": last_ended.isoformat() if last_ended else None,
+        "first_started_at": first_started,
+        "last_ended_at": last_ended,
         "duration_seconds": duration_seconds,
         "totals": {
             "runs": total_runs,
             "attacks_fired": total_attacks,
             "usd_estimate": round(total_usd, 4),
         },
-        "runs_by_status": run_status,
-        "verdicts": verdicts,
+        "runs_by_status": dict(runs_by_status),
+        # verdicts is by RUN (one terminal verdict per run), with synthetic
+        # 'run_failed' / 'unjudged' buckets that account for every run.
+        "verdicts": dict(verdicts),
     }
 
 
-async def data_verdict_breakdown(session: AsyncSession, *, campaign_id: UUID) -> dict[str, Any]:
-    """Per (category, technique) tally of verdicts. Surfaces which
-    techniques landed and how. The headline cell of any coverage view."""
-    rows = (
-        await session.execute(
-            select(
-                attacks.c.category,
-                attacks.c.payload["technique"].astext.label("technique"),
-                judge_verdicts.c.verdict,
-                func.count(attack_executions.c.id).label("n"),
-            )
-            .select_from(
-                attack_executions.join(attacks, attacks.c.id == attack_executions.c.attack_id)
-                .join(runs, runs.c.id == attack_executions.c.run_id)
-                .outerjoin(
-                    judge_verdicts, judge_verdicts.c.id == attack_executions.c.judge_verdict_id
-                )
-            )
-            .where(runs.c.campaign_id == campaign_id)
-            .group_by(attacks.c.category, "technique", judge_verdicts.c.verdict)
-            .order_by(attacks.c.category, "technique")
-        )
-    ).all()
+async def data_run_outcomes(session: AsyncSession, *, campaign_id: UUID) -> dict[str, Any]:
+    """The canonical per-run outcome list. One row per run, including
+    runs that failed or were never judged — the report writer should
+    walk this to enumerate every run in the campaign in its narrative."""
+    per_run = await _per_run_rows(session, campaign_id=campaign_id)
+    return {"runs": per_run, "count": len(per_run)}
 
-    breakdown: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(dict))
-    for r in rows:
-        verdict = r.verdict or "pending"
-        breakdown[r.category][r.technique or "?"][verdict] = int(r.n or 0)
-    return {"by_category": {k: dict(v) for k, v in breakdown.items()}}
+
+async def data_verdict_breakdown(session: AsyncSession, *, campaign_id: UUID) -> dict[str, Any]:
+    """Per (category, technique) tally of **run** verdicts. Runs that
+    never got a Judge verdict are surfaced as ``run_failed`` (the run
+    failed before submission) or ``unjudged`` (run completed, agent
+    never submitted / Judge dropped the message). Categories whose
+    runs all failed appear with the same status they were attempted
+    under — they no longer vanish from the report."""
+    per_run = await _per_run_rows(session, campaign_id=campaign_id)
+    breakdown: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(int))
+    )
+    for r in per_run:
+        cat = r["category"] or "?"
+        tech = r["technique"] or "?"
+        breakdown[cat][tech][r["verdict"]] += 1
+    return {
+        "by_category": {k: {t: dict(v) for t, v in techs.items()} for k, techs in breakdown.items()}
+    }
 
 
 async def data_findings(session: AsyncSession, *, campaign_id: UUID) -> dict[str, Any]:
@@ -220,61 +321,46 @@ async def data_findings(session: AsyncSession, *, campaign_id: UUID) -> dict[str
 async def data_recent_failures(
     session: AsyncSession, *, campaign_id: UUID, limit: int = 10
 ) -> dict[str, Any]:
-    """Attacks that landed ``verdict=error`` — runs the platform fired
-    but couldn't actually evaluate. These are the *most* actionable
-    items in a report: a defense isn't holding the attack, the platform
-    just didn't get a meaningful response. Operator needs to fix the
-    plumbing before drawing conclusions about the target."""
-    rows = (
-        await session.execute(
-            select(
-                attack_executions.c.id,
-                attack_executions.c.run_id,
-                attacks.c.category,
-                attacks.c.payload["technique"].astext.label("technique"),
-                attacks.c.title,
-                attack_executions.c.target_status_code,
-                attack_executions.c.error,
-                attack_executions.c.target_response,
-                judge_verdicts.c.rationale,
-            )
-            .select_from(
-                attack_executions.join(attacks, attacks.c.id == attack_executions.c.attack_id)
-                .join(runs, runs.c.id == attack_executions.c.run_id)
-                .join(judge_verdicts, judge_verdicts.c.id == attack_executions.c.judge_verdict_id)
-            )
-            .where(runs.c.campaign_id == campaign_id)
-            .where(judge_verdicts.c.verdict == "error")
-            .order_by(desc(attack_executions.c.created_at))
-            .limit(limit)
-        )
-    ).all()
+    """Runs the Judge ruled ``error`` — runs the platform fired but
+    couldn't actually evaluate. NOT defensive wins; platform
+    actionables. The report should always surface them.
 
-    items: list[dict[str, Any]] = []
-    for r in rows:
-        response_excerpt = ""
-        if isinstance(r.target_response, dict):
-            response_excerpt = str(r.target_response.get("text") or "")[:280]
-        items.append(
+    Also include ``run_failed`` runs (the platform-side failure case)
+    so the report can call those out separately — they look superficially
+    like errors but represent a different class of problem."""
+    per_run = await _per_run_rows(session, campaign_id=campaign_id)
+    errored = [r for r in per_run if r["verdict"] == "error"][:limit]
+    failed = [r for r in per_run if r["verdict"] == _VERDICT_RUN_FAILED][:limit]
+    return {
+        "errors": [
             {
-                "attack_execution_id": str(r.id),
-                "run_id": str(r.run_id),
-                "category": r.category,
-                "technique": r.technique,
-                "title": r.title,
-                "target_status_code": r.target_status_code,
-                "transport_error": r.error,
-                "response_excerpt": response_excerpt,
-                "judge_rationale": (r.rationale or "")[:280],
+                "run_id": r["run_id"],
+                "category": r["category"],
+                "technique": r["technique"],
+                "title": r["attack_title"],
+                "judge_rationale": r["judge_rationale"],
             }
-        )
-    return {"errors": items, "count": len(items)}
+            for r in errored
+        ],
+        "failed_runs": [
+            {
+                "run_id": r["run_id"],
+                "category": r["category"],
+                "technique": r["technique"],
+                "title": r["attack_title"],
+                "attacks_fired": r["attacks_fired"],
+            }
+            for r in failed
+        ],
+        "count": len(errored) + len(failed),
+    }
 
 
 async def data_cost_breakdown(session: AsyncSession, *, campaign_id: UUID) -> dict[str, Any]:
     """Tokens + USD broken out by agent role (redteam_injection,
-    redteam_exfil, judge, mutator, documentation, ...). The report's
-    cost answer to 'how much did this run cost and where did it go.'"""
+    redteam_exfil, judge, mutator, documentation, ...). Cost is summed
+    over execution rows — for cost, the per-execution granularity is
+    the right one (every LLM call we made shows up here)."""
     rows = (
         await session.execute(
             select(
@@ -316,50 +402,32 @@ async def data_cost_breakdown(session: AsyncSession, *, campaign_id: UUID) -> di
 async def data_timeline(
     session: AsyncSession, *, campaign_id: UUID, limit: int = 60
 ) -> dict[str, Any]:
-    """Chronological log of runs and their per-attack verdicts. The
-    report uses this to narrate 'what happened in what order' — what
-    each agent did, when, and what came of it (PRD observability
-    requirement)."""
-    rows = (
-        await session.execute(
-            select(
-                runs.c.id.label("run_id"),
-                runs.c.status,
-                runs.c.started_at,
-                runs.c.ended_at,
-                attacks.c.category,
-                attacks.c.payload["technique"].astext.label("technique"),
-                judge_verdicts.c.verdict,
-            )
-            .select_from(
-                runs.outerjoin(attack_executions, attack_executions.c.run_id == runs.c.id)
-                .outerjoin(attacks, attacks.c.id == attack_executions.c.attack_id)
-                .outerjoin(
-                    judge_verdicts, judge_verdicts.c.id == attack_executions.c.judge_verdict_id
-                )
-            )
-            .where(runs.c.campaign_id == campaign_id)
-            .order_by(runs.c.started_at)
-            .limit(limit)
-        )
-    ).all()
-    items = [
-        {
-            "run_id": str(r.run_id),
-            "status": r.status,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "ended_at": r.ended_at.isoformat() if r.ended_at else None,
-            "category": r.category,
-            "technique": r.technique,
-            "verdict": r.verdict,
-        }
-        for r in rows
-    ]
-    return {"timeline": items, "count": len(items)}
+    """Chronological per-RUN log. One row per run with its terminal
+    verdict — matches what an operator reads as 'what happened in
+    what order'. Limit truncates to ``limit`` runs (most recent
+    campaigns rarely exceed this)."""
+    per_run = await _per_run_rows(session, campaign_id=campaign_id)
+    items = per_run[:limit]
+    return {
+        "timeline": [
+            {
+                "run_id": r["run_id"],
+                "status": r["run_status"],
+                "started_at": r["started_at"],
+                "ended_at": r["ended_at"],
+                "category": r["category"],
+                "technique": r["technique"],
+                "verdict": r["verdict"],
+                "attacks_fired": r["attacks_fired"],
+            }
+            for r in items
+        ],
+        "count": len(items),
+    }
 
 
 # ---------------------------------------------------------------------------
-# Artifact tools — render SVG strings the writer saves + embeds.
+# Artifact tools — render SVG strings the writer persists + embeds.
 # ---------------------------------------------------------------------------
 
 _VERDICT_COLORS = {
@@ -367,7 +435,8 @@ _VERDICT_COLORS = {
     "fail": "#16a34a",  # green — defense held
     "partial": "#f59e0b",  # amber — mid-state
     "error": "#6b7280",  # gray — inconclusive
-    "pending": "#9ca3af",
+    "run_failed": "#991b1b",  # dark red — platform failure
+    "unjudged": "#64748b",  # slate — no verdict ever rendered
 }
 _AGENT_COLORS = {
     "redteam_injection": "#7c3aed",
@@ -403,8 +472,6 @@ def _svg_header(width: int, height: int, title: str = "") -> str:
         f".title {{ font-weight: 600; font-size: 14px; fill: #f8fafc; }}"
         f".muted {{ fill: #aab3c6; }}"
         f"</style>"
-        # Backdrop matches --bg-2 from tokens.css so the SVG is legible
-        # whether it's embedded in the dark dashboard or viewed solo.
         f'<rect x="0" y="0" width="{width}" height="{height}" fill="#0f1424"/>'
     )
 
@@ -422,9 +489,8 @@ def render_verdict_histogram(verdict_breakdown: dict[str, Any]) -> str:
     be illegible — keep it summary-level."""
     by_cat = verdict_breakdown.get("by_category") or {}
     if not by_cat:
-        return _empty_svg("No attacks fired in this campaign.")
+        return _empty_svg("No runs in this campaign.")
 
-    # Aggregate per-category totals.
     cats: list[tuple[str, dict[str, int]]] = []
     for cat, techs in by_cat.items():
         totals: dict[str, int] = defaultdict(int)
@@ -437,31 +503,28 @@ def render_verdict_histogram(verdict_breakdown: dict[str, Any]) -> str:
     width = 720
     row_h = 40
     pad_x = 160
-    pad_y = 50
+    pad_y = 70
     height = pad_y + row_h * len(cats) + 30
 
     max_total = max((sum(v.values()) for _, v in cats), default=1) or 1
     bar_max_w = width - pad_x - 30
 
     parts: list[str] = [_svg_header(width, height, "Verdict breakdown by category")]
-    parts.append('<text x="20" y="28" class="title">Verdicts by category</text>')
+    parts.append('<text x="20" y="28" class="title">Verdicts by category (per run)</text>')
 
-    # Legend
     legend_x = pad_x
-    legend_y = 30
+    legend_y = 48
     for v, c in _VERDICT_COLORS.items():
-        if v == "pending":
-            continue
         parts.append(f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" fill="{c}"/>')
-        parts.append(f'<text x="{legend_x + 14}" y="{legend_y}">{v}</text>')
-        legend_x += 80
+        parts.append(f'<text x="{legend_x + 14}" y="{legend_y}" font-size="11">{v}</text>')
+        legend_x += 86
 
     for i, (cat, totals) in enumerate(cats):
         y = pad_y + i * row_h
         parts.append(f'<text x="20" y="{y + 20}" font-weight="600">{html.escape(cat)}</text>')
         total = sum(totals.values())
         x_cursor = pad_x
-        for verdict in ("pass", "fail", "partial", "error"):
+        for verdict in ("pass", "fail", "partial", "error", "unjudged", "run_failed"):
             count = totals.get(verdict, 0)
             if count == 0:
                 continue
@@ -473,10 +536,11 @@ def render_verdict_histogram(verdict_breakdown: dict[str, Any]) -> str:
             )
             if w > 28:
                 parts.append(
-                    f'<text x="{x_cursor + 6}" y="{y + 20}" fill="white" font-size="11">{count}</text>'
+                    f'<text x="{x_cursor + 6}" y="{y + 20}" fill="white" '
+                    f'font-size="11">{count}</text>'
                 )
             x_cursor += w
-        parts.append(f'<text x="{x_cursor + 8}" y="{y + 20}" class="muted">n={total}</text>')
+        parts.append(f'<text x="{x_cursor + 8}" y="{y + 20}" class="muted">n={total} runs</text>')
 
     parts.append(_svg_footer())
     return "".join(parts)
@@ -554,7 +618,6 @@ def render_coverage_heatmap(verdict_breakdown: dict[str, Any]) -> str:
         "cell color = dominant verdict for that (category, technique)</text>"
     )
 
-    # Column headers — rotated 45°.
     for j, tech in enumerate(techniques):
         cx = pad_left + j * cell_w + cell_w // 2
         parts.append(
@@ -563,7 +626,6 @@ def render_coverage_heatmap(verdict_breakdown: dict[str, Any]) -> str:
             f"{html.escape(tech[:24])}</text>"
         )
 
-    # Rows.
     for i, cat in enumerate(cats):
         y = pad_top + i * cell_h
         parts.append(
@@ -574,10 +636,6 @@ def render_coverage_heatmap(verdict_breakdown: dict[str, Any]) -> str:
             x = pad_left + j * cell_w
             cell = by_cat.get(cat, {}).get(tech)
             if not cell:
-                # Untested (category, technique) — render as a subtle
-                # outlined cell. Fill matches --bg-3 (slightly lighter
-                # than the SVG backdrop) so the grid stays visible but
-                # the empty cells clearly read as "no data".
                 parts.append(
                     f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" '
                     f'fill="#131a2e" stroke="#2a3756"/>'
@@ -619,7 +677,6 @@ def render_timeline(timeline: dict[str, Any]) -> str:
     from datetime import datetime
 
     def _parse(ts: str) -> datetime:
-        # tolerate fractional seconds + timezone suffix
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
     t0 = min(_parse(s) for s in starts)
@@ -631,8 +688,8 @@ def render_timeline(timeline: dict[str, Any]) -> str:
     pad_top = 40
     height = pad_top + 14 * len(items) + 30
 
-    parts: list[str] = [_svg_header(width, height, "Attack timeline")]
-    parts.append('<text x="20" y="28" class="title">Attack timeline</text>')
+    parts: list[str] = [_svg_header(width, height, "Run timeline")]
+    parts.append('<text x="20" y="28" class="title">Run timeline</text>')
 
     for i, it in enumerate(items):
         if not it["started_at"]:
@@ -641,18 +698,18 @@ def render_timeline(timeline: dict[str, Any]) -> str:
         x_start = _parse(it["started_at"])
         rel = (x_start - t0).total_seconds() / span
         x = pad_left + int((width - pad_left - 20) * rel)
-        color = _VERDICT_COLORS.get(it.get("verdict") or "pending", "#9ca3af")
+        color = _VERDICT_COLORS.get(it.get("verdict") or "unjudged", "#9ca3af")
         cat = it.get("category") or "?"
         tech = it.get("technique") or "?"
-        verdict = it.get("verdict") or "pending"
+        verdict = it.get("verdict") or "unjudged"
         parts.append(
             f'<circle cx="{x}" cy="{y}" r="4" fill="{color}">'
             f"<title>{cat}/{tech} → {verdict} @ {it['started_at']}</title>"
             f"</circle>"
         )
         parts.append(
-            f'<text x="{pad_left - 6}" y="{y + 4}" text-anchor="end" class="muted" font-size="10">'
-            f"#{i + 1}</text>"
+            f'<text x="{pad_left - 6}" y="{y + 4}" text-anchor="end" class="muted" '
+            f'font-size="10">#{i + 1}</text>'
         )
 
     parts.append(f'<text x="{pad_left}" y="{height - 12}" class="muted">{t0.isoformat()}</text>')
@@ -681,22 +738,36 @@ def report_tool_catalog() -> list[ToolSpec]:
     """The tools the campaign-report writer's LLM may call. Order
     matters only for prompt readability; the LLM picks its own
     sequence. Schemas are intentionally tight: every input is a
-    constant from the campaign's row (campaign_id) so the model can't
-    accidentally query the wrong campaign."""
+    constant from the campaign's row (campaign_id is implicit, baked
+    into the dispatcher) so the model can't accidentally query the
+    wrong campaign."""
     return [
         ToolSpec(
             name="data_campaign_summary",
             description=(
                 "Top-level rollup for the campaign currently being reported on: "
-                "project, mode, when it started/ended, run/attack/verdict totals, "
+                "project, mode, when it started/ended, run/attack/verdict totals "
+                "(verdict counts are PER RUN — synthetic 'run_failed' / "
+                "'unjudged' buckets account for runs without a Judge verdict), "
                 "total cost. Call this first — its output is the headline."
+            ),
+            parameters={"type": "object", "properties": {}, "required": []},
+        ),
+        ToolSpec(
+            name="data_run_outcomes",
+            description=(
+                "The canonical per-run outcome list — one row per run in this "
+                "campaign, including failed runs and runs the Judge never "
+                "scored. Walk this to enumerate every run in the report's "
+                "per-run breakdown."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
         ),
         ToolSpec(
             name="data_verdict_breakdown",
             description=(
-                "Per (category, technique) verdict tally. Use to write the "
+                "Per (category, technique) verdict tally — verdicts counted in "
+                "RUNS, not in individual execution rows. Use to write the "
                 "'what we tested and how it went' body of the report."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
@@ -713,15 +784,21 @@ def report_tool_catalog() -> list[ToolSpec]:
         ToolSpec(
             name="data_recent_failures",
             description=(
-                "Attacks the Judge ruled 'error' (the platform could not "
-                "evaluate the response — invalid envelope, transport error, "
-                "empty body, etc). These are NOT defensive wins; they are "
-                "platform actionables. Always surface them in the report."
+                "Two lists: runs the Judge ruled 'error' (response not "
+                "evaluable — invalid envelope, transport error, empty body), "
+                "and runs whose status is 'failed' (the platform never "
+                "submitted them for judgment). Neither is a defensive win; "
+                "both are platform actionables. Always surface them."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
+                    }
                 },
                 "required": [],
             },
@@ -737,14 +814,19 @@ def report_tool_catalog() -> list[ToolSpec]:
         ToolSpec(
             name="data_timeline",
             description=(
-                "Chronological log of runs and per-attack verdicts in this "
+                "Chronological per-RUN log with terminal verdicts in this "
                 "campaign. Use to write the 'what happened in what order' "
                 "narrative."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 60}
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "default": 60,
+                    }
                 },
                 "required": [],
             },
@@ -752,18 +834,18 @@ def report_tool_catalog() -> list[ToolSpec]:
         ToolSpec(
             name="render_verdict_histogram",
             description=(
-                "Render a stacked-bar SVG showing the verdict mix per category. "
-                "Pass the dict returned by data_verdict_breakdown. The tool "
-                "saves the SVG to disk and returns a relative path + alt text "
-                "you embed in the markdown via "
-                "![alt](path)."
+                "Render a stacked-bar SVG showing the verdict mix per category "
+                "(bars are RUN counts). Pass the dict returned by "
+                "data_verdict_breakdown. The tool persists the SVG to Postgres "
+                "and returns a relative name + alt text you embed in the "
+                "markdown via ![alt](name.svg)."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "verdict_breakdown": {
                         "type": "object",
-                        "description": "Exactly the dict data_verdict_breakdown returned.",
+                        "description": ("Exactly the dict data_verdict_breakdown returned."),
                     },
                     "title": {"type": "string"},
                 },
@@ -789,7 +871,7 @@ def report_tool_catalog() -> list[ToolSpec]:
             name="render_coverage_heatmap",
             description=(
                 "Render a category x technique grid SVG. Cells are colored "
-                "by their dominant verdict. Pass the dict from "
+                "by their dominant verdict (RUN counts). Pass the dict from "
                 "data_verdict_breakdown."
             ),
             parameters={
@@ -804,7 +886,8 @@ def report_tool_catalog() -> list[ToolSpec]:
         ToolSpec(
             name="render_timeline",
             description=(
-                "Render a horizontal timeline dot-plot. Pass the dict from data_timeline."
+                "Render a horizontal timeline dot-plot of RUNS (one dot per "
+                "run, color = terminal verdict). Pass the dict from data_timeline."
             ),
             parameters={
                 "type": "object",
@@ -821,7 +904,7 @@ def report_tool_catalog() -> list[ToolSpec]:
                 "Emit the final markdown report. Call this exactly once "
                 "after gathering data + rendering whichever artifacts you "
                 "want to embed. Embed artifacts via standard markdown image "
-                "syntax: ![alt](relative-path-returned-by-render-tool). "
+                "syntax: ![alt](name-returned-by-render-tool). "
                 "Do not call any tools after finish_report."
             ),
             parameters={
@@ -831,9 +914,10 @@ def report_tool_catalog() -> list[ToolSpec]:
                         "type": "string",
                         "description": (
                             "The complete report body in markdown. Should "
-                            "cover: campaign summary, what was tested, what "
-                            "the verdicts showed, open findings, platform "
-                            "errors (verdict=error attacks), cost, and a "
+                            "cover: campaign summary, every run accounted for "
+                            "(do not silently drop run_failed / unjudged "
+                            "runs — name them), what the verdicts showed, "
+                            "open findings, platform errors, cost, and a "
                             "short 'recommended next actions' section."
                         ),
                     },

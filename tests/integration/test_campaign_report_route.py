@@ -139,3 +139,55 @@ async def test_post_report_404_for_unknown_campaign(client) -> None:  # type: ig
     await _login_admin(client)
     resp = await csrf_post(client, f"/campaigns/{uuid4()}/report", data={})
     assert resp.status_code == 404
+
+
+async def test_artifact_route_serves_persisted_svg(client) -> None:  # type: ignore[no-untyped-def]
+    """The artifact route reads from ``campaign_report_artifacts``
+    (Postgres) rather than off disk — the pre-rewrite behavior 404'd
+    in multi-container deployments because the documentation worker's
+    /tmp wasn't shared with the api container."""
+    from cats.db.repositories.campaign_report_artifact_repo import upsert_artifact
+
+    campaign_id = await _seed_campaign()
+    await _login_admin(client)
+
+    body = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        '<rect width="10" height="10" fill="#abc"/></svg>'
+    )
+    async with session_scope() as session:
+        await upsert_artifact(
+            session,
+            campaign_id=campaign_id,  # type: ignore[arg-type]
+            name="verdict-histogram.svg",
+            kind="verdict-histogram",
+            title="t",
+            alt="a",
+            body=body,
+        )
+        await session.commit()
+
+    resp = await client.get(f"/campaigns/{campaign_id}/report/artifacts/verdict-histogram.svg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/svg+xml")
+    assert b"<svg" in resp.content
+
+
+async def test_artifact_route_404_when_artifact_missing(client) -> None:  # type: ignore[no-untyped-def]
+    """No row → 404 (not the pre-rewrite 'file not on disk' 404, but
+    the DB-lookup 404). Pinned so the route returns the right status
+    code instead of, say, 500 on a missing row."""
+    campaign_id = await _seed_campaign()
+    await _login_admin(client)
+    resp = await client.get(f"/campaigns/{campaign_id}/report/artifacts/does-not-exist.svg")
+    assert resp.status_code == 404
+
+
+async def test_artifact_route_rejects_malformed_name(client) -> None:  # type: ignore[no-untyped-def]
+    """The strict name regex catches anything that isn't a kebab-case
+    .svg filename. A 400 here means the route never even attempts a
+    DB lookup against a hostile string."""
+    campaign_id = await _seed_campaign()
+    await _login_admin(client)
+    resp = await client.get(f"/campaigns/{campaign_id}/report/artifacts/..%2Fetc.svg")
+    assert resp.status_code in (400, 404)

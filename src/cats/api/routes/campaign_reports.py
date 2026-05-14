@@ -5,7 +5,7 @@
 - ``POST /campaigns/{id}/report`` — manually (re-)trigger the
   Documentation Agent's campaign-report writer.
 - ``GET /campaigns/{id}/report/artifacts/{name}`` — serve a single
-  rendered SVG off disk under ``settings.campaign_reports_dir``.
+  rendered SVG straight out of the ``campaign_report_artifacts`` table.
 
 The auto-trigger lives in ``cats.workers.documentation``; this
 module is the operator-facing surface.
@@ -14,19 +14,18 @@ module is the operator-facing surface.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from markupsafe import Markup
 
 from cats.api.auth import Principal, require_user
 from cats.api.templating import templates
-from cats.config import settings
 from cats.db.engine import session_scope
 from cats.db.repositories.campaign_repo import get_campaign_with_project
+from cats.db.repositories.campaign_report_artifact_repo import get_artifact
 from cats.db.repositories.campaign_report_repo import (
     get_campaign_report,
     upsert_pending_report,
@@ -155,10 +154,10 @@ async def regenerate_report(
     return RedirectResponse(url=f"/campaigns/{campaign_id}/report", status_code=303)
 
 
-# Strict whitelist: artifact filenames are model-controlled output we
-# wrote to disk. Constrain to our exact filename shape so a crafted
-# request can't escape the artifacts directory even if the upstream
-# rewrite logic ever drifts.
+# Strict whitelist: artifact filenames are model-controlled output the
+# documenter chose; they double as the row's ``name`` key. Constrain to
+# our exact shape (kebab-case .svg) so a crafted request can't smuggle
+# anything strange through the route parameter.
 _ARTIFACT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}\.svg$")
 
 
@@ -168,26 +167,21 @@ async def serve_artifact(
     filename: str,
     principal: Principal = Depends(require_user),
 ) -> Any:
-    """Serve a single SVG artifact off disk under
-    ``settings.campaign_reports_dir/{cid}/artifacts/``. The filename
-    is checked against a strict regex (kebab-case .svg only). The
-    auth requirement is the same as the rest of the campaigns
-    surface."""
+    """Serve a documenter-rendered SVG straight out of
+    ``campaign_report_artifacts``. The filename is checked against a
+    strict regex (kebab-case .svg only) before the lookup. Auth gating
+    matches the rest of the campaigns surface."""
     _ = principal  # auth-gated by Depends
     if not _ARTIFACT_NAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="invalid artifact name")
-    root = Path(settings.campaign_reports_dir) / str(campaign_id) / "artifacts"
-    full = (root / filename).resolve()
-    # Belt + suspenders: confirm the resolved path is still inside
-    # the artifacts root (defense in depth — the regex already rules
-    # out '..' but symlink trickery could in principle escape).
-    try:
-        full.relative_to(root.resolve())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid artifact path") from e
-    if not full.is_file():
+    async with session_scope() as session:
+        row = await get_artifact(session, campaign_id=campaign_id, name=filename)
+    if row is None:
         raise HTTPException(status_code=404, detail="artifact not found")
-    return FileResponse(str(full), media_type="image/svg+xml")
+    return Response(
+        content=row["body"],
+        media_type=row.get("content_type") or "image/svg+xml",
+    )
 
 
 def _rewrite_artifact_paths(body_markdown: str, *, campaign_id: UUID) -> str:
