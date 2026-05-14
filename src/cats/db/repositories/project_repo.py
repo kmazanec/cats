@@ -65,6 +65,7 @@ async def get_project(session: AsyncSession, project_id: UUID) -> dict[str, Any]
                 projects.c.target_kind,
                 projects.c.target_username,
                 projects.c.target_password_encrypted,
+                projects.c.deploy_webhook_secret_encrypted,
                 projects.c.created_at,
             ).where(projects.c.id == project_id)
         )
@@ -81,6 +82,7 @@ async def get_project(session: AsyncSession, project_id: UUID) -> dict[str, Any]
         "target_kind": row.target_kind,
         "target_username": row.target_username,
         "has_target_password": bool(row.target_password_encrypted),
+        "has_deploy_webhook_secret": bool(row.deploy_webhook_secret_encrypted),
         "created_at": row.created_at,
     }
 

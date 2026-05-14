@@ -235,6 +235,91 @@ async def update_project_submit(
     return RedirectResponse(url="/projects", status_code=303)
 
 
+@router.post(
+    "/{project_id}/webhook-secret/generate",
+    dependencies=[Depends(require_csrf)],
+)
+async def generate_webhook_secret(
+    request: Request,
+    project_id: UUID,
+    principal: Principal = Depends(require_role("operator")),
+) -> Any:
+    """Mint a 32-byte hex HMAC secret, encrypt + persist, and render
+    it back to the operator EXACTLY ONCE so they can copy it into the
+    project's upstream CI. The plaintext is never retrievable from
+    CATS after this response; rotating overwrites the stored secret
+    and invalidates the previous one."""
+    import secrets as _secrets
+
+    from sqlalchemy import update
+
+    from cats.db.schema import projects
+    from cats.security.crypto import encrypt
+
+    plain_secret = _secrets.token_hex(32)
+    async with session_scope() as session:
+        existing = await get_project(session, project_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        await session.execute(
+            update(projects)
+            .where(projects.c.id == project_id)
+            .values(deploy_webhook_secret_encrypted=encrypt(plain_secret))
+        )
+        await write_audit(
+            session,
+            actor=principal.email,
+            action="project.webhook_secret.generated",
+            target_kind="project",
+            target_id=project_id,
+            payload={"rotated": existing["has_deploy_webhook_secret"]},
+        )
+    ctx = _chrome_ctx(principal)
+    ctx.update(
+        {
+            "project": existing,
+            "secret": plain_secret,
+            "webhook_url_path": f"/webhooks/deploy/{project_id}",
+        }
+    )
+    return templates.TemplateResponse(request, "project_webhook_secret.html", ctx)
+
+
+@router.post(
+    "/{project_id}/webhook-secret/revoke",
+    dependencies=[Depends(require_csrf)],
+)
+async def revoke_webhook_secret(
+    project_id: UUID,
+    principal: Principal = Depends(require_role("operator")),
+) -> RedirectResponse:
+    """Clear the project's webhook secret. The webhook returns 503
+    after revocation — useful when an upstream CI's credential leaks
+    and you want to stop accepting signed payloads immediately."""
+    from sqlalchemy import update
+
+    from cats.db.schema import projects
+
+    async with session_scope() as session:
+        existing = await get_project(session, project_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        await session.execute(
+            update(projects)
+            .where(projects.c.id == project_id)
+            .values(deploy_webhook_secret_encrypted=None)
+        )
+        await write_audit(
+            session,
+            actor=principal.email,
+            action="project.webhook_secret.revoked",
+            target_kind="project",
+            target_id=project_id,
+            payload={},
+        )
+    return RedirectResponse(url=f"/projects/{project_id}/edit", status_code=303)
+
+
 @router.post("/{project_id}/delete", dependencies=[Depends(require_csrf)])
 async def delete_project_submit(
     project_id: UUID,

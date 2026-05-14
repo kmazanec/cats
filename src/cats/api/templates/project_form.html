@@ -86,5 +86,56 @@
       </form>
     </div>
   </div>
+
+  {% if project %}
+    <div class="panel">
+      <header>
+        <div class="title">Deploy webhook</div>
+        <div class="meta">
+          {% if project.has_deploy_webhook_secret %}
+            <span class="dot green"></span>configured
+          {% else %}
+            <span class="dot"></span>not configured
+          {% endif %}
+        </div>
+      </header>
+      <div class="body stack" style="gap: 12px;">
+        <p class="muted" style="font-size: 13px;">
+          Authenticated regression sweep on Co-Pilot redeploy. The project's
+          upstream CI signs the POST body with HMAC-SHA256 using a secret
+          generated here. Webhook URL:
+          <code class="mono">POST /webhooks/deploy/{{ project.id }}</code>.
+        </p>
+        {% if project.has_deploy_webhook_secret %}
+          <p class="muted" style="font-size: 13px;">
+            A secret is configured. Generating a new one rotates it and
+            immediately invalidates the previous secret.
+          </p>
+          <div class="row" style="gap: 12px;">
+            <form action="/projects/{{ project.id }}/webhook-secret/generate" method="post">
+              {{ csrf_input(request) | safe }}
+              <button class="btn" type="submit"><span class="ch">↻</span>rotate secret</button>
+            </form>
+            <form action="/projects/{{ project.id }}/webhook-secret/revoke" method="post"
+                  onsubmit="return confirm('Revoke the webhook secret? The upstream CI will start receiving 503s.');">
+              {{ csrf_input(request) | safe }}
+              <button class="btn" type="submit" style="border-color: var(--red); color: var(--red);">
+                <span class="ch">✗</span>revoke
+              </button>
+            </form>
+          </div>
+        {% else %}
+          <p class="muted" style="font-size: 13px;">
+            No secret configured — the webhook returns 503 for this project.
+            Generate one to opt in to deploy-triggered regression sweeps.
+          </p>
+          <form action="/projects/{{ project.id }}/webhook-secret/generate" method="post">
+            {{ csrf_input(request) | safe }}
+            <button class="btn" type="submit"><span class="ch">▸</span>generate secret</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
 </main>
 {% endblock %}
