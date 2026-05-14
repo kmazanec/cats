@@ -45,6 +45,7 @@ async def run(state: CampaignState) -> CampaignState:
             target_username=state.target_username,
             target_password=state.target_password,
             target_bearer_token=state.target_bearer_token,
+            target_pid=state.target_pid,
         )
 
     state.kickoff_conversation_id = result.conversation_id or ""

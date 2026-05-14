@@ -38,6 +38,12 @@ class CampaignState(BaseModel):
     target_username: str = ""
     target_password: str = ""
     target_bearer_token: str = ""
+    # OpenEMR patient (pid) this run attacks against. Chosen per-run by
+    # ``red_team.patient_selection.choose_pid_for_run`` so attacks vary
+    # chart contents across runs in a campaign. Zero means "fall back to
+    # TargetClient's default" (legacy paths that haven't been threaded
+    # through patient selection yet).
+    target_pid: int = 0
 
     # Briefing kickoff — fired once per Run before any attack. The
     # Co-Pilot's `default_briefing` task discards the user `question`,

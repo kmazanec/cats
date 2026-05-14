@@ -41,6 +41,7 @@ from cats.agents.red_team.injection.dispatcher import (
 from cats.agents.red_team.injection.dispatcher import (
     propose_technique as propose_injection,
 )
+from cats.agents.red_team.patient_selection import choose_pid_for_run
 from cats.agents.red_team.tool_abuse import dispatcher as tool_abuse_dispatcher
 from cats.db.repositories.kickoff_repo import record_kickoff
 from cats.db.repositories.run_repo import (
@@ -393,6 +394,7 @@ async def execute_attempt(
     state.campaign_id = campaign_id
     state.selected_category = category
     state.selected_technique = technique
+    state.target_pid = choose_pid_for_run(run_id)
 
     # --- Generate or mutate the attack payload ------------------------
     envelope: AttackEnvelope
@@ -496,6 +498,7 @@ async def execute_kickoff_with_target(
     target_username: str,
     target_password: str,
     target_bearer_token: str,
+    target_pid: int = 0,
 ) -> KickoffResult:
     """Lower-level shared kickoff body: fire a bare ``default_briefing``
     via TargetClient using the supplied target credentials, persist a
@@ -517,10 +520,17 @@ async def execute_kickoff_with_target(
     # ignores `question` on default_briefing, so loading content here
     # would be wasted bytes (and would muddy the audit trail by making
     # the kickoff look like an attack attempt).
+    kickoff_extra: dict[str, Any] = {"task": "default_briefing"}
+    # Mint the conversation against the run's chosen patient so the
+    # briefing reflects that chart and the conversation is owned for
+    # that pid — follow-up attacks will ride this conversationId with
+    # the same ?pid=, and the Co-Pilot enforces matching ownership.
+    if target_pid:
+        kickoff_extra["pid"] = int(target_pid)
     envelope = AttackEnvelope(
         user_message="",
         canary="",
-        extra={"task": "default_briefing"},
+        extra=kickoff_extra,
     )
     target_text = ""
     target_status_code = 0
@@ -599,6 +609,7 @@ async def fire_kickoff_briefing(
         target_username=state.target_username,
         target_password=state.target_password,
         target_bearer_token=state.target_bearer_token,
+        target_pid=choose_pid_for_run(run_id),
     )
 
 
@@ -647,6 +658,7 @@ async def fire_prepared_attack(
     state.campaign_id = campaign_id
     state.selected_category = category
     state.selected_technique = technique
+    state.target_pid = choose_pid_for_run(run_id)
     # Seed per_agent_costs from the agent's accumulated LLM spend so
     # the attack_executions row that ``_persist_and_fire`` writes
     # carries the supervisor + propose/mutate cost burned producing
@@ -750,6 +762,11 @@ async def _persist_and_fire(
         # firing into the same OpenEMR conversation.
         "conversation_id": conversation_id,
         "task": task,
+        # Persist the patient the run targeted. Forensics + regression
+        # replay both need the exact pid that was attacked — without it
+        # a replay would re-pick by run_id hash and could disagree with
+        # a stored attack if the demo pid list ever shifts.
+        "target_pid": int(state.target_pid) if state.target_pid else None,
         **attachment_meta,
         **payload_extras,
     }
@@ -825,6 +842,13 @@ async def _persist_and_fire(
     if conversation_id is not None:
         extra_overrides["conversation_id"] = conversation_id
     extra_overrides["task"] = task
+    # Pin the run's chosen patient. ``state.target_pid`` is set in the
+    # executor entry points from ``choose_pid_for_run(run_id)`` so all
+    # seeds + variant turns of one run hit the same chart but different
+    # runs in a campaign vary across the demo patient set. A pre-existing
+    # ``pid`` in ``envelope.extra`` (e.g. a test override) wins.
+    if state.target_pid and "pid" not in extra_overrides:
+        extra_overrides["pid"] = int(state.target_pid)
     envelope = envelope.model_copy(update={"extra": extra_overrides})
 
     # --- Fire (unless filter quarantined) -----------------------------

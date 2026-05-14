@@ -23,6 +23,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from cats.agents.red_team.patient_selection import choose_pid_for_run
 from cats.db.engine import session_scope
 from cats.db.repositories.run_repo import mark_run_running
 from cats.db.schema import project_versions, projects
@@ -101,6 +102,7 @@ async def run_one(
         smoke_mode=smoke_mode,
         selected_category=selected_category,
         selected_technique=selected_technique,
+        target_pid=choose_pid_for_run(run_id),
     )
     if not smoke_mode:
         initial = await _hydrate_target_config(initial)

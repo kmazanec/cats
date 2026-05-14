@@ -55,6 +55,8 @@ async def run(state: CampaignState) -> CampaignState:
     if state.kickoff_conversation_id:
         extra["task"] = "follow_up"
         extra["conversation_id"] = state.kickoff_conversation_id
+    if state.target_pid:
+        extra["pid"] = int(state.target_pid)
     envelope = AttackEnvelope(
         user_message=str(state.pending_attack_payload.get("user_message", "")),
         canary=state.pending_canary,
