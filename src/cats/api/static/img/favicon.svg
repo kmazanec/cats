@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="CATS">
+  <!-- rounded dark tile -->
+  <rect width="64" height="64" rx="12" fill="#0f1424"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="11.5" fill="none" stroke="#2a3553" stroke-width="1"/>
+
+  <!-- cat head silhouette in light ink, sized to fill the tile -->
+  <g fill="#e7ecf5">
+    <!-- left ear -->
+    <path d="M8 10 L22 32 L10 32 Z"/>
+    <!-- right ear -->
+    <path d="M56 10 L42 32 L54 32 Z"/>
+    <!-- head -->
+    <path d="M8 30
+             C 8 22, 16 18, 22 18
+             L 42 18
+             C 48 18, 56 22, 56 30
+             L 56 44
+             C 56 52, 48 56, 40 56
+             L 24 56
+             C 16 56, 8 52, 8 44 Z"/>
+  </g>
+
+  <!-- inner ear, red -->
+  <g fill="#ef4444">
+    <path d="M12 16 L19 30 L13 30 Z"/>
+    <path d="M52 16 L45 30 L51 30 Z"/>
+  </g>
+
+  <!-- glowing red eyes, large enough to survive at 16px -->
+  <g fill="#ef4444">
+    <ellipse cx="23" cy="38" rx="5" ry="5.5"/>
+    <ellipse cx="41" cy="38" rx="5" ry="5.5"/>
+  </g>
+  <!-- vertical-slit pupils -->
+  <g fill="#0f1424">
+    <ellipse cx="23" cy="38" rx="1.4" ry="3.6"/>
+    <ellipse cx="41" cy="38" rx="1.4" ry="3.6"/>
+  </g>
+
+  <!-- nose triangle -->
+  <path d="M32 47 L28.5 50.5 L35.5 50.5 Z" fill="#0f1424"/>
+</svg>
