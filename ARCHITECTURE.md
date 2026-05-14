@@ -1499,15 +1499,20 @@ The harness lives under `cats.regression/`:
   become `regression_runs.status='error'` rows so one bad case
   cannot fail a whole sweep.
 
-- `POST /webhooks/deploy` (R8) authenticates the Co-Pilot CI signal
-  via HMAC-SHA256 over the raw body
+- `POST /webhooks/deploy/{project_id}` (R8) authenticates the
+  named project's CI signal via HMAC-SHA256 over the raw body
   (`X-CATS-Signature: sha256=<hex>` header, constant-time compare).
-  Missing `settings.deploy_webhook_secret` → 503 (refuse to
-  operate — refusing to be a sweep amplifier for unauthenticated
+  Each project carries its own Fernet-encrypted secret in
+  `projects.deploy_webhook_secret_encrypted`; the URL path tells
+  the server which project's secret to look up before parsing the
+  body. Unknown project → 404. Project found but no secret
+  configured → 503 (project hasn't opted in to webhook-driven
+  sweeps — refusing to be a sweep amplifier for unauthenticated
   callers). Authenticated → fire-and-forget background sweep via
-  `schedule_sweep_in_background`. Every state (unconfigured,
-  rejected, accepted) audit-logged so a misconfigured CI is
-  visible, not silent.
+  `schedule_sweep_in_background`. Every state (unknown_project,
+  unconfigured, rejected, accepted) audit-logged so a
+  misconfigured CI is visible, not silent. Per-project secrets are
+  managed via `cats project set-webhook-secret <project-id>`.
 
 - Findings auto-promote into RegressionCases on confirmation. Both
   documentation paths (`workers.documentation::DocumentationWorker`

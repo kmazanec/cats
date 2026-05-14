@@ -122,12 +122,6 @@ class Settings(BaseSettings):
     campaign_report_max_turns: int = Field(default=16, alias="CATS_CAMPAIGN_REPORT_MAX_TURNS")
 
     # R8 — regression-verification harness.
-    # HMAC-SHA256 shared secret for the Co-Pilot CI deploy webhook. Empty
-    # string disables the webhook (returns 503), forcing the operator to
-    # configure a secret before deploy-triggered sweeps can fire. The route
-    # NEVER skips signature check based on emptiness — that would be a
-    # turn-the-platform-into-an-amplifier vulnerability.
-    deploy_webhook_secret: str = Field(default="", alias="CATS_DEPLOY_WEBHOOK_SECRET")
     # Cosine-similarity threshold for the "behavioral fingerprint" gate
     # (§6.4 gate 3). Response embeddings ≥ threshold vs. the captured
     # refusal exemplar count as "matches safe-refusal cluster." Tuned

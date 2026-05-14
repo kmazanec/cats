@@ -2615,6 +2615,17 @@ Out:
   Missing secret → 503 (refuse to operate), not 200 (don't make
   the platform a sweep amplifier for unauthenticated callers).
   Constant-time compare via `hmac.compare_digest`.
+- **2026-05-13 (followup) — webhook secret is PER-PROJECT, not
+  global.** R8 initially shipped with a single
+  `settings.deploy_webhook_secret`, which capped the platform at
+  one project. Followup commit `fix(round-8): per-project deploy
+  webhook secret` moves the secret onto
+  `projects.deploy_webhook_secret_encrypted` (Fernet) and reshapes
+  the URL to `POST /webhooks/deploy/{project_id}` so the server
+  can look up the correct secret before parsing the body.
+  Per-project secret management lives in
+  `cats project set-webhook-secret <project-id>`. Migration
+  `20260513_0008_per_project_webhook_secret`.
 - **2026-05-13 — webhook fire-and-forgets the sweep via an asyncio
   task in the API process, NOT a separate worker.** Good enough
   for R8 because the API process keeps long-lived tasks alive and

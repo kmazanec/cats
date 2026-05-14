@@ -14,8 +14,10 @@ app = typer.Typer(no_args_is_help=True, help="CATS adversarial platform CLI.")
 user_app = typer.Typer(no_args_is_help=True, help="User management.")
 app.add_typer(user_app, name="user")
 
+from cats.cli.project import project_app  # noqa: E402
 from cats.cli.regression import regression_app  # noqa: E402
 
+app.add_typer(project_app, name="project")
 app.add_typer(regression_app, name="regression")
 
 

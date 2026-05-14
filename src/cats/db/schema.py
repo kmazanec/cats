@@ -87,6 +87,10 @@ projects = Table(
     Column("target_kind", String(32), nullable=False, server_default="copilot_proxy"),
     Column("target_username", String(200), nullable=True),
     Column("target_password_encrypted", Text, nullable=True),
+    # R8 followup — per-project HMAC secret for the deploy webhook. Fernet
+    # encrypted at rest. NULL means the project has not opted into
+    # webhook-driven sweeps; the route returns 503 in that state.
+    Column("deploy_webhook_secret_encrypted", Text, nullable=True),
     _ts(),
     CheckConstraint("env IN ('local','staging','prod')", name="ck_projects_env"),
     CheckConstraint(

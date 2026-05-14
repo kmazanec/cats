@@ -1,29 +1,35 @@
-"""R8 deploy webhook.
+"""R8 deploy webhook (per-project secret).
 
-``POST /webhooks/deploy`` accepts an HMAC-signed signal from the
-Co-Pilot CI when a new version of the target has been deployed. On a
-valid signature, the route enqueues a regression sweep against the
-named project and returns ``202 Accepted`` semantics (we return 200
-with status=queued for FastAPI ergonomics, but the work is async).
-The sweep runs in the background and updates each RegressionCase's
-verdict as it completes.
+``POST /webhooks/deploy/{project_id}`` accepts an HMAC-signed signal
+from the named project's CI when a new version of the target has been
+deployed. The route looks up the project, decrypts its per-project
+``deploy_webhook_secret``, verifies the HMAC against the raw body,
+and enqueues a regression sweep against that project.
+
+Why per-project (R8 followup, 2026-05-13): the original R8 ship used
+a single global ``settings.deploy_webhook_secret``, which would cap
+the platform at one project's CI ever being able to authenticate. The
+secret lives on the project row now (Fernet-encrypted), matching the
+shape of every other per-project credential.
 
 Auth model:
 
+- URL path carries the project id — the server uses it to look up the
+  correct secret BEFORE parsing the body. Verifies signature, then
+  parses.
 - Header ``X-CATS-Signature: sha256=<hex>``.
-- HMAC-SHA256 over the **raw request body** using
-  ``settings.deploy_webhook_secret``.
+- HMAC-SHA256 over the **raw request body**.
 - Constant-time comparison via :func:`hmac.compare_digest`.
-- Missing secret → 503 (the platform owner has not opted into
-  webhook-driven sweeps).
+- Project not found → 404.
+- Project found but no secret configured → 503 (project hasn't opted
+  in to webhook-driven sweeps).
 - Missing / malformed signature → 401.
-- Audit-logged either way; failed attempts are visible to the
-  operator so a misconfigured CI doesn't fail silently.
+- Audit-logged at every state; failed attempts are visible so a
+  misconfigured CI doesn't fail silently.
 
 Request body shape::
 
     {
-      "project_id": "<uuid>",       // required
       "version_tag": "<string>",    // optional; surfaced in the UI
       "deployed_at": "<iso8601>"    // optional; informational
     }
@@ -38,10 +44,12 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from sqlalchemy import select
 
-from cats.config import get_settings
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
+from cats.db.schema import projects
+from cats.security.crypto import decrypt
 from cats.workers.regression_sweep import schedule_sweep_in_background
 
 router = APIRouter()
@@ -53,33 +61,68 @@ def expected_signature(body: bytes, secret: str) -> str:
     return "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
-@router.post("/deploy")
+async def _resolve_project_secret(project_id: UUID) -> str | None:
+    """Look up the project's encrypted webhook secret and decrypt it.
+    Returns None when the project exists but has no secret configured,
+    or raises HTTPException(404) when the project doesn't exist."""
+    async with session_scope() as session:
+        row = (
+            await session.execute(
+                select(projects.c.deploy_webhook_secret_encrypted).where(
+                    projects.c.id == project_id
+                )
+            )
+        ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    encrypted = row.deploy_webhook_secret_encrypted
+    if not encrypted:
+        return None
+    return decrypt(encrypted)
+
+
+@router.post("/deploy/{project_id}")
 async def deploy_webhook(
+    project_id: UUID,
     request: Request,
     x_cats_signature: str | None = Header(default=None, alias="X-CATS-Signature"),
 ) -> dict[str, Any]:
     raw_body = await request.body()
-    secret = get_settings().deploy_webhook_secret
 
-    # 503: the platform owner has not configured a secret. Refuse to
-    # accept ANY webhook traffic in this state — accepting unsigned
-    # webhooks would turn the platform into an attacker-driven sweep
-    # amplifier. The status is 503 rather than 401 to make it clear
-    # to a misconfigured CI that the receiver isn't ready, not that
-    # the credentials are wrong.
+    try:
+        secret = await _resolve_project_secret(project_id)
+    except HTTPException:
+        # Audit before bubbling — a misconfigured CI hitting an unknown
+        # project should be visible, not just a 404 in HTTP logs.
+        async with session_scope() as session:
+            await write_audit(
+                session,
+                actor="cats.platform.webhook",
+                action="regression.webhook.unknown_project",
+                target_kind="project",
+                target_id=project_id,
+                payload={"reason": "project_id not in projects table"},
+            )
+        raise
+
+    # 503: the project exists but its owner hasn't configured a secret.
+    # Refuse to accept ANY webhook traffic in this state — accepting
+    # unsigned webhooks would turn the platform into an attacker-driven
+    # sweep amplifier. 503 (not 401) signals to the CI that the
+    # receiver isn't ready, not that the credentials are wrong.
     if not secret:
         async with session_scope() as session:
             await write_audit(
                 session,
                 actor="cats.platform.webhook",
                 action="regression.webhook.unconfigured",
-                target_kind="webhook",
-                target_id=None,
-                payload={"reason": "deploy_webhook_secret is empty"},
+                target_kind="project",
+                target_id=project_id,
+                payload={"reason": "project has no deploy_webhook_secret"},
             )
         raise HTTPException(
             status_code=503,
-            detail="deploy webhook is not configured on this CATS instance",
+            detail="deploy webhook not configured for this project",
         )
 
     if not x_cats_signature or not hmac.compare_digest(
@@ -90,29 +133,24 @@ async def deploy_webhook(
                 session,
                 actor="cats.platform.webhook",
                 action="regression.webhook.rejected",
-                target_kind="webhook",
-                target_id=None,
+                target_kind="project",
+                target_id=project_id,
                 payload={"reason": "signature_invalid_or_missing"},
             )
         raise HTTPException(status_code=401, detail="invalid signature")
 
     # Parse body AFTER signature verification — never trust unsigned
-    # JSON. Failure modes (truncated body, non-JSON, missing fields)
-    # all surface as 400 with an audit entry.
-    try:
-        body = json.loads(raw_body or b"{}")
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"body not JSON: {exc}") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-
-    project_id_str = str(body.get("project_id") or "")
-    if not project_id_str:
-        raise HTTPException(status_code=400, detail="missing project_id")
-    try:
-        project_id = UUID(project_id_str)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"project_id not a uuid: {exc}") from exc
+    # JSON. Body is optional; an empty body verifies fine if the
+    # signature matches sha256("").
+    body: dict[str, Any] = {}
+    if raw_body:
+        try:
+            parsed = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"body not JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        body = parsed
 
     version_tag = str(body.get("version_tag") or "")[:120]
 
