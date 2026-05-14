@@ -3281,6 +3281,62 @@ Forward-only fix:
   intended shape against the original brief, not against the
   previous design doc.
 
+### Revision — split supervisor from attack generators
+
+First production smoke against a real OpenRouter key surfaced a
+deeper modeling bug: the agent's *attacker* node and the
+*per-category attack generator* were sharing a single role
+(``redteam_injection`` / ``redteam_exfil`` / etc.), forcing them
+onto a single model. They have incompatible needs:
+
+- The attacker node calls ``chat(..., tools=ALL_TOOLS)`` on every
+  turn — needs OpenRouter tool-use support.
+- The per-category specialists produce one JSON proposal per
+  ``propose_attack`` call (no tools advertised) — needs low-refusal
+  adversarial content, no tool support required.
+
+Conflating them forced a trade: tool-capable (DeepSeek) at the cost
+of higher refusal on the generated attacks, or low-refusal (Hermes)
+at the cost of HTTP 404 from OpenRouter because Hermes endpoints
+don't expose tools. The original ``redteam_*`` config picked Hermes
+and 404'd. The first fix rotated everything to DeepSeek and quietly
+neutered the platform's adversarial creativity.
+
+Forward fix:
+
+- **New role ``redteam_supervisor``** — DeepSeek primary, Qwen 2.5
+  72B fallback. Tool-capable. One model across all four categories.
+  The agent's attacker LangGraph node always uses this role.
+- **Per-category roles back to Hermes-class generators** with
+  category-appropriate fallbacks (Dolphin-Venice for injection,
+  Sonnet 4.5 for exfil, DeepSeek for tool_abuse). JSON-output only;
+  no tools advertised on these LLM calls.
+- ``role_for_category`` now returns ``redteam_supervisor`` for
+  every category; the per-category specialist routing happens one
+  level below, inside ``_propose_attack``.
+- Cost shape now matches call volume: the high-volume tool-loop
+  calls (~5-15 per run) go through cheap DeepSeek (~$0.25/$0.38 per
+  Mtok); the once-per-run attack-generation call goes through the
+  more expensive but lower-refusal Hermes (~$1/$3). Net cheaper
+  than the all-DeepSeek configuration, with better adversarial
+  coverage.
+- Family-diversity policy still holds: Judge (Anthropic) ≠ Red Team
+  supervisor (DeepSeek) ≠ Red Team generators (Nous Hermes /
+  Cognitive Computations / Sonnet / DeepSeek). No single family
+  controls both attack and judgement.
+- *Tests + evals updated.* ``redteam_supervisor`` is registered for
+  the scripted attacker sequence in
+  ``tests/integration/test_multi_turn_e2e.py``, ``test_r4_bus_e2e.py``,
+  ``tests/unit/test_red_team_agent_graph.py``, and the eval runner.
+  Per-category specialist registrations stay on the per-category
+  roles.
+- *Lesson.* Roles in the model registry are *jobs*, not categories.
+  Two LLM calls that take different request shapes
+  (``tools=`` vs ``response_format="json_object"``) need different
+  roles, even if they're conceptually about the same attack
+  category. The ARCHITECTURE.md §4.1 model-registry table is
+  updated to reflect this.
+
 ---
 
 ## Round 11 — Clinical misinformation propagation

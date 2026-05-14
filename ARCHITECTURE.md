@@ -233,7 +233,7 @@ implementation tool, not the platform's coordination backbone.
 | Agent | Trust level | Model assignment | Job |
 |-------|-------------|------------------|-----|
 | **Orchestrator** | Platform-trusted, human-gated | Claude Sonnet 4.6 (LLM planner) | Reads the project's coverage / severity / recency state via a tool surface and authors a structured campaign plan — which categories, which techniques, what budget, when to halt — that a human operator approves before any attack fires. See §2.4. |
-| **Red Team** | Adversarial | Per-specialist (see Red Team internals below) | Consumes approved plans from the bus, executes the plan's attempts against the live target, and emits attack events. Internally a LangGraph of specialists + Mutator + Output Filter + Target Caller. Iterates on `partial` verdicts up to the plan's cap. |
+| **Red Team** | Adversarial | Supervisor: DeepSeek V3 (tool-capable). Per-category generators: Hermes 4 405B / DeepSeek (see Red Team internals below). | Consumes approved plans from the bus. For each `(category, technique)` scenario in the plan, runs an autonomous **LangGraph agent** that picks tools, calls the target, mutates on partial signal, and submits when confident either way. One run per scenario; the agent decides how many turns to fire within a USD budget. Emits one `AttackEvent` per run. |
 | **Judge** | Independent | Claude Haiku 4.5 (different model family from Red Team adversarial models by policy) | Consumes attack events; evaluates each `(attack, response)` pair against the locked per-category rubric. Returns `pass \| fail \| partial` plus structured evidence. Independent of the Red Team by design: a system that generates attacks and grades them in the same context has a conflict of interest the brief explicitly warns about. See §2.5. |
 | **Documentation** | Platform-trusted, human-gated on critical | Claude Sonnet 4.6 | Consumes `pass` verdicts; writes structured Findings, authors the vulnerability report Markdown, and pauses on `severity: critical` for explicit human approval before promotion. |
 
@@ -252,48 +252,62 @@ no isolation gain. The four agents above are the four that
 actually have distinct trust levels, distinct lifecycles, and
 distinct coordination requirements.
 
-#### Red Team internals (graph nodes within one agent)
+#### Red Team internals (agent graph + tool layer)
 
 The Red Team agent's internal LangGraph composes the following
-nodes. These are **not** independent agents on the bus; they are
-the mechanical work the Red Team performs in service of its one
-external responsibility (turn an approved plan into attack
-events).
+nodes and tools. These are **not** independent agents on the bus;
+they are the mechanical work the Red Team performs in service of
+its one external responsibility (turn one approved scenario into
+one attack event).
 
 | Component | Model | Role within the Red Team |
 |-----------|-------|--------------------------|
-| **Specialist — Injection** | Hermes 4 405B → Dolphin-Mistral-Venice | Direct and indirect prompt-injection attack generation, including `.docx` indirect payloads. |
-| **Specialist — Exfil** | Hermes 4 405B → Claude Sonnet 4.6 (authorized-pentest framing) | PHI / cross-patient data-exfiltration attacks. Owns the canary-token planting protocol. |
-| **Specialist — ToolAbuse** | DeepSeek V3.2 → Hermes 4 | Tool misuse and authorization-bypass attacks. |
-| **Mutator** | DeepSeek V3.2 → Qwen 3.6 Flash | When a `VerdictRendered(partial)` message arrives back at the Red Team's inbox, the Mutator produces a variant of the partially-successful attack. Decoupled from the specialists in code so they stay focused on strategic attack design, not mechanical iteration. |
-| **Output Filter** | Deterministic regex + NFKC normalization + Tier-1 OSS classifier | Scans every Specialist / Mutator output before the Target Caller sends it. Quarantines unsafe content. The trust boundary on the Red Team's outbox: nothing leaves the Red Team without passing through here. See §2.6. |
-| **Target Caller** | (no model) | Issues the actual HTTP call to the live target Co-Pilot. Per-Project authentication and rate-limiting. |
+| **Supervisor (attacker node)** | DeepSeek V3 → Qwen 2.5 72B | The agent's *brain*. On every loop turn, calls `chat(..., tools=ALL_TOOLS)` to pick what to do next. Tool-capable model required because the agent calls tools. One supervisor model across all four categories — keeps reasoning style consistent. |
+| **Tool: `lookup_regression_history`** | (no model — DB read) | The agent's only external knowledge channel. Returns confirmed-breach signatures + confirmed-block signatures from past campaigns for this (category, technique). The Judge's in-flight verdicts are NOT exposed; only the closed regression suite. |
+| **Tool: `propose_attack`** | Hermes 4 405B → Dolphin-Mistral-Venice (injection / indirect_injection); Hermes 4 → Sonnet 4.5 (exfil); DeepSeek V3 → Hermes 4 (tool_abuse) | Per-category attack generators. One JSON proposal per call (no tools advertised). Picked for low-refusal adversarial content — JSON output only, so OpenRouter tool-use support is not required. |
+| **Tool: `mutate_attack`** | DeepSeek V3 → Qwen 2.5 72B | Rewrites the last user_message into a variant given the target's response. JSON output only. Same model registry as the platform-wide Mutator role. |
+| **Tool: `fire_at_target`** | (no model) | Issues the actual HTTP call to the live target Co-Pilot. Per-Project authentication and rate-limiting. Records one `attack_executions` row per call. |
+| **Tool: `submit_for_judgment`** | (no model) | Terminal. Records the agent's `self_assessment` (`breached` / `held` / `inconclusive`) and ends the graph. The Judge's actual ruling is computed later and never returned to the agent. |
+| **Output Filter** | Deterministic regex + NFKC normalization + Tier-1 OSS classifier | Scans every payload before `fire_at_target` sends it. Quarantines unsafe content. The trust boundary on the Red Team's outbox: nothing leaves the Red Team without passing through here. See §2.6. |
 
-**Why three specialist Red Teams instead of one generalist.**
-Each category has a distinct mental model: injection is prompt
-craft, exfil is authorization-boundary probing, tool abuse is
-API parameter games. Specialist prompts and few-shots produce
-stronger attacks per category than one generalist juggling all
-of them. Adding a fourth category (e.g. clinical-misinformation
-propagation) is a new specialist file, not a rewrite of the
-generalist prompt. Inside the Red Team graph, a router node
-dispatches to the specialist named in the plan's current
-attempt.
+**Why two LLM tiers (supervisor + generators) instead of one.**
+The two tiers do incompatible jobs: the supervisor must support
+function calling on OpenRouter so the agent can call tools (a
+hard requirement at the provider level), while the per-category
+generators benefit from low-refusal models that don't necessarily
+expose tool support. Conflating them meant choosing between a
+tool-capable but higher-refusal model (DeepSeek for everything)
+or a low-refusal model that 404s on tool calls (Hermes for
+everything). The split lets each tier use the right model:
+high-volume tool-loop calls go through cheap DeepSeek; the
+once-per-run attack-generation call goes through Hermes 4 405B
+where it matters.
 
-**Why a separate Mutator (still, even though it's inside the
-Red Team).** The May-2026 research is explicit that successful
-attacks against LLMs rarely arrive as single static payloads —
-they arrive as a partially-successful attempt and N variants of
-it (see [`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md)
-§1). Doing variant generation inside each specialist conflates
-strategic attack design with mechanical iteration. The Mutator
-stays on cheap open-weight models forever and is invoked only
-when the Judge returns `partial` — explicit feedback that the
-attack was close but not all the way through. The Red Team's
-internal iteration counter (stored per-`attack_id` in its own
-DB rows) bounds the loop at the plan's `max_consecutive_partials`
-cap; a crashed Red Team worker mid-loop is recoverable because
-the counter is durable.
+**Why per-category generators, not one generalist.** Each
+category has a distinct mental model: injection is prompt craft,
+exfil is authorization-boundary probing, tool abuse is API
+parameter games, indirect_injection assembles a `.docx`.
+Specialist prompts and few-shots produce stronger attacks per
+category than one generalist juggling all of them. Adding a
+fourth category (e.g. clinical-misinformation propagation) is a
+new specialist file + a new role in the registry, not a rewrite
+of the generalist prompt.
+
+**Why mutate is a tool, not a verdict-driven side-car.** The
+May-2026 research is explicit that successful attacks against
+LLMs rarely arrive as single static payloads — they arrive as a
+partially-successful attempt and N variants of it (see
+[`docs/W3_THREAT_RESEARCH.md`](./docs/W3_THREAT_RESEARCH.md) §1).
+Earlier shapes had the Mutator triggered by a Judge `partial`
+verdict on the bus. That made the agent dependent on Judge
+feedback — explicitly forbidden by the brief
+(evaluation-independence). The agent now mutates *inside* one
+conversation, based on what it sees in the target's response,
+not on the Judge's ruling. The Judge's `partial` verdict is the
+final word on a conversation, not a feedback loop. The agent
+runs until it submits or hits a USD-budget / turn cap; a Judge
+`partial` from a prior run reaches the agent only via the
+regression suite, never directly.
 
 ### 2.2 Agent topology
 
@@ -306,21 +320,47 @@ load-bearing graph in CATS (the platform-level coordination
 is the bus, not LangGraph). The system-level view of *where
 these agents live* is in §3.
 
-**R10-follow-up.** The Red Team is now an autonomous
-LangGraph agent that owns its conversation: it picks tools,
-fires at the target, mutates on the fly, and decides when to
-submit. The worker just consumes the result and emits one
-``AttackEvent``. The agent advertises four tools to its
-attacker LLM (``propose_attack``, ``mutate_attack``,
-``fire_at_target``, ``submit_for_judgment``) and runs until
-the model calls ``submit_for_judgment`` or a safety cap
-force-submits a synthetic ``fail``. The earlier R10 shape (a
-worker for-loop + a side-car escalation strategist) was a
-pipeline disguised as an agent — every decision was a
-function, none was authored by the agent itself. The
-follow-up replaces that with a real agent loop where the
-specialist's *role* is to call tools and the worker's role is
-to consume what the agent produced.
+**R10-follow-up (revised).** The Red Team is an autonomous
+LangGraph agent that owns its conversation for ONE scenario
+((category, technique) pair): it picks tools, fires at the
+target, mutates on the fly, and decides when to submit. The
+worker just consumes the result and emits one ``AttackEvent``
+per scenario. Run lifecycle is **one run per scenario** — an
+N-attempt plan produces N independent runs.
+
+The agent advertises **five tools** to its attacker LLM:
+``lookup_regression_history`` (the only external knowledge
+channel — confirmed breaches + confirmed blocks from past
+campaigns), ``propose_attack`` (call exactly once to seed the
+conversation), ``mutate_attack`` (rewrite the last payload
+given the target's response), ``fire_at_target`` (send and
+record one execution), and ``submit_for_judgment`` (terminal;
+records the agent's `self_assessment` — `breached` / `held` /
+`inconclusive` — for the audit trail). The agent runs until
+the model calls ``submit_for_judgment`` or hits a USD-budget /
+turn cap, in which case the platform synthesizes a
+``submit_for_judgment("held", "cap reached")``.
+
+The agent does **not** see the Judge's verdicts. The brief's
+evaluation-independence requirement is structural here: the
+Judge runs on a separate worker, reads the AttackEvent the
+agent emitted, and writes a verdict the agent will never
+read. Cross-run knowledge flows through the regression suite
+only.
+
+The agent's brain (attacker LLM) runs on a tool-capable
+**supervisor** model (DeepSeek V3, with Qwen 2.5 72B fallback)
+— one model across all four categories. The actual attack
+content is authored by per-category **generator** models
+(Hermes 4 405B and friends) inside the ``propose_attack``
+tool. See §2.1's Red Team internals table and §4.1.
+
+The earlier R10 shape (a worker for-loop firing K seeds + a
+side-car escalation strategist) was a pipeline disguised as
+an agent — every decision was a function, none was authored
+by the agent itself. The follow-up replaces that with a real
+agent loop. ``seeds_per_attempt`` is deprecated; the agent
+decides how many turns to fire within its USD budget.
 
 **Diagram A — Four agents around the message bus.** Each box
 is an independent worker process. Each labeled arrow is a typed
@@ -1215,13 +1255,31 @@ discussed in §4.
 | Agent | Primary | Fallback | Rationale |
 |-------|---------|----------|-----------|
 | Orchestrator | `~anthropic/claude-sonnet-latest` (Sonnet 4.6) | `openai/gpt-5.4` | Strict-JSON campaign plans; once-per-campaign, so cost is low. Prompt-cacheable system prompt. |
-| Red Team — Injection | `nousresearch/hermes-4-405b` | `cognitivecomputations/dolphin-mistral-24b-venice-edition` | Hermes 4 explicitly trained for low refusal + JSON/tool support. Dolphin-Venice (~2% refusal rate) is the escape hatch for prompts even Hermes balks at. Frontier models over-sanitize injection payloads — explicitly *not* the primary. |
-| Red Team — Exfil | `nousresearch/hermes-4-405b` | `~anthropic/claude-sonnet-latest` with authorized-pentest framing | Hermes for creative patterns; Sonnet 4.6 fallback for realistic clinical wording when Hermes is too obvious. Sonnet *is* the realistic-attacker simulation we want anyway. |
-| Red Team — ToolAbuse | `deepseek/deepseek-v3.2` | `nousresearch/hermes-4-405b` | DeepSeek V3.2 has strong tool-use reasoning, low refusal, and dirt-cheap pricing. |
-| Mutator | `deepseek/deepseek-v3.2` | `qwen/qwen3.6-flash` | High-volume, per-call cheapness wins. Both have ≥131k context for keeping mutation history in-prompt. |
+| Red Team — Supervisor | `deepseek/deepseek-chat` | `qwen/qwen-2.5-72b-instruct` | The agent's *brain*: picks tools, owns the conversation. **Must support OpenRouter tool use** because the agent calls `chat(..., tools=ALL_TOOLS)` on every loop turn. DeepSeek V3 has the strongest tool reasoning + lowest refusal among tool-capable open models on OpenRouter. One supervisor model across all four categories — keeps reasoning style consistent. |
+| Red Team — Injection generator | `nousresearch/hermes-4-405b` | `cognitivecomputations/dolphin-mistral-24b-venice-edition:free` | Per-category attack content. JSON output only — tool support not required, so we can pick the model purely for adversarial creativity. Hermes 4 explicitly trained for low refusal + JSON. Dolphin-Venice (~2% refusal) is the escape hatch for prompts Hermes balks at. Frontier models over-sanitize injection payloads — explicitly *not* the primary. |
+| Red Team — Indirect-injection generator | `nousresearch/hermes-4-405b` | `cognitivecomputations/dolphin-mistral-24b-venice-edition:free` | Authors the visible_text + hidden_instruction that gets assembled into the `.docx`. Same refusal concern as direct injection. |
+| Red Team — Exfil generator | `nousresearch/hermes-4-405b` | `~anthropic/claude-sonnet-latest` with authorized-pentest framing | Hermes for creative patterns; Sonnet 4.5 fallback for realistic clinical wording when Hermes is too obvious. |
+| Red Team — Tool-abuse generator | `deepseek/deepseek-chat` | `nousresearch/hermes-4-405b` | DeepSeek's tool-use reasoning matches the parameter-tampering / recursive-call shape of tool-abuse prompts. |
+| Mutator | `deepseek/deepseek-chat` | `qwen/qwen-2.5-72b-instruct` | High-volume, per-call cheapness wins. Used by the agent's `mutate_attack` tool to rewrite the last user_message in light of the target's response. |
 | Judge | `~anthropic/claude-haiku-latest` (Haiku 4.5) | `~google/gemini-flash-latest` | Best rubric-adherence-per-dollar. Prompt-caching the locked rubric cuts input cost ~90%. **Never** use a DeepSeek/Qwen Judge against a DeepSeek/Qwen Red Team — same-family inflation. |
 | Judge (ensemble 3rd vote) | `meta-llama/llama-3.3-70b-instruct` | — | $0.10 / $0.32 per 1M — effectively free. Western-trained diversity for contested verdicts. |
 | Documentation | `~anthropic/claude-sonnet-latest` | `openai/gpt-5.4` | Long-form structured technical writing — Sonnet 4.6's strong suit. |
+
+**Why supervisor and generators are separate registry roles.**
+The two LLM-call shapes are incompatible: the supervisor's call
+sets `tools=ALL_TOOLS` and reads tool_calls off the response; the
+generators' call sets `response_format={"type":"json_object"}` and
+reads strict JSON off `text`. OpenRouter routes the former only to
+provider endpoints that advertise tool-use support, and several
+strong adversarial models (Hermes 4 405B, Dolphin-Venice) are
+served by providers that don't. Conflating the two roles forced a
+choice between tool capability and low refusal. The split lets
+each tier pick the right model.
+
+The split also matches the call shape per run: the supervisor
+fires ~5-15 times per scenario (cheap DeepSeek), while each
+generator fires once (the more expensive Hermes pays for itself
+across the conversation it seeds).
 
 ### 4.2 Family-diversity principle
 
