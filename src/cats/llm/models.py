@@ -45,7 +45,14 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
     "orchestrator": ModelChoice(
         primary="anthropic/claude-sonnet-4.5",
         fallback="openai/gpt-5",
-        notes="Strict-JSON campaign plans; once-per-campaign so cost is low.",
+        notes=(
+            "Tool-using planning LangGraph agent. ~15-20 LLM turns at "
+            "~$0.05/turn within a $0.50 per-session cap; one session per "
+            "campaign. MUST support OpenRouter function calling — the "
+            "agent's planner node calls chat(..., tools=ALL_TOOLS) every "
+            "turn. Sonnet 4.5 supports tools natively; GPT-5 fallback "
+            "for provider diversity."
+        ),
     ),
     # The Red Team agent's *brain* (orchestrator-of-the-attack, not to
     # be confused with the platform-level Orchestrator that builds the

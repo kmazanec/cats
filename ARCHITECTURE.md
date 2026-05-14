@@ -41,17 +41,21 @@ Mutator → Output Filter → Target Caller sequence is one of these
 matches the brief's explicit requirement that a single-agent or
 pipeline architecture does not satisfy the assignment.
 
-The **Orchestrator** is an LLM-driven planner (Claude Sonnet 4.6),
-not a hand-written rule. It reads the project's coverage,
-severity-weighted open findings, and recent regressions through a
-typed tool surface — `list_coverage`, `list_open_findings`,
-`list_recent_regressions`, `list_attack_categories`,
-`budget_remaining` — and authors a structured `CampaignPlan` with
-a paragraph of rationale grounded in those tool outputs. The plan
-emits to the operator, not directly to the Red Team. This is the
-brief's "without this layer, your platform is just running
-attacks randomly" requirement made concrete: the strategic layer
-reasons over state rather than rotating through a fixed list.
+The **Orchestrator** is an LLM-driven **LangGraph agent** (Claude
+Sonnet 4.5), not a hand-written rule. It picks tools and calls them
+iteratively against the project's observability state — `list_coverage`,
+`list_open_findings`, `list_recent_regressions`, `list_attack_categories`,
+`budget_remaining`, plus the drill-downs `coverage_for_category` and
+`recent_campaigns` — and emits a validated `CampaignPlan` via the
+terminal `submit_plan` tool, with a paragraph of rationale grounded
+in those tool outputs. Defense-in-depth caps bound the session to
+~15-20 LLM turns under $0.50 of spend; the agent self-corrects
+on validator errors via the `submit_plan` tool's `{error, hint}`
+return shape rather than an external retry harness. The plan emits
+to the operator, not directly to the Red Team. This is the brief's
+"without this layer, your platform is just running attacks randomly"
+requirement made concrete: the strategic layer reasons over state
+rather than rotating through a fixed list.
 
 The **Red Team** consumes approved plans and turns each attempt
 into one `AttackEvent` on the bus. Internally it dispatches to
@@ -232,10 +236,10 @@ implementation tool, not the platform's coordination backbone.
 
 | Agent | Trust level | Model assignment | Job |
 |-------|-------------|------------------|-----|
-| **Orchestrator** | Platform-trusted, human-gated | Claude Sonnet 4.6 (LLM planner) | Reads the project's coverage / severity / recency state via a tool surface and authors a structured campaign plan — which categories, which techniques, what budget, when to halt — that a human operator approves before any attack fires. See §2.4. |
+| **Orchestrator** | Platform-trusted, human-gated | Claude Sonnet 4.5 (tool-using LangGraph agent) | Runs a LangGraph agent that calls tools iteratively — coverage / open findings / regressions / catalog / budget / drill-downs / prior campaigns — then emits a validated plan via the terminal `submit_plan` tool. Self-corrects on validator errors. ~15-20 LLM turns under a $0.50 cap per campaign. Human operator approves the plan before any attack fires. See §2.4. |
 | **Red Team** | Adversarial | Supervisor: DeepSeek V3 (tool-capable). Per-category generators: Hermes 4 405B / DeepSeek (see Red Team internals below). | Consumes approved plans from the bus. For each `(category, technique)` scenario in the plan, runs an autonomous **LangGraph agent** that picks tools, calls the target, mutates on partial signal, and submits when confident either way. One run per scenario; the agent decides how many turns to fire within a USD budget. Emits one `AttackEvent` per run. |
 | **Judge** | Independent | Claude Haiku 4.5 (different model family from Red Team adversarial models by policy) | Consumes attack events; evaluates each `(attack, response)` pair against the locked per-category rubric. Returns `pass \| fail \| partial` plus structured evidence. Independent of the Red Team by design: a system that generates attacks and grades them in the same context has a conflict of interest the brief explicitly warns about. See §2.5. |
-| **Documentation** | Platform-trusted, human-gated on critical | Claude Sonnet 4.6 | Consumes `pass` verdicts; writes structured Findings, authors the vulnerability report Markdown, and pauses on `severity: critical` for explicit human approval before promotion. |
+| **Documentation** | Platform-trusted, human-gated on critical | Claude Sonnet 4.5 (tool-using LangGraph agent) | LangGraph agent that runs two workloads. (1) Per-finding writer: authors the vulnerability report Markdown, persists structured Findings, and pauses on `severity: critical` for explicit human approval before promotion. (2) Campaign-rollup author: calls data + render tools (verdict histogram, coverage heatmap, cost breakdown, timeline) and emits the campaign-level report via the terminal `finish_report` tool. |
 
 **Why four agents instead of seven.** Earlier drafts of this
 architecture diagrammed each specialist + the Mutator + the
@@ -784,54 +788,96 @@ load-bearing reason this field is mandatory on every envelope.
 
 ### 2.4 Orchestrator policy
 
-The Orchestrator is an **LLM-driven planner**, not a hand-written
-selection rule. The brief is explicit that "without this layer,
-your platform is just running attacks randomly. With it, your
-platform is learning." Building the right *agent* — its prompt,
-its tools, its evaluation criteria — is part of the engineering
-challenge, not something to substitute with a heuristic.
+The Orchestrator is a **tool-using LangGraph agent**, not a
+hand-written selection rule and not a single-shot LLM call. The
+brief is explicit that "without this layer, your platform is just
+running attacks randomly. With it, your platform is learning."
+Building the right *agent* — its prompt, its tools, its evaluation
+criteria — is part of the engineering challenge, not something to
+substitute with a heuristic.
 
-**Inputs — the tool surface.** The Orchestrator agent reads the
-platform's state through a small, typed set of tools it can call
-during planning, not through ad-hoc DB queries. The tools answer
-questions like:
+**Topology.** Two-node graph mirroring the Red Team and Documentation
+agents: `planner` (LLM with `tools=ALL_TOOLS` advertised) →
+`tool_executor` (dispatches each emitted `tool_call`) → `planner` ...
+until the agent calls the terminal `submit_plan` tool with a
+validated plan. The mutable `OrchestratorContext` (campaign id,
+session, cached catalog, transcript, costs) lives in a process-global
+holder keyed by trace id; the LangGraph state itself carries only
+messages + the key, so `AsyncSession` doesn't round-trip through
+the checkpointer.
 
-- `list_coverage(project_id)` — per-category, per-technique
-  counts of attacks fired, last-tested timestamp, current
-  pass / fail / partial mix.
-- `list_open_findings(project_id, min_severity)` — outstanding
-  vulnerabilities the platform has not yet validated as fixed.
-- `list_recent_regressions(project_id, since)` — failed
-  regression-suite cases since the most recent deploy.
+**Inputs — the tool surface.** Eight tools, advertised on every
+planner turn:
+
+- `list_coverage(lookback_days)` — per-category, per-technique
+  counts of attacks fired, last-tested timestamp, pass / fail /
+  partial mix.
+- `list_open_findings(min_severity)` — outstanding vulnerabilities
+  not yet validated as fixed.
+- `list_recent_regressions(since_days)` — findings whose status
+  recently flipped to `regressed`.
 - `list_attack_categories()` — the catalogued attack-surface map
-  from `THREAT_MODEL.md`, with each category's known defenses
-  and their current confidence ratings.
-- `budget_remaining(project_id)` — wall-clock / dollar / token
-  budget the operator allocated.
+  from `THREAT_MODEL.md` with each category's techniques + ATLAS /
+  OWASP labels. **The agent must call this before `submit_plan`;
+  every `(category, technique)` pair it submits must come from
+  this catalog.**
+- `budget_remaining()` — USD + wall-clock remaining for the current
+  campaign.
+- `coverage_for_category(category, lookback_days)` — drill-down to
+  one category's per-technique slice. Cheaper on context than
+  dragging the full matrix into every turn once the agent has
+  identified a category to prioritize.
+- `recent_campaigns(n)` — past N campaigns' plans + outcomes
+  (verdict mix, USD consumed). The cross-campaign learning channel.
+- `submit_plan(attempts, rationale, confidence, halt_thresholds,
+  budget_usd_cap)` — terminal. Validates the plan; on validation
+  failure returns `{error, hint}` as a tool-message so the next
+  planner turn can self-correct.
 
-The tool surface is the contract between the strategic
-LLM-driven layer and the observability substrate. Adding a new
-signal the Orchestrator can reason over means adding a tool,
-not editing prompts.
+The tool surface is the contract between the strategic LLM-driven
+layer and the observability substrate. Adding a new signal the
+Orchestrator can reason over means adding a tool, not editing
+prompts.
+
+**Self-correction via tool-error.** Before R10-followup-2 the
+planner did a single-shot LLM call + one external retry on
+`PlanStructuralError`. The agent loop achieves the same effect
+inside one conversation: on an invalid plan, the `submit_plan` tool
+returns `{error, hint, submission_attempts}` (the `hint` names the
+valid `(category, technique)` pairs verbatim so the model isn't
+guessing). The next planner turn reads the tool-message and can
+correct in place. Repeated invalid submits burn turns and
+eventually trip the defense-in-depth cap.
 
 **Output — a campaign plan.** The Orchestrator emits a structured
-`CampaignPlan` containing:
+`CampaignPlan` (via `submit_plan`) containing:
 
-- the ordered list of `(category, technique)` attempts it
-  intends to run, with per-attempt budget caps,
-- a one-paragraph rationale grounded in the tool outputs
-  (e.g. "system_prompt_leak has not been tested against this
-  project in 30 days; an open `policy_puppetry` finding from
-  last week suggests the system-prompt isolation is weak;
-  prioritize SPE-LLM"),
+- the ordered list of `(category, technique)` attempts it intends
+  to run, with per-attempt budget caps,
+- a one-paragraph rationale grounded in specific tool outputs
+  (e.g. "list_coverage shows 0 attempts on
+  injection.system_prompt_leak in the last 30 days; an open
+  `policy_puppetry` finding from last week suggests system-prompt
+  isolation is weak; prioritize SPE-LLM"),
 - explicit halt conditions for the campaign (see below),
-- a confidence statement on the plan's coverage of the
-  highest-risk surfaces.
+- a confidence statement on the plan's coverage of the highest-risk
+  surfaces.
+
+**Budget + caps (defense in depth).** The agent has its OWN
+LLM-loop spend cap (`$0.50` per session by default) and turn cap
+(`MAX_AGENT_TURNS=20`) separate from the operator's campaign
+budget. These are not targets; they're safety nets. On cap hit
+*without* a validated plan the entrypoint raises
+`PlanStructuralError`; the worker maps that to a `failed`
+`campaign_plans` row and a `plan_failed` UI event. **No
+synthesized fallback plan** — a half-finished plan is more
+dangerous than no plan.
 
 **Human-in-the-loop approval gate.** No campaign plan dispatches
 without operator approval. The plan is rendered in the dashboard
-with the rationale and the tool calls that produced it; the
-operator approves, edits, or rejects before the Red Team fires.
+with the rationale and the full tool transcript that produced it;
+the operator approves, edits, or rejects before the Red Team
+fires.
 
 This is the brief's "where does your system stop and ask a human"
 boundary for the *strategic* layer. (The other approval gate is
@@ -839,22 +885,22 @@ on critical-severity finding promotion — see §2.5.) The system
 runs autonomously *within* an approved plan; it does not
 autonomously decide what to run.
 
-**Why an LLM planner instead of a fixed rule.** A hand-written
-bandit can balance coverage and severity, but it cannot reason
-about *which combination of signals matters for this project
-right now* — that a recent regression in injection makes
-`system_prompt_leak` more urgent even though its raw coverage
-count is high, or that an open `tool_abuse` finding deserves
-re-probing before a green-field category. The brief calls for an
-agent that "hunts, evaluates, escalates, and documents
-vulnerabilities continuously, adapting as attackers adapt"; that
-is reasoning over the state, not weighted summation of it.
+**Why an agent loop instead of a single LLM call.** A single-shot
+planner has to pre-fetch every tool output and dump it into one
+prompt — wasteful when the agent only needs a drill-down on one
+category, blind to past campaigns' outcomes, and unable to react
+to validator pushback within the same conversation. The agent
+loop lets the planner pull the signals that matter for *this*
+project right now: drill into `tool_abuse` once `list_coverage`
+shows a regression there, pull `recent_campaigns` to check
+whether a past breach has stayed reproducible, then self-correct
+when the validator pushes back on an unknown technique.
 
 The cost discipline ARCHITECTURE.md previously claimed (no LLM
 in the inner loop) is preserved by **bounding the planning
-frequency**: one Orchestrator call per campaign, not per attack.
-A campaign that fires 30 attacks costs one Orchestrator
-invocation, not 30.
+session**: one Orchestrator agent session per campaign — ~15-20
+LLM turns at ~$0.05/turn, capped at $0.50 — not per attack. A
+campaign that fires 30 attacks pays the planning cost once.
 
 **Halt conditions.** The plan emits its own halt thresholds; the
 worker enforces them:

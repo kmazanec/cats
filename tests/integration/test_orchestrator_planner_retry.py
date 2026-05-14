@@ -1,15 +1,23 @@
-"""The planner retries once on PlanStructuralError, feeding the
-validator's message + the flattened valid (category, technique) pairs
-back to the LLM. The first response asks for ``(injection, default)``
-— an unknown pair, since ``default`` is not a real technique under any
-category — and the second response returns a corrected plan. The
-planner should swallow the first failure, retry, and return the
-corrected plan."""
+"""Integration test for the LangGraph orchestrator's tool-error
+self-correction pattern.
+
+Before R10-followup-2 the planner did a single-shot LLM call + one
+external retry on PlanStructuralError. The new agent loop achieves the
+same effect via the ``submit_plan`` tool: on an invalid plan, the tool
+returns ``{error, hint}`` as a tool-message; the next planner turn
+sees it and can correct.
+
+These tests drive the real :func:`propose_plan` (which opens a fresh
+``session_scope`` and goes through the agent) with a scripted
+:class:`FakeLLMClient`. The DB is real (postgres via the ``client``
+fixture) so the agent's audit-write side effects + data-tool queries
+exercise the production paths.
+"""
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -25,30 +33,8 @@ from cats.security.crypto import encrypt
 pytestmark = pytest.mark.integration
 
 
-_BAD_PLAN = json.dumps(
-    {
-        "attempts": [
-            {
-                "category": "injection",
-                "technique": "default",  # hallucinated — no category has 'default'
-                "per_attempt_budget_usd": 0.5,
-                "max_consecutive_partials": 2,
-            }
-        ],
-        "rationale": (
-            "cold start: list_coverage rows is empty and list_open_findings "
-            "is empty. Probing injection.default as a baseline because the "
-            "catalog lists injection first; ordering is by catalog position."
-        ),
-        "confidence": "medium",
-        "halt_on_consecutive_fails": 3,
-        "halt_on_judge_errors": 2,
-        "budget_usd_cap": 1.0,
-    }
-)
-
-_GOOD_PLAN = json.dumps(
-    {
+def _valid_plan_args() -> dict[str, Any]:
+    return {
         "attempts": [
             {
                 "category": "injection",
@@ -60,14 +46,29 @@ _GOOD_PLAN = json.dumps(
         "rationale": (
             "cold start: list_coverage rows is empty and list_open_findings "
             "is empty. Probing injection.ignore_previous as the cheapest "
-            "baseline probe; ordering is by catalog position."
+            "baseline; ordering is by catalog position."
         ),
         "confidence": "medium",
         "halt_on_consecutive_fails": 3,
         "halt_on_judge_errors": 2,
         "budget_usd_cap": 1.0,
     }
-)
+
+
+def _bad_plan_args() -> dict[str, Any]:
+    args = _valid_plan_args()
+    # 'default' is not a real technique under any category — validator
+    # rejects with 'unknown (category, technique)'.
+    args["attempts"][0]["technique"] = "default"
+    return args
+
+
+def _script(*tool_calls: dict[str, Any]) -> list[Any]:
+    """One scripted assistant turn per tool_call entry."""
+    sequence: list[Any] = []
+    for tc in tool_calls:
+        sequence.append((lambda payload=tc: lambda _msgs: {"text": "", "tool_calls": [payload]})())
+    return sequence
 
 
 @pytest_asyncio.fixture
@@ -103,36 +104,54 @@ def fake_llm() -> Iterator[FakeLLMClient]:
         install_override(None)
 
 
-async def test_planner_retries_once_on_structural_error(
+async def test_planner_self_corrects_via_submit_plan_tool_error(
     project_ids: tuple, fake_llm: FakeLLMClient
 ) -> None:
+    """The agent submits an invalid plan, reads the tool-error message
+    in the next turn, and resubmits with a corrected technique. End
+    result: a validated PlanProposal."""
     project_id, pv_id = project_ids
-    calls = {"n": 0}
-
-    def responder(_messages):
-        calls["n"] += 1
-        return _BAD_PLAN if calls["n"] == 1 else _GOOD_PLAN
-
-    fake_llm.register("orchestrator", responder)
-
+    fake_llm.register_sequence(
+        "orchestrator",
+        _script(
+            {"id": "c1", "name": "list_attack_categories", "arguments": {}},
+            {"id": "c2", "name": "submit_plan", "arguments": _bad_plan_args()},
+            {"id": "c3", "name": "submit_plan", "arguments": _valid_plan_args()},
+        ),
+    )
     proposal = await propose_plan(
         project_id=project_id,
         project_version_id=pv_id,
         budget_usd=1.0,
     )
-    assert calls["n"] == 2, "planner should have retried exactly once"
     assert len(proposal.plan.attempts) == 1
     assert proposal.plan.attempts[0].category == "injection"
     assert proposal.plan.attempts[0].technique == "ignore_previous"
+    # The transcript carries the error-bearing submit AND the
+    # successful one — the operator can audit the self-correction.
+    submit_rows = [e for e in proposal.tool_transcript if e["tool"] == "submit_plan"]
+    assert len(submit_rows) == 2
+    assert "error" in submit_rows[0]["output"]
+    assert submit_rows[1]["output"].get("ok") is True
 
 
-async def test_planner_raises_when_retry_also_fails(
+async def test_planner_raises_when_repeated_invalid_submits_exhaust_caps(
     project_ids: tuple, fake_llm: FakeLLMClient
 ) -> None:
+    """An agent that keeps submitting invalid plans burns turns without
+    progress; the entrypoint raises PlanStructuralError once the cap
+    trips. The worker maps this to a 'failed' campaign_plans row."""
     project_id, pv_id = project_ids
-    fake_llm.register("orchestrator", lambda _m: _BAD_PLAN)
-
-    with pytest.raises(PlanStructuralError, match="unknown"):
+    fake_llm.register(
+        "orchestrator",
+        lambda _m: {
+            "text": "",
+            "tool_calls": [
+                {"id": f"c-{uuid4()}", "name": "submit_plan", "arguments": _bad_plan_args()}
+            ],
+        },
+    )
+    with pytest.raises(PlanStructuralError):
         await propose_plan(
             project_id=project_id,
             project_version_id=pv_id,

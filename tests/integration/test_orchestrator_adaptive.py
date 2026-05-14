@@ -3,19 +3,22 @@
 Simulates ten consecutive campaigns against the same project by driving
 :func:`propose_plan` directly and synthetically seeding the platform's
 observability tables (``attacks``, ``attack_executions``,
-``judge_verdicts``, ``findings``) between iterations. A scripted
-:class:`FakeLLMClient` plays the role of the Orchestrator LLM — it
-parses the tool-output JSON block out of the planner's user prompt,
-applies a deterministic ranking heuristic (open findings + recent
-regressions raise priority; saturated pass-counts lower it), and emits
-a strict-JSON plan whose ``rationale`` cites the signals driving the
-choice.
+``judge_verdicts``, ``findings``) between iterations.
+
+After the R10-followup-2 refactor the Orchestrator is a LangGraph
+agent: it calls tools, reads their results from the conversation, and
+emits a plan via the ``submit_plan`` terminal tool. The scripted
+:class:`FakeLLMClient` here plays that agent's role — it walks a
+fixed call sequence (categories → coverage → findings → regressions →
+submit_plan), reads the tool-result messages from the conversation,
+applies a deterministic ranking heuristic, and submits a plan whose
+``rationale`` cites the signals driving the choice.
 
 The test never spins up a worker, never touches the target, and never
-calls a real LLM. It is the cheapest possible end-to-end proof that the
-planner reads observability state and that the contract between the
-planner and the operator UI (the ``rationale``) names the signals a
-human can trace.
+calls a real LLM. It is the cheapest possible end-to-end proof that
+the planner reads observability state and that the contract between
+the planner and the operator UI (the ``rationale``) names the signals
+a human can trace.
 
 Seeded scenario per iteration:
 
@@ -29,7 +32,6 @@ Seeded scenario per iteration:
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -85,37 +87,59 @@ class _ToolOutputs:
     regression_categories: dict[str, int]
 
 
-def _parse_tool_outputs(messages: list[dict[str, Any]]) -> _ToolOutputs:
-    """Pull the Tool-call transcript + metadata blocks out of the
-    planner's user message. The :func:`_build_prompt` helper in
-    ``planner.py`` writes both blocks as ``json.dumps(..., indent=2)``
-    inside known headers, so a regex grab-the-next-JSON-object is
-    enough — no parser brittleness with nested braces because each
-    block is one top-level JSON value at the start of a line."""
-    user_msg = ""
-    for m in messages:
-        if m.get("role") == "user":
-            user_msg = str(m.get("content", ""))
-            break
+# Fixed sequence of read-only tool calls the scripted agent makes
+# before submitting. Walking them deterministically gives us the same
+# observability snapshot the pre-LangGraph planner had.
+_DATA_TOOLS_IN_ORDER: tuple[str, ...] = (
+    "list_attack_categories",
+    "list_coverage",
+    "list_open_findings",
+    "list_recent_regressions",
+)
 
-    transcript = _extract_json_after(user_msg, "# Tool call transcript")
-    metadata = _extract_json_after(user_msg, "# Campaign metadata")
 
-    if not isinstance(transcript, list) or not isinstance(metadata, dict):
-        raise AssertionError("fake planner could not parse prompt structure")
-
+def _collect_tool_outputs(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read every prior ``role=tool`` message in the conversation and
+    return a name→output dict. Each tool message's ``content`` is the
+    JSON-serialized tool payload (the same payload the agent's
+    tool_executor node appended)."""
     by_tool: dict[str, Any] = {}
-    for entry in transcript:
-        if isinstance(entry, dict) and "tool" in entry:
-            by_tool[str(entry["tool"])] = entry.get("output") or {}
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        name = str(m.get("name", "")).strip()
+        if not name:
+            continue
+        try:
+            payload = json.loads(m.get("content", "") or "null")
+        except json.JSONDecodeError:
+            payload = None
+        by_tool[name] = payload
+    return by_tool
 
-    catalog_rows = by_tool.get("list_attack_categories", {}).get("rows", [])
+
+def _next_data_tool(seen: dict[str, Any]) -> str | None:
+    """Return the next read-only data tool the scripted agent should
+    call, or ``None`` if all of them have results in the conversation."""
+    for name in _DATA_TOOLS_IN_ORDER:
+        if name not in seen:
+            return name
+    return None
+
+
+def _snapshot_from_tool_results(seen: dict[str, Any]) -> _ToolOutputs:
+    """Distill the four data-tool results into the
+    :class:`_ToolOutputs` shape the heuristic reads."""
+    catalog_payload = seen.get("list_attack_categories") or {}
+    catalog_rows = catalog_payload.get("rows", []) if isinstance(catalog_payload, dict) else []
+    catalog_categories = [str(r["category"]) for r in catalog_rows if "category" in r]
     techniques_by_category: dict[str, list[str]] = {
         str(r["category"]): list(r.get("techniques", [])) for r in catalog_rows
     }
 
     coverage: dict[tuple[str, str], dict[str, int]] = {}
-    for row in by_tool.get("list_coverage", {}).get("rows", []):
+    cov_payload = seen.get("list_coverage") or {}
+    for row in cov_payload.get("rows", []) if isinstance(cov_payload, dict) else []:
         key = (str(row["category"]), str(row["technique"]))
         coverage[key] = {
             "attempts_fired": int(row.get("attempts_fired", 0)),
@@ -125,21 +149,25 @@ def _parse_tool_outputs(messages: list[dict[str, Any]]) -> _ToolOutputs:
         }
 
     open_finding_categories: dict[str, int] = {}
-    for row in by_tool.get("list_open_findings", {}).get("rows", []):
+    of_payload = seen.get("list_open_findings") or {}
+    for row in of_payload.get("rows", []) if isinstance(of_payload, dict) else []:
         cat = str(row.get("category", ""))
         if cat:
             open_finding_categories[cat] = open_finding_categories.get(cat, 0) + 1
 
     regression_categories: dict[str, int] = {}
-    for row in by_tool.get("list_recent_regressions", {}).get("rows", []):
+    rr_payload = seen.get("list_recent_regressions") or {}
+    for row in rr_payload.get("rows", []) if isinstance(rr_payload, dict) else []:
         cat = str(row.get("category", ""))
         if cat:
             regression_categories[cat] = regression_categories.get(cat, 0) + 1
 
+    cold_start = not coverage and not open_finding_categories and not regression_categories
+
     return _ToolOutputs(
-        cold_start=bool(metadata.get("cold_start")),
-        operator_budget_usd=float(metadata.get("operator_budget_usd", 2.0)),
-        catalog_categories=[str(c) for c in metadata.get("catalog_categories", [])],
+        cold_start=cold_start,
+        operator_budget_usd=2.0,
+        catalog_categories=catalog_categories,
         techniques_by_category=techniques_by_category,
         coverage=coverage,
         open_finding_categories=open_finding_categories,
@@ -147,29 +175,27 @@ def _parse_tool_outputs(messages: list[dict[str, Any]]) -> _ToolOutputs:
     )
 
 
-def _extract_json_after(text_blob: str, header: str) -> Any:
-    """Find ``header`` in ``text_blob``, then parse the next top-level
-    JSON value (object or array). Each tool-output block in the planner
-    prompt starts with a newline + ``{`` or ``[`` on its own line."""
-    idx = text_blob.find(header)
-    if idx == -1:
-        raise AssertionError(f"prompt missing header: {header!r}")
-    after = text_blob[idx + len(header) :]
-    # Find first '{' or '[' that begins the JSON value.
-    m = re.search(r"[\[{]", after)
-    if not m:
-        raise AssertionError(f"no JSON after header: {header!r}")
-    start = m.start()
-    decoder = json.JSONDecoder()
-    obj, _ = decoder.raw_decode(after[start:])
-    return obj
+def _orchestrator_responder(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Scripted LangGraph agent. Walks the data tools in a fixed order,
+    then submits a plan whose attempts follow the iteration-N heuristic.
 
+    Returns the LLM-response shape FakeLLMClient expects:
+    ``{"text": "", "tool_calls": [{"id", "name", "arguments"}]}``."""
+    seen = _collect_tool_outputs(messages)
+    next_tool = _next_data_tool(seen)
+    if next_tool is not None:
+        return {
+            "text": "",
+            "tool_calls": [
+                {
+                    "id": f"call-{next_tool}",
+                    "name": next_tool,
+                    "arguments": {},
+                }
+            ],
+        }
 
-def _orchestrator_responder(messages: list[dict[str, Any]]) -> str:
-    """Scripted LLM. Reads tool outputs out of the prompt, emits a
-    strict-JSON plan that follows the heuristic documented in this
-    test's module docstring."""
-    snap = _parse_tool_outputs(messages)
+    snap = _snapshot_from_tool_results(seen)
 
     # Cold-start branch: one technique per catalogued category, in
     # catalog order. Rationale acknowledges no prior signal.
@@ -191,20 +217,15 @@ def _orchestrator_responder(messages: list[dict[str, Any]]) -> str:
             + " first because the catalog lists it first; ordering is by "
             "catalog position, not by signal."
         )
-        return _plan_json(attempts, rationale)
+        return _submit_plan_call(attempts, rationale)
 
     # Adaptive branch: rank categories by signal score, then drop any
     # category whose score is materially worse than the leader once we
-    # have an open finding or regression to anchor on. This is what
-    # 'de-prioritize saturated' looks like in practice — saturated
-    # categories with no open finding fall out of the top-K, not just
-    # to the bottom of it.
+    # have an open finding or regression to anchor on.
     ranked, scores = _rank_categories_with_scores(snap)
     has_strong_signal = bool(snap.open_finding_categories or snap.regression_categories)
-    chosen: list[tuple[str, str]] = []  # (category, technique)
+    chosen: list[tuple[str, str]] = []
     if has_strong_signal:
-        # Keep the leader plus anything within 5 points of it; drop the
-        # heavily-saturated tail. This is the saturation-bites step.
         leader_score = scores[ranked[0]]
         for cat in ranked:
             if leader_score - scores[cat] <= 5.0 and len(chosen) < _MAX_ATTEMPTS:
@@ -215,7 +236,7 @@ def _orchestrator_responder(messages: list[dict[str, Any]]) -> str:
 
     attempts = [_attempt(c, t) for c, t in chosen]
     rationale = _adaptive_rationale(snap, chosen)
-    return _plan_json(attempts, rationale)
+    return _submit_plan_call(attempts, rationale)
 
 
 def _rank_categories_with_scores(
@@ -305,18 +326,27 @@ def _attempt(category: str, technique: str) -> dict[str, Any]:
     }
 
 
-def _plan_json(attempts: list[dict[str, Any]], rationale: str) -> str:
+def _submit_plan_call(attempts: list[dict[str, Any]], rationale: str) -> dict[str, Any]:
+    """Wrap the plan in a ``submit_plan`` tool_call envelope. Returns
+    the LLM-response shape FakeLLMClient expects."""
     total = sum(float(a["per_attempt_budget_usd"]) for a in attempts)
-    return json.dumps(
-        {
-            "attempts": attempts,
-            "rationale": rationale,
-            "confidence": "medium",
-            "halt_on_consecutive_fails": 3,
-            "halt_on_judge_errors": 2,
-            "budget_usd_cap": max(total, 0.01),
-        }
-    )
+    return {
+        "text": "",
+        "tool_calls": [
+            {
+                "id": "call-submit_plan",
+                "name": "submit_plan",
+                "arguments": {
+                    "attempts": attempts,
+                    "rationale": rationale,
+                    "confidence": "medium",
+                    "halt_on_consecutive_fails": 3,
+                    "halt_on_judge_errors": 2,
+                    "budget_usd_cap": max(total, 0.01),
+                },
+            }
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

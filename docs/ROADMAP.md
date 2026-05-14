@@ -3339,6 +3339,181 @@ Forward fix:
 
 ---
 
+## Round 10 second follow-up — Orchestrator Agent (LangGraph)
+
+**Goal.** Replace the single-shot LLM call in ``propose_plan`` with
+a LangGraph tool-using agent that mirrors the Red Team
+(R10-followup) and Documentation (commit `35ecf4d`, unplanned)
+agent patterns. The Orchestrator becomes an *agent* in the same
+load-bearing sense those two are: it picks its own tools, drills
+into the signals that matter for *this* project, validates its
+own plan via a terminal tool, and self-corrects on validator
+errors instead of relying on an external retry harness.
+
+**Outcome.** One ``CampaignRequested`` → one LangGraph agent
+session → ~15-20 LLM turns within a $0.50 cap → one validated
+``PlannedCampaign`` emitted as ``CampaignPlanProposed``. The
+agent owns gathering / drill-down / self-correction;
+``propose_plan`` becomes a thin shim over
+``run_orchestrator_agent`` so the worker contract is unchanged.
+
+**Definition of Done.**
+
+- ``src/cats/agents/orchestrator/agent.py`` ships a two-node
+  LangGraph (planner + tool_executor), modeled on
+  ``src/cats/agents/red_team/agent.py``, with the same
+  ``_CTX_HOLDER`` pattern that keeps ``AsyncSession`` off the
+  checkpointer.
+- ``src/cats/agents/orchestrator/tools.py`` exposes ``ALL_TOOLS``
+  (8 tools) and a ``dispatch()`` routine. Tools include the
+  existing 5 (``list_coverage``, ``list_open_findings``,
+  ``list_recent_regressions``, ``list_attack_categories``,
+  ``budget_remaining``) plus three new ones:
+  ``coverage_for_category`` (per-technique drill-down for one
+  category), ``recent_campaigns`` (past N campaigns' plans +
+  outcomes), and the terminal ``submit_plan`` (validates via the
+  existing ``_validate_plan``).
+- ``submit_plan`` returns a tool-error payload
+  (``{error, hint, submission_attempts}``) on validation failure
+  so the agent self-corrects in the same conversation — the
+  R4-era external retry message in ``planner.py`` is removed.
+- ``propose_plan`` retains its existing signature and exception
+  contract (``PlanProposal`` | ``PlanStructuralError``); the
+  orchestrator worker is unchanged.
+- Defense-in-depth caps: ``MAX_AGENT_TURNS=20``,
+  ``MAX_TOOL_CALLS=30``, ``DEFAULT_BUDGET_USD_CAP=0.50``. Cap
+  hits without a validated plan raise ``PlanStructuralError`` so
+  the worker's existing ``_mark_plan_failed`` path handles them.
+  No "synthesize a fallback plan" path — a half-finished plan is
+  more dangerous than no plan.
+- Audit log records ``agent_started`` / ``planner_turn`` /
+  ``tool:<name>`` / ``agent_submitted``.
+- System prompt moves out of ``planner.py`` into
+  ``src/cats/agents/orchestrator/system_prompt.md`` (previously a
+  pre-R4 meta-loop TODO stub).
+- Unit + integration tests refactored: ``_validate_plan`` pins
+  unchanged; new ``test_orchestrator_agent_graph.py`` covers the
+  agent loop (happy path, self-correction, turn/budget/tool-call
+  caps, cold-start detection, audit-row shape); the integration
+  retry test is rewritten to drive ``submit_plan`` tool-error
+  self-correction; the adaptive test's scripted LLM responder is
+  converted from JSON-string output to ``tool_calls`` shape.
+- ARCHITECTURE.md §1, §2.1, §2.4 updated to describe the agent
+  loop; §2.1 table row for the Documentation agent also touched
+  up to note its LangGraph structure (commit `35ecf4d` shipped
+  it without an explicit round).
+
+**Risks.**
+
+- *Cost regression.* Single-shot was ~$0.03/campaign; the agent
+  is ~$0.30-0.50. ~10x for the Orchestrator role specifically,
+  but still <2% of a $25 campaign budget. Mitigated by the
+  $0.50 cap visible in the system prompt + fail-fast on
+  no-submit. If smoke shows the average hugs the cap, lower
+  ``MAX_AGENT_TURNS`` to 12 — the prior single-shot path proved
+  one LLM call can produce a competent plan, so the agent
+  should come in well under.
+- *"Orchestrator" role becomes tool-capable.* Sonnet 4.5
+  already supports OpenRouter tool calling (already used by
+  ``redteam_exfil`` as its fallback). No model change needed —
+  only the ``MODEL_REGISTRY["orchestrator"].notes`` string was
+  updated. Recommend a live one-shot smoke against OpenRouter
+  before broader rollout, same gate the Red Team agent had.
+- *AsyncSession lifetime across ~20 turns.* The Red Team agent
+  already runs ~20 turns within a single worker session at
+  ``visibility_timeout=300s``; same pattern + same caps apply.
+  Each planning turn is one LLM round-trip (~3-5s; no HTTP
+  egress to the target), giving headroom for 60+ turns within
+  the visibility window. Bump to 600s only if production smoke
+  shows tail-latency issues.
+- *Tool-error infinite loop.* A model that repeatedly emits
+  invalid ``submit_plan`` calls burns turns without progress.
+  Mitigated by the turn + tool-call caps → ``PlanStructuralError``.
+  An "after N invalid submits, give up" branch in
+  ``run_submit_plan`` is a cheap follow-up if smoke shows it.
+
+**Tasks.**
+
+- [x] Add ``src/cats/agents/orchestrator/agent.py`` (state, nodes,
+  edges, entrypoint ``run_orchestrator_agent``).
+- [x] Extend ``tools.py``: ``ToolOutcome`` / ``AgentTurnCost``
+  dataclasses, ``OrchestratorContext``, ``ALL_TOOLS``,
+  ``dispatch()``, ``run_*`` wrappers, ``coverage_for_category``,
+  ``recent_campaigns``, ``run_submit_plan`` + its Pydantic arg
+  schema.
+- [x] Rewrite ``system_prompt.md`` (overwrite the pre-R4 stub).
+- [x] Shim ``propose_plan`` to ``run_orchestrator_agent``; delete
+  the old prompt builder / retry harness from ``planner.py``
+  while keeping ``PlanProposal`` / ``PlanStructuralError`` /
+  ``_validate_plan`` / ``MAX_ATTEMPTS_PER_PLAN`` in place.
+- [x] Update ``cats.llm.models`` ``"orchestrator"`` role
+  docstring (model itself unchanged).
+- [x] Re-export ``run_orchestrator_agent`` from
+  ``cats.agents.orchestrator``.
+- [x] Tests: ``test_orchestrator_agent_graph.py`` (new, 12
+  cases), ``test_orchestrator_tools.py`` (new tool tests +
+  submit-plan terminal/error tests + dispatch routing),
+  ``test_orchestrator_planner_retry.py`` (rewritten to drive
+  tool-error self-correction + cap exhaustion),
+  ``test_orchestrator_adaptive.py`` (responder converted to
+  tool_calls shape).
+- [x] ARCHITECTURE.md §1, §2.1, §2.4 (orchestrator) + §2.1
+  table row for Documentation agent touched up.
+
+**Decisions.**
+
+- *Worker contract preserved.* ``propose_plan`` stays as a
+  function-shaped facade so the orchestrator worker's
+  exception-handling, audit-log keys, and auto-approve
+  branching all stay verbatim. Mirrors the way the documentation
+  agent's call sites kept working across its R-followup-style
+  refactor.
+- *Tool-error self-correction, not external retry.* The R4
+  retry harness in ``planner.py`` fed the validator's message
+  back as a user message and re-called the LLM with the
+  original prompt. The agent pattern is cleaner: ``submit_plan``
+  returns ``{error, hint}`` and the next ``planner`` turn sees
+  it inline as a ``role=tool`` message — identical shape to
+  every other tool error in the system.
+- *Two new drill-down tools.* ``coverage_for_category`` lets the
+  agent zoom into one category instead of dragging the full
+  matrix through the context window; ``recent_campaigns`` is
+  the cross-campaign learning channel (mirroring the Red Team's
+  ``lookup_regression_history`` — closed historical data,
+  never in-flight verdicts).
+- *Validation lives in one place.* ``_validate_plan`` stays in
+  ``planner.py``; the ``submit_plan`` tool calls it directly so
+  the load-bearing
+  ``tests/unit/test_orchestrator_planner_validation.py`` needs
+  zero changes and continues to pin the safety net.
+- *Default $0.50 budget per session, $0.05/turn assumption.*
+  Approved by the user. The Red Team agent runs at the same
+  per-attempt budget; treating the Orchestrator session as one
+  "attempt at planning" keeps the cost discipline legible.
+
+**Retrospective.**
+
+- *Refactor was structurally cheap.* All four behaviors the
+  pre-refactor planner had — strict-JSON validation, cold-start
+  detection, retry on structural error, audit-log keys — moved
+  into the new shape without touching ``_validate_plan`` or the
+  worker. The shim contract was the right unit of stability.
+- *The Documentation agent's LangGraph refactor was already
+  shipped without a roadmap entry.* We touched up §2.1 to fix
+  that, but a clean separation between "code shipped" and
+  "roadmap shipped" would have caught it earlier. Adding a
+  pre-commit check that any new ``*/agent.py`` lands with a
+  matching round in ROADMAP.md is the right shape; deferred to
+  a docs-discipline follow-up.
+- *Adaptive integration test became more honest, not less.* The
+  pre-refactor adaptive test parsed tool outputs out of the
+  *prompt string* — a contract that wasn't actually load-bearing
+  for production. The new test reads tool outputs from
+  ``role=tool`` messages in the conversation, which IS what the
+  real model sees. Same ten-iteration assertions still hold.
+
+---
+
 ## Round 11 — Clinical misinformation propagation
 
 **Goal.** Test the healthcare-specific failure mode the

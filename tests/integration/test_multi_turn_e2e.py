@@ -151,33 +151,41 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
     # the worker creates one runs row and walks both attempts inside
     # it. Two attempts of injection.ignore_previous lets us reuse the
     # same FakeLLM responder logic across both.
-    fake.register(
-        "orchestrator",
-        lambda _m: json.dumps(
+    # Orchestrator is a LangGraph tool-using agent (R10-followup-2).
+    # Script: list_attack_categories → submit_plan(valid two-attempt plan).
+    _multi_turn_plan = {
+        "attempts": [
             {
-                "attempts": [
-                    {
-                        "category": "injection",
-                        "technique": "ignore_previous",
-                        "per_attempt_budget_usd": 0.5,
-                        "max_consecutive_partials": 1,
-                        "seeds_per_attempt": 4,
-                    },
-                    {
-                        "category": "injection",
-                        "technique": "policy_puppetry",
-                        "per_attempt_budget_usd": 0.5,
-                        "max_consecutive_partials": 1,
-                        "seeds_per_attempt": 4,
-                    },
-                ],
-                "rationale": "R10-follow-up multi-attempt agent smoke",
-                "confidence": "medium",
-                "halt_on_consecutive_fails": 3,
-                "halt_on_judge_errors": 2,
-                "budget_usd_cap": 1.0,
-            }
-        ),
+                "category": "injection",
+                "technique": "ignore_previous",
+                "per_attempt_budget_usd": 0.5,
+                "max_consecutive_partials": 1,
+            },
+            {
+                "category": "injection",
+                "technique": "policy_puppetry",
+                "per_attempt_budget_usd": 0.5,
+                "max_consecutive_partials": 1,
+            },
+        ],
+        "rationale": "R10-follow-up multi-attempt agent smoke; two distinct injection techniques.",
+        "confidence": "medium",
+        "halt_on_consecutive_fails": 3,
+        "halt_on_judge_errors": 2,
+        "budget_usd_cap": 1.0,
+    }
+    fake.register_sequence(
+        "orchestrator",
+        [
+            lambda _m: {
+                "text": "",
+                "tool_calls": [{"id": "p1", "name": "list_attack_categories", "arguments": {}}],
+            },
+            lambda _m: {
+                "text": "",
+                "tool_calls": [{"id": "p2", "name": "submit_plan", "arguments": _multi_turn_plan}],
+            },
+        ],
     )
 
     # One scripted tool-call sequence per attempt: propose → fire →
