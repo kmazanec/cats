@@ -16,8 +16,8 @@ Adds:
   conversation this execution is. Lets the run-detail UI show per-turn
   cost without inferring from the AttackEvent payload.
 
-Revision ID: 20260513_0008
-Revises: 20260513_0007
+Revision ID: 20260513_0009
+Revises: 20260513_0008
 Create Date: 2026-05-13
 """
 
@@ -28,8 +28,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260513_0008"
-down_revision: str | None = "20260513_0007"
+revision: str = "20260513_0009"
+down_revision: str | None = "20260513_0008"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

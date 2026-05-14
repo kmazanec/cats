@@ -2855,7 +2855,7 @@ Out:
 
 **R10 — landed on `feat/round-10-multi-turn-attacks`, 2026-05-13:**
 
-- [x] Schema + alembic migration `20260513_0008_multi_turn.py` — adds
+- [x] Schema + alembic migration `20260513_0009_multi_turn.py` — adds
       `judge_verdicts.decisive_seed_idx` (nullable int) +
       `total_seeds` (int default 1), `findings.decisive_seed_idx`
       (nullable int) + `total_seeds` (int default 1), and
