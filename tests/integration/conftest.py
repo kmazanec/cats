@@ -87,6 +87,9 @@ _TABLES_TO_TRUNCATE = [
     "attack_executions",
     "judge_verdicts",
     "rubric_versions",
+    # CASCADEs from attacks anyway, but listing explicitly keeps the
+    # truncate order self-documenting.
+    "attack_artifacts",
     "attacks",
     "kickoff_turns",
     "runs",

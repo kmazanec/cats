@@ -37,6 +37,31 @@
       </div>
       <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.attack_payload | tojson(indent=2) }}</pre>
     </div>
+    {# Uploaded artifact panel — only shown when the attack carried a
+       file-borne payload (indirect_injection .docx; future PDFs etc).
+       Linked off attack_payload.attachment_sha256 because the bytes live
+       in attack_artifacts, keyed by (attack_id, sha256). The download
+       route is scoped by (campaign, run, execution) so the URL itself
+       authorizes the bytes the operator is looking at. #}
+    {% if execution.attack_payload and execution.attack_payload.attachment_sha256 %}
+    <div>
+      <div class="eyebrow cy">— Uploaded artifact</div>
+      <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">
+        document_upload.php → extract.php
+      </div>
+      <div class="row" style="gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12px;">
+        <span class="mono"><strong>{{ execution.attack_payload.attachment_filename or 'artifact' }}</strong></span>
+        <span class="muted mono">{{ execution.attack_payload.attachment_content_type or 'application/octet-stream' }}</span>
+        <span class="muted mono">{{ execution.attack_payload.attachment_size_bytes or 0 }} bytes</span>
+        <span class="muted mono" title="sha256">sha256 <code class="mono">{{ execution.attack_payload.attachment_sha256[:12] }}…</code></span>
+        <a class="nav-link"
+           href="/campaigns/{{ campaign_id }}/runs/{{ run_id }}/executions/{{ execution.id }}/artifact/{{ execution.attack_payload.attachment_sha256 }}"
+           download="{{ execution.attack_payload.attachment_filename or 'artifact.bin' }}">
+          download
+        </a>
+      </div>
+    </div>
+    {% endif %}
     <div>
       <div class="eyebrow cy">— Target response (raw SSE stream)</div>
       <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">

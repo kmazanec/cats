@@ -44,6 +44,7 @@ from cats.llm.client import LLMClient, LLMResult, ToolSpec
 from cats.llm.models import AgentRole
 from cats.logging import get_logger
 from cats.messaging.envelopes import ConversationTurnPayload
+from cats.target.contracts import AttachmentSpec
 
 log = get_logger(__name__)
 
@@ -275,6 +276,14 @@ class AgentContext:
     # Pending draft (from propose_attack or mutate_attack) waiting to fire.
     pending_user_message: str | None = None
     pending_canary: str = ""
+    # Some categories (indirect_injection) author a file payload that the
+    # target ingests via document_upload.php + extract.php rather than
+    # the agent.php chat channel. propose_attack captures the AttachmentSpec
+    # the specialist built and stashes it here; fire_at_target threads it
+    # into fire_prepared_attack so the envelope's upload-path branch fires.
+    # mutate_attack carries the same attachment forward (no per-turn
+    # re-synthesis yet — that's a follow-up).
+    pending_attachment: AttachmentSpec | None = None
     # Wire-level conversationId minted by the target on the kickoff
     # turn (fired inside propose_attack). All fire_at_target calls then
     # ride the same conversationId as `task=follow_up`.
@@ -487,6 +496,11 @@ async def run_propose_attack(
     ctx.record_cost(role=proposal.cost_role, result=proposal.llm_result)
     ctx.pending_user_message = proposal.user_message
     ctx.pending_canary = proposal.canary
+    # Preserve the specialist's attachment (set for indirect_injection,
+    # None for chat-borne categories). Without this the docx upload path
+    # never fires — fire_prepared_attack would build a bare envelope and
+    # the target client routes by envelope.attachment.
+    ctx.pending_attachment = proposal.envelope.attachment
     ctx.propose_called = True
     # The category/technique can drift if the agent picks something
     # different from what the worker handed in; honor the agent's
@@ -633,6 +647,7 @@ async def run_fire_at_target(
         iteration=0 if seed_idx == 0 else 1,
         user_message=ctx.pending_user_message,
         canary=ctx.pending_canary,
+        attachment=ctx.pending_attachment,
         title=(
             f"agent · turn {seed_idx} · {ctx.technique}"
             if seed_idx == 0
@@ -682,7 +697,14 @@ async def run_fire_at_target(
             "multi_turn": True,
         },
     )
-    # Pending is consumed once fired.
+    # Pending user_message is consumed once fired; the next turn comes
+    # from mutate_attack or an explicit override on fire_at_target.
+    # pending_attachment is deliberately NOT cleared: for indirect_injection
+    # we want every turn in the same conversation to re-upload the same
+    # docx (the model only sees the planted hidden_instruction when the
+    # extract.php pipeline runs; a chat-borne follow-up would skip it).
+    # When per-turn re-synthesis lands, mutate_attack will overwrite this
+    # slot with the rebuilt AttachmentSpec.
     ctx.pending_user_message = None
     return ToolOutcome(
         payload={

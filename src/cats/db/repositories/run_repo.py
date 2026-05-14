@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.db.schema import (
+    attack_artifacts,
     attack_executions,
     attacks,
     findings,
@@ -68,6 +69,130 @@ async def upsert_attack(
         )
     )
     return new_id
+
+
+async def upsert_attack_artifact(
+    session: AsyncSession,
+    *,
+    attack_id: UUID,
+    kind: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    sha256: str,
+) -> UUID:
+    """Insert one ``attack_artifacts`` row (the raw bytes of a file-borne
+    attack payload, e.g. an uploaded .docx). Idempotent on
+    ``(attack_id, sha256)`` — re-firing the same attack reuses the row
+    instead of duplicating bytes.
+
+    Returns the row id. ``sha256`` is hex-lowercase and is also written
+    into ``attacks.payload['attachment_sha256']`` so the JSONB-stable
+    attack signature stays the same across replays.
+    """
+    new_id = uuid4()
+    stmt = (
+        pg_insert(attack_artifacts)
+        .values(
+            id=new_id,
+            attack_id=attack_id,
+            kind=kind,
+            filename=filename[:255],
+            content_type=content_type[:255],
+            size_bytes=len(data),
+            sha256=sha256,
+            data=data,
+            created_at=_utcnow(),
+        )
+        .on_conflict_do_nothing(
+            constraint="uq_attack_artifacts_attack_sha",
+        )
+        .returning(attack_artifacts.c.id)
+    )
+    result = await session.execute(stmt)
+    returned = result.scalar_one_or_none()
+    if returned is not None:
+        return returned  # type: ignore[no-any-return]
+    # Conflict path: another concurrent write (or a replay) already
+    # persisted the bytes — fetch the existing id.
+    existing = await session.execute(
+        select(attack_artifacts.c.id)
+        .where(attack_artifacts.c.attack_id == attack_id)
+        .where(attack_artifacts.c.sha256 == sha256)
+    )
+    return existing.scalar_one()  # type: ignore[no-any-return]
+
+
+async def get_attack_artifact(
+    session: AsyncSession,
+    *,
+    attack_id: UUID,
+    sha256: str,
+) -> dict[str, Any] | None:
+    """Fetch one artifact row by ``(attack_id, sha256)``. Returns the
+    bytes alongside metadata so the API can stream the file out for the
+    forensics download link. None when not found."""
+    row = (
+        await session.execute(
+            select(
+                attack_artifacts.c.id,
+                attack_artifacts.c.kind,
+                attack_artifacts.c.filename,
+                attack_artifacts.c.content_type,
+                attack_artifacts.c.size_bytes,
+                attack_artifacts.c.sha256,
+                attack_artifacts.c.data,
+            )
+            .where(attack_artifacts.c.attack_id == attack_id)
+            .where(attack_artifacts.c.sha256 == sha256)
+        )
+    ).first()
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "filename": row.filename,
+        "content_type": row.content_type,
+        "size_bytes": row.size_bytes,
+        "sha256": row.sha256,
+        "data": row.data,
+    }
+
+
+async def list_attack_artifacts(
+    session: AsyncSession,
+    *,
+    attack_id: UUID,
+) -> list[dict[str, Any]]:
+    """Metadata listing (no bytes) for the forensics side panel."""
+    rows = (
+        await session.execute(
+            select(
+                attack_artifacts.c.id,
+                attack_artifacts.c.kind,
+                attack_artifacts.c.filename,
+                attack_artifacts.c.content_type,
+                attack_artifacts.c.size_bytes,
+                attack_artifacts.c.sha256,
+                attack_artifacts.c.created_at,
+            )
+            .where(attack_artifacts.c.attack_id == attack_id)
+            .order_by(attack_artifacts.c.created_at)
+        )
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "kind": r.kind,
+            "filename": r.filename,
+            "content_type": r.content_type,
+            "size_bytes": r.size_bytes,
+            "sha256": r.sha256,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
 
 
 async def record_verdict(

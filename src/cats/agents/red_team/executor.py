@@ -43,7 +43,11 @@ from cats.agents.red_team.injection.dispatcher import (
 )
 from cats.agents.red_team.tool_abuse import dispatcher as tool_abuse_dispatcher
 from cats.db.repositories.kickoff_repo import record_kickoff
-from cats.db.repositories.run_repo import record_execution, upsert_attack
+from cats.db.repositories.run_repo import (
+    record_execution,
+    upsert_attack,
+    upsert_attack_artifact,
+)
 from cats.db.schema import project_versions, projects
 from cats.graph.events import publish
 from cats.graph.state import CampaignState
@@ -614,6 +618,7 @@ async def fire_prepared_attack(
     description: str,
     conversation_id: str | None,
     task: str,
+    attachment: AttachmentSpec | None = None,
     payload_extras: dict[str, Any] | None = None,
     source: str = "red_team_agent",
     prior_agent_costs: list[dict[str, Any]] | None = None,
@@ -660,7 +665,7 @@ async def fire_prepared_attack(
                 usd=float(c.get("usd") or 0.0),
             )
         )
-    envelope = AttackEnvelope(user_message=user_message, canary=canary)
+    envelope = AttackEnvelope(user_message=user_message, canary=canary, attachment=attachment)
     return await _persist_and_fire(
         session,
         state=state,
@@ -708,9 +713,34 @@ async def _persist_and_fire(
     payload dict + Attack row, scan, persist, fire, record the
     execution row, and return AttemptResult. Side-effect-heavy by
     design — everything that mutates DB + hits the network lives here."""
+    # Artifact-bearing attacks (e.g. indirect_injection .docx) hit a
+    # different OpenEMR endpoint and the bytes are the load-bearing
+    # payload — not the chat user_message. We compute the sha256 here
+    # (before the attack signature is derived) so the signature folds
+    # the artifact hash in, and we surface the metadata on
+    # attack_payload so the forensics UI and regression replays can
+    # find the bytes without re-walking the envelope.
+    attachment_meta: dict[str, Any] = {}
+    artifact_sha256: str = ""
+    if envelope.attachment is not None:
+        import hashlib
+
+        artifact_sha256 = hashlib.sha256(envelope.attachment.data).hexdigest()
+        attachment_meta = {
+            "attachment_sha256": artifact_sha256,
+            "attachment_filename": envelope.attachment.filename,
+            "attachment_content_type": envelope.attachment.content_type,
+            "attachment_size_bytes": len(envelope.attachment.data),
+        }
+    upload_endpoint = (
+        "/interface/modules/custom_modules/oe-module-clinical-copilot/public/document_upload.php"
+    )
+    chat_endpoint = (
+        "/interface/modules/custom_modules/oe-module-clinical-copilot"
+        "/public/agent.php?action=briefing"
+    )
     attack_payload: dict[str, Any] = {
-        "endpoint": "/interface/modules/custom_modules/oe-module-clinical-copilot"
-        "/public/agent.php?action=briefing",
+        "endpoint": upload_endpoint if envelope.attachment is not None else chat_endpoint,
         "user_message": user_message,
         "canary": canary,
         "technique": technique,
@@ -720,6 +750,7 @@ async def _persist_and_fire(
         # firing into the same OpenEMR conversation.
         "conversation_id": conversation_id,
         "task": task,
+        **attachment_meta,
         **payload_extras,
     }
     if attack_source is None:
@@ -752,6 +783,38 @@ async def _persist_and_fire(
         source=attack_source,
         run_id=run_id,
     )
+
+    # --- Persist file-borne artifact (docx/etc) ----------------------
+    # Idempotent on (attack_id, sha256), so re-firing the same attack
+    # reuses the existing row. The bytes get pulled by the run-forensics
+    # download endpoint and by the regression replayer (which rebuilds
+    # an AttachmentSpec from the row to fire byte-identically).
+    if envelope.attachment is not None and artifact_sha256:
+        # Map content_type to a coarse kind label that the table's check
+        # constraint accepts. Anything unrecognized falls through to
+        # 'other' rather than rejecting the write.
+        ct = envelope.attachment.content_type.lower()
+        if (
+            "wordprocessingml" in ct
+            or ct.endswith("/docx")
+            or envelope.attachment.filename.lower().endswith(".docx")
+        ):
+            kind = "docx"
+        elif "pdf" in ct or envelope.attachment.filename.lower().endswith(".pdf"):
+            kind = "pdf"
+        elif ct.startswith("image/"):
+            kind = "image"
+        else:
+            kind = "other"
+        await upsert_attack_artifact(
+            session,
+            attack_id=attack_id,
+            kind=kind,
+            filename=envelope.attachment.filename,
+            content_type=envelope.attachment.content_type,
+            data=envelope.attachment.data,
+            sha256=artifact_sha256,
+        )
 
     # --- Inject conversation + task into the envelope -----------------
     # The Red Team worker controls which conversationId all seeds in a

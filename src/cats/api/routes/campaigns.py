@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from cats.db.repositories.campaign_repo import (
 from cats.db.repositories.campaign_report_repo import get_campaign_report
 from cats.db.repositories.kickoff_repo import get_for_run as _get_kickoff_for_run
 from cats.db.repositories.project_repo import get_project, list_projects
+from cats.db.repositories.run_repo import get_attack_artifact
 from cats.logging import get_logger
 from cats.messaging import (
     CampaignRequestedPayload,
@@ -671,6 +672,62 @@ async def execution_fragment(
             "run_id": run_id,
             "regression_case_id": existing_regression_case_id,
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
+        },
+    )
+
+
+_SHA256_HEX_LEN = 64
+
+
+@router.get("/{campaign_id}/runs/{run_id}/executions/{execution_id}/artifact/{sha256}")
+async def execution_artifact(
+    campaign_id: UUID,
+    run_id: UUID,
+    execution_id: UUID,
+    sha256: str,
+    principal: Principal = Depends(require_user),
+) -> Response:
+    """Stream the raw bytes of the file-borne attack payload an execution
+    uploaded (R5 indirect_injection .docx and any future upload-channel
+    techniques). The route is bound by the (campaign, run, execution)
+    triple so artifacts from other runs aren't reachable via a guessed
+    URL — the sha256 alone isn't an authorization token.
+
+    Returns 404 when (a) the run isn't part of this campaign, (b) the
+    execution isn't part of this run, or (c) the artifact row isn't
+    attached to that execution's attack."""
+    _ = principal
+    # Cheap input validation: a malformed sha256 means a bogus link,
+    # not a missing artifact — short-circuit before hitting the DB.
+    if len(sha256) != _SHA256_HEX_LEN or not all(c in "0123456789abcdef" for c in sha256.lower()):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    async with session_scope() as session:
+        run = await get_run_with_campaign(session, run_id=run_id, campaign_id=campaign_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found for this campaign")
+        execution = await get_execution_full(session, execution_id=execution_id, run_id=run_id)
+        if execution is None:
+            raise HTTPException(status_code=404, detail="execution not found for this run")
+        attack_id = execution.get("attack_id")
+        if attack_id is None:
+            raise HTTPException(status_code=404, detail="execution has no attack")
+        artifact = await get_attack_artifact(session, attack_id=attack_id, sha256=sha256.lower())
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    # ASCII-only safe filename for the Content-Disposition header. The
+    # synthesized filenames we generate are already ASCII (e.g.
+    # ``referral-CATS-DOCX-XXXX.docx``) so this is defensive against
+    # unicode in user-supplied filenames future categories may emit.
+    safe_name = (
+        "".join(c if (c.isalnum() or c in "._-") else "_" for c in artifact["filename"])[:255]
+        or "artifact.bin"
+    )
+    return Response(
+        content=artifact["data"],
+        media_type=artifact["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+            "X-Artifact-Sha256": artifact["sha256"],
         },
     )
 

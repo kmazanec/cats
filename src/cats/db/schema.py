@@ -21,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -313,6 +314,49 @@ attack_executions = Table(
     CheckConstraint(
         "output_filter_verdict IN ('safe','attack_payload','dangerous')",
         name="ck_attack_executions_filter",
+    ),
+)
+
+
+# File-borne attack payloads (R5 indirect_injection .docx, and any future
+# upload-channel techniques). The bytes are stored once per (attack,
+# sha256) so the run-forensics UI can let an operator pull down exactly
+# what got uploaded, and so regression replays reconstruct a
+# byte-identical AttachmentSpec — the .docx the model actually saw, not a
+# re-synthesis. BYTEA in Postgres is fine at our scale (typical docx ~10-50
+# KB); swap to object storage if average sizes ever climb.
+attack_artifacts = Table(
+    "attack_artifacts",
+    metadata,
+    _uuid_pk(),
+    Column(
+        "attack_id",
+        UUID(as_uuid=True),
+        ForeignKey("attacks.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("kind", String(16), nullable=False, server_default="docx"),
+    Column("filename", String(255), nullable=False),
+    Column(
+        "content_type",
+        String(255),
+        nullable=False,
+        server_default="application/octet-stream",
+    ),
+    Column("size_bytes", Integer, nullable=False),
+    # SHA-256 of the raw bytes, hex-lowercase. The attack payload row's
+    # ``attachment_sha256`` references this so the JSONB hash that drives
+    # the attack signature stays stable across replays even though the
+    # bytes are in this sibling table.
+    Column("sha256", String(64), nullable=False),
+    Column("data", LargeBinary, nullable=False),
+    _ts(),
+    Index("ix_attack_artifacts_attack_id", "attack_id"),
+    Index("ix_attack_artifacts_sha256", "sha256"),
+    UniqueConstraint("attack_id", "sha256", name="uq_attack_artifacts_attack_sha"),
+    CheckConstraint(
+        "kind IN ('docx','pdf','image','other')",
+        name="ck_attack_artifacts_kind",
     ),
 )
 
@@ -808,6 +852,7 @@ campaign_report_artifacts = Table(
 __all__ = [
     "agent_dead_letters",
     "agent_messages",
+    "attack_artifacts",
     "attack_executions",
     "attacks",
     "audit_log",
