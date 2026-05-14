@@ -211,11 +211,15 @@ async def campaign_detail(
             executions = await list_executions_for_run(session, run_id=latest_run["id"])
         # R4 Commit B: surface the latest plan row's status on the detail
         # page so an awaiting-approval campaign is one click from the editor.
-        plan_status_row = (
+        # Also pull the approved/proposed plan body so we know the total
+        # number of attempts the Orchestrator authored — that's what drives
+        # the progress-bar segment count on the detail page.
+        plan_row = (
             await session.execute(
                 _text(
                     """
-                    SELECT status FROM campaign_plans
+                    SELECT status, approved_plan, proposed_plan
+                    FROM campaign_plans
                     WHERE campaign_id = :cid
                     ORDER BY created_at DESC
                     LIMIT 1
@@ -224,11 +228,18 @@ async def campaign_detail(
                 {"cid": campaign_id},
             )
         ).first()
-        latest_plan_status = plan_status_row.status if plan_status_row else None
+        latest_plan_status = plan_row.status if plan_row else None
+        plan_attempts = _plan_attempts_from_row(plan_row)
         report_row = await get_campaign_report(session, campaign_id=campaign_id)
         report_status = report_row["status"] if report_row else None
 
     report_ready = report_status == "completed"
+    campaign_terminal = report_status in ("completed", "failed")
+    progress = _build_progress(
+        runs=runs,
+        plan_attempts=plan_attempts,
+        campaign_terminal=campaign_terminal,
+    )
     ctx = _chrome_ctx(principal)
     ctx.update(
         {
@@ -240,6 +251,7 @@ async def campaign_detail(
             "cost_by_agent": _cost_by_agent(executions),
             "latest_plan_status": latest_plan_status,
             "report_ready": report_ready,
+            "progress": progress,
             "stage": _initial_stage(
                 plan_status=latest_plan_status,
                 runs=runs,
@@ -249,6 +261,87 @@ async def campaign_detail(
         }
     )
     return templates.TemplateResponse(request, "campaign_detail.html", ctx)
+
+
+def _plan_attempts_from_row(plan_row: Any) -> list[dict[str, Any]]:
+    """Return the list of attempts the Orchestrator authored, preferring
+    the operator-edited ``approved_plan`` over the original
+    ``proposed_plan``. Returns ``[]`` if no plan row exists yet."""
+    if plan_row is None:
+        return []
+    for blob in (plan_row.approved_plan, plan_row.proposed_plan):
+        if not isinstance(blob, dict):
+            continue
+        attempts = blob.get("attempts")
+        if isinstance(attempts, list) and attempts:
+            return [a for a in attempts if isinstance(a, dict)]
+    return []
+
+
+def _build_progress(
+    *,
+    runs: list[dict[str, Any]],
+    plan_attempts: list[dict[str, Any]],
+    campaign_terminal: bool,
+) -> dict[str, Any]:
+    """Compute the campaign-detail progress strip + elapsed-clock anchors.
+
+    Runs come in newest-first from ``list_runs_for_campaign``; the
+    progress bar reads left-to-right in plan order so we reverse here.
+    The strip has one segment per planned attempt — runs are matched
+    against attempts positionally (the Red Team worker materializes
+    runs in plan order). For campaigns where the plan hasn't been
+    written yet or has fewer entries than runs (shouldn't happen, but
+    defends the UI), we fall back to the run count so the bar still
+    paints.
+
+    Elapsed-clock anchors track the *attack window* per the operator's
+    preference: ``started_at`` = earliest run start, ``ended_at`` =
+    latest run end (only when the campaign is terminal — while live we
+    leave ``ended_at`` null so the browser ticks the clock forward).
+    """
+    runs_ordered = list(reversed(runs))  # oldest-first
+    planned_count = max(len(plan_attempts), len(runs_ordered))
+    segments: list[dict[str, Any]] = []
+    for i in range(planned_count):
+        run = runs_ordered[i] if i < len(runs_ordered) else None
+        attempt = plan_attempts[i] if i < len(plan_attempts) else None
+        if run is None:
+            status = "pending"
+        elif run["status"] == "completed":
+            status = "completed"
+        elif run["status"] == "failed":
+            status = "failed"
+        elif run["status"] == "running":
+            status = "running"
+        else:
+            status = "pending"  # 'pending' DB status
+        seg: dict[str, Any] = {
+            "status": status,
+            "run_id": str(run["id"]) if run else None,
+            "technique": (run and run.get("technique")) or (attempt and attempt.get("technique")),
+            "category": (run and run.get("category")) or (attempt and attempt.get("category")),
+        }
+        segments.append(seg)
+
+    started_dts = [r["started_at"] for r in runs if r.get("started_at") is not None]
+    ended_dts = [r["ended_at"] for r in runs if r.get("ended_at") is not None]
+    started_at = min(started_dts) if started_dts else None
+    # Freeze the clock once the campaign is terminal AND every run has an
+    # end timestamp; otherwise leave it open so the browser keeps ticking.
+    ended_at = (
+        max(ended_dts) if campaign_terminal and ended_dts and len(ended_dts) == len(runs) else None
+    )
+    return {
+        "segments": segments,
+        "planned_count": planned_count,
+        "completed_count": sum(1 for s in segments if s["status"] == "completed"),
+        "failed_count": sum(1 for s in segments if s["status"] == "failed"),
+        "running_count": sum(1 for s in segments if s["status"] == "running"),
+        "pending_count": sum(1 for s in segments if s["status"] == "pending"),
+        "started_at": started_at.isoformat() if started_at else None,
+        "ended_at": ended_at.isoformat() if ended_at else None,
+    }
 
 
 _STAGE_META: dict[str, dict[str, str]] = {

@@ -503,6 +503,160 @@
     else if (env.kind === "run_completed") handleRunCompleted(env);
     else if (env.kind === "attack_executed") handleAttackExecuted(env);
     else if (env.kind === "judge_verdict_rendered") handleJudgeVerdict(env);
+    updateProgressFromEvent(env);
+  }
+
+  // ----- Progress strip + elapsed clock -------------------------------
+  //
+  // The page renders one #progress-seg per planned attempt in plan order;
+  // we mutate segments in place as runs come and go. Pending → running
+  // flips when a run_started lands; running → completed/failed when the
+  // matching run_completed lands. The clock ticks every second from
+  // data-started-at and freezes when data-ended-at is set (which the
+  // server stamps once the campaign rollup report finishes).
+  function getProgressStrip() {
+    return document.getElementById("progress-strip");
+  }
+
+  function nextPendingSeg(bar) {
+    return bar.querySelector(".progress-seg.seg-pending");
+  }
+
+  function setSegStatus(seg, status, runId) {
+    if (!seg) return;
+    seg.classList.remove("seg-pending", "seg-running", "seg-completed", "seg-failed");
+    seg.classList.add("seg-" + status);
+    if (runId) seg.setAttribute("data-run-id", runId);
+  }
+
+  function recomputeProgressCounts() {
+    const bar = document.getElementById("progress-bar");
+    const counts = document.getElementById("progress-counts");
+    if (!bar || !counts) return;
+    const segs = bar.querySelectorAll(".progress-seg");
+    let done = 0, failed = 0, running = 0, pending = 0;
+    segs.forEach((s) => {
+      if (s.classList.contains("seg-completed")) done++;
+      else if (s.classList.contains("seg-failed")) failed++;
+      else if (s.classList.contains("seg-running")) running++;
+      else pending++;
+    });
+    const total = segs.length;
+    const doneEl = counts.querySelector(".pc.done");
+    const totalEl = counts.querySelector(".pc.total");
+    const detail = document.getElementById("progress-detail");
+    if (doneEl) doneEl.textContent = String(done);
+    if (totalEl) totalEl.textContent = String(total);
+    if (detail) {
+      const bits = [];
+      if (failed) bits.push(`<span class="pc-fail">${failed} failed</span>`);
+      if (running) bits.push(`<span class="pc-run">${running} running</span>`);
+      if (pending) bits.push(`<span class="pc-pend">${pending} queued</span>`);
+      detail.innerHTML = bits.length ? "· " + bits.join(" · ") : "";
+    }
+    bar.setAttribute("aria-valuenow", String(done + failed));
+  }
+
+  function handleProgressRunStarted(env) {
+    const strip = getProgressStrip();
+    if (!strip || !env.run_id) return;
+    const bar = document.getElementById("progress-bar");
+    if (!bar) return;
+    // If we already labeled this run, don't double-claim a pending seg.
+    if (bar.querySelector(`.progress-seg[data-run-id="${env.run_id}"]`)) return;
+    const seg = nextPendingSeg(bar);
+    if (!seg) return;
+    setSegStatus(seg, "running", env.run_id);
+    recomputeProgressCounts();
+    ensureClockTicking(strip);
+  }
+
+  function handleProgressRunCompleted(env) {
+    const strip = getProgressStrip();
+    if (!strip || !env.run_id) return;
+    const bar = document.getElementById("progress-bar");
+    if (!bar) return;
+    let seg = bar.querySelector(`.progress-seg[data-run-id="${env.run_id}"]`);
+    if (!seg) {
+      // run_started was missed (e.g. SSE reconnect mid-run) — claim the
+      // next pending segment so the bar still advances.
+      seg = nextPendingSeg(bar);
+      if (seg) seg.setAttribute("data-run-id", env.run_id);
+    }
+    if (!seg) return;
+    const p = env.payload || {};
+    setSegStatus(seg, p.status === "failed" ? "failed" : "completed", env.run_id);
+    recomputeProgressCounts();
+  }
+
+  function freezeClock(strip, atIso) {
+    if (!strip) return;
+    strip.setAttribute("data-ended-at", atIso || new Date().toISOString());
+  }
+
+  function updateProgressFromEvent(env) {
+    const strip = getProgressStrip();
+    if (!strip || !env || !env.kind) return;
+    if (env.kind === "run_started") handleProgressRunStarted(env);
+    else if (env.kind === "run_completed") handleProgressRunCompleted(env);
+    else if (env.kind === "campaign_report_generated" || env.kind === "campaign_halted") {
+      freezeClock(strip, env.at);
+    }
+  }
+
+  function formatElapsed(ms) {
+    if (!isFinite(ms) || ms < 0) ms = 0;
+    const total = Math.floor(ms / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const pad = (n) => (n < 10 ? "0" + n : String(n));
+    return h > 0
+      ? `${h}:${pad(m)}:${pad(s)}`
+      : `${pad(m)}:${pad(s)}`;
+  }
+
+  let _clockTimer = null;
+  function tickClock() {
+    const strip = getProgressStrip();
+    const out = document.getElementById("progress-elapsed");
+    if (!strip || !out) return;
+    const startedAt = strip.getAttribute("data-started-at");
+    if (!startedAt) {
+      out.textContent = "—";
+      return;
+    }
+    const start = Date.parse(startedAt);
+    if (isNaN(start)) return;
+    const endedAt = strip.getAttribute("data-ended-at");
+    const end = endedAt ? Date.parse(endedAt) : Date.now();
+    out.textContent = formatElapsed((isNaN(end) ? Date.now() : end) - start);
+    if (endedAt && _clockTimer) {
+      clearInterval(_clockTimer);
+      _clockTimer = null;
+    }
+  }
+
+  function ensureClockTicking(strip) {
+    // If the server didn't stamp a started_at (page loaded before the
+    // first run started) but a run just kicked off, anchor the clock now
+    // so the operator sees the timer come alive.
+    if (!strip.getAttribute("data-started-at")) {
+      strip.setAttribute("data-started-at", new Date().toISOString());
+    }
+    if (!_clockTimer && !strip.getAttribute("data-ended-at")) {
+      _clockTimer = setInterval(tickClock, 1000);
+    }
+    tickClock();
+  }
+
+  function bootProgressClock() {
+    const strip = getProgressStrip();
+    if (!strip) return;
+    tickClock();
+    if (strip.getAttribute("data-started-at") && !strip.getAttribute("data-ended-at")) {
+      _clockTimer = setInterval(tickClock, 1000);
+    }
   }
 
   // ----- Backfill + live stream wiring --------------------------------
@@ -646,6 +800,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    bootProgressClock();
     document.querySelectorAll("#eventlog[data-sse]").forEach(attach);
   });
 })();

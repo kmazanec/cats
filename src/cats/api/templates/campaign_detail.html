@@ -89,6 +89,50 @@
     </div>
   </section>
 
+  {# --- Progress strip: one segment per planned run + elapsed clock --- #}
+  {% if progress.planned_count > 0 %}
+  <section class="progress-strip"
+           id="progress-strip"
+           data-started-at="{{ progress.started_at or '' }}"
+           data-ended-at="{{ progress.ended_at or '' }}">
+    <div class="progress-meta">
+      <span class="progress-eyebrow">runs</span>
+      <span class="progress-counts" id="progress-counts">
+        <span class="pc done">{{ progress.completed_count }}</span>
+        <span class="pc sep">/</span>
+        <span class="pc total">{{ progress.planned_count }}</span>
+        <span class="pc detail" id="progress-detail">
+          {%- if progress.failed_count -%}
+            · <span class="pc-fail">{{ progress.failed_count }} failed</span>
+          {%- endif -%}
+          {%- if progress.running_count -%}
+            · <span class="pc-run">{{ progress.running_count }} running</span>
+          {%- endif -%}
+          {%- if progress.pending_count -%}
+            · <span class="pc-pend">{{ progress.pending_count }} queued</span>
+          {%- endif -%}
+        </span>
+      </span>
+    </div>
+    <div class="progress-bar" id="progress-bar" role="progressbar"
+         aria-valuemin="0"
+         aria-valuemax="{{ progress.planned_count }}"
+         aria-valuenow="{{ progress.completed_count + progress.failed_count }}">
+      {% for seg in progress.segments %}
+        <span class="progress-seg seg-{{ seg.status }}"
+              data-idx="{{ loop.index0 }}"
+              {% if seg.run_id %}data-run-id="{{ seg.run_id }}"{% endif %}
+              title="{% if seg.technique %}{{ seg.category }} · {{ seg.technique }} — {% endif %}{{ seg.status }}">
+        </span>
+      {% endfor %}
+    </div>
+    <div class="progress-clock">
+      <span class="progress-eyebrow">elapsed</span>
+      <span class="progress-elapsed mono" id="progress-elapsed">—</span>
+    </div>
+  </section>
+  {% endif %}
+
   <div class="panel">
     <header>
       <div class="title">Findings</div>

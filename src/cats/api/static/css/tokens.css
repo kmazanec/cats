@@ -1034,3 +1034,95 @@ input:focus, select:focus, textarea:focus {
   border-top: 1px solid var(--line);
   margin: 18px 0;
 }
+
+/* ============================================================================
+   Campaign-detail progress strip — one segment per planned run + elapsed
+   clock. Lives between the stage banner and the Findings panel.
+   ============================================================================ */
+.progress-strip {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 20px;
+  background: var(--bg-2, var(--bg-3));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.progress-meta,
+.progress-clock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.progress-clock { align-items: flex-end; }
+.progress-eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+}
+.progress-counts {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.progress-counts .pc.done { color: var(--green); font-weight: 600; }
+.progress-counts .pc.sep { color: var(--ink-3); margin: 0 2px; }
+.progress-counts .pc.total { color: var(--ink-2, var(--ink)); }
+.progress-counts .pc.detail { color: var(--ink-3); margin-left: 8px; }
+.progress-counts .pc-fail { color: var(--red); }
+.progress-counts .pc-run { color: var(--amber); }
+.progress-counts .pc-pend { color: var(--ink-3); }
+.progress-elapsed {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: 0.04em;
+}
+.progress-bar {
+  display: flex;
+  gap: 3px;
+  height: 10px;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.progress-seg {
+  flex: 1 1 0;
+  min-width: 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  transition: background 200ms ease, border-color 200ms ease;
+}
+.progress-seg.seg-completed {
+  background: var(--green);
+  border-color: var(--green);
+}
+.progress-seg.seg-failed {
+  background: var(--red);
+  border-color: var(--red);
+}
+.progress-seg.seg-running {
+  background: var(--amber);
+  border-color: var(--amber);
+  animation: progress-pulse 1.6s ease-in-out infinite;
+}
+.progress-seg.seg-pending {
+  background: var(--bg-3);
+  border-color: var(--line-2, var(--line));
+}
+@keyframes progress-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 50%, transparent);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: 0 0 8px color-mix(in srgb, var(--amber) 60%, transparent);
+    filter: brightness(1.15);
+  }
+}
