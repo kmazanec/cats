@@ -122,4 +122,28 @@
     <span>started {{ execution.started_at.strftime('%H:%M:%S') if execution.started_at else '—' }}</span>
     <span>ended {{ execution.ended_at.strftime('%H:%M:%S') if execution.ended_at else '—' }}</span>
   </div>
+
+  <div style="border-top: 1px solid var(--line); padding-top: 14px; margin-top: 4px;">
+    <div class="eyebrow">— Regression suite</div>
+    <div class="muted" style="font-size: 12px; line-height: 1.5; margin-bottom: 8px;">
+      Capture this exact attack as a repeatable regression case for this project.
+      Works regardless of whether the Judge ruled breach — useful for "interesting
+      but didn't quite land" attacks you want to re-fire on every future co-pilot
+      version.
+    </div>
+    {% if regression_case_id %}
+      <div class="row" style="gap: 10px; align-items: center;">
+        <span class="pill green">already in suite</span>
+        <a class="nav-link" href="/regressions/{{ regression_case_id }}">open regression case</a>
+      </div>
+    {% else %}
+      <form method="post"
+            action="/regressions/promote/{{ execution.id }}"
+            style="margin: 0;">
+        {{ csrf_input(request) | safe }}
+        <input type="hidden" name="return_to" value="/campaigns/{{ campaign_id }}/runs/{{ run_id }}" />
+        <button type="submit" class="btn">Promote to regression suite</button>
+      </form>
+    {% endif %}
+  </div>
 </div>

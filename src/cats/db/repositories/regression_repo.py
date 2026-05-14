@@ -20,7 +20,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.db.schema import (
+    attack_executions,
+    attacks,
     findings,
+    judge_verdicts,
     regression_cases,
     regression_runs,
     regression_sweeps,
@@ -93,6 +96,131 @@ async def ensure_regression_case(
         )
     )
     return UUID(str(again.scalar_one()))
+
+
+async def promote_attack_execution(
+    session: AsyncSession,
+    *,
+    attack_execution_id: UUID,
+) -> dict[str, Any] | None:
+    """Manually promote an arbitrary attack execution into the regression
+    suite, regardless of whether the Judge ruled it a breach.
+
+    Mirrors the auto-promotion path the Documentation worker takes for
+    ``pass`` verdicts, but works for any execution — including ones the
+    Judge held or hasn't judged yet. Operators use this to capture
+    "interesting but not (yet) breaching" attacks so a future co-pilot
+    revision is checked against them.
+
+    Returns ``{"case_id", "finding_id", "finding_created", "rubric_locked"}``
+    or ``None`` if the execution can't be resolved (missing row, missing
+    attack, missing run). Idempotent on ``(run_id, category, signature)``
+    via the existing finding uniqueness constraint and on
+    ``source_finding_id`` via ``ensure_regression_case``.
+    """
+    row = (
+        await session.execute(
+            select(
+                attack_executions.c.run_id,
+                attack_executions.c.attack_id,
+                attack_executions.c.judge_verdict_id,
+                attacks.c.category,
+                attacks.c.signature,
+                attacks.c.title,
+            )
+            .select_from(
+                attack_executions.join(attacks, attacks.c.id == attack_executions.c.attack_id)
+            )
+            .where(attack_executions.c.id == attack_execution_id)
+        )
+    ).first()
+    if row is None:
+        return None
+
+    run_id: UUID = UUID(str(row.run_id))
+    attack_id: UUID = UUID(str(row.attack_id))
+    category: str = str(row.category)
+    signature: str = str(row.signature)
+    title: str = str(row.title or f"[{category}] manual promotion")
+
+    # Resolve the rubric_version to lock against. Preferred source is the
+    # execution's own JudgeVerdict if one exists (matches the auto-promotion
+    # behaviour for confirmed breaches). Otherwise fall back to the latest
+    # rubric_versions row for the attack's category — the bar the operator
+    # would have evaluated the attack against today. Falling back to NULL is
+    # still allowed: gate 2 routes to needs_review in that case.
+    locked_rubric_version_id: UUID | None = None
+    if row.judge_verdict_id is not None:
+        rv_row = (
+            await session.execute(
+                select(judge_verdicts.c.rubric_version_id).where(
+                    judge_verdicts.c.id == row.judge_verdict_id
+                )
+            )
+        ).first()
+        if rv_row is not None and rv_row.rubric_version_id is not None:
+            locked_rubric_version_id = UUID(str(rv_row.rubric_version_id))
+    if locked_rubric_version_id is None:
+        latest_rubric = (
+            await session.execute(
+                select(rubric_versions.c.id)
+                .where(rubric_versions.c.category == category)
+                .order_by(desc(rubric_versions.c.version))
+                .limit(1)
+            )
+        ).first()
+        if latest_rubric is not None:
+            locked_rubric_version_id = UUID(str(latest_rubric.id))
+
+    # Ensure a Finding row exists for this (run, category, signature). The
+    # Documentation worker normally writes one only on a ``pass`` verdict;
+    # manual promotion makes one with severity='medium' status='triaged' so
+    # the regression case has a parent without claiming the execution
+    # breached. The finding is the parent of the regression case by design.
+    from cats.db.repositories.run_repo import upsert_finding
+
+    existing_finding_row = (
+        await session.execute(
+            select(findings.c.id, findings.c.status)
+            .where(findings.c.run_id == run_id)
+            .where(findings.c.category == category)
+            .where(findings.c.signature == signature)
+        )
+    ).first()
+    if existing_finding_row is not None:
+        finding_id = UUID(str(existing_finding_row.id))
+        finding_created = False
+    else:
+        finding_id = await upsert_finding(
+            session,
+            run_id=run_id,
+            category=category,
+            signature=signature,
+            title=title,
+            severity="medium",
+            summary="Manually promoted into the regression suite from the run UI.",
+        )
+        # New finding starts in 'open'; flip to 'triaged' so dashboards
+        # don't treat it as a fresh unreviewed breach.
+        await session.execute(
+            update(findings)
+            .where(findings.c.id == finding_id)
+            .values(status="triaged", updated_at=_utcnow())
+        )
+        finding_created = True
+
+    case_id = await ensure_regression_case(
+        session,
+        source_finding_id=finding_id,
+        canonical_attack_id=attack_id,
+        locked_rubric_version_id=locked_rubric_version_id,
+    )
+    return {
+        "case_id": case_id,
+        "finding_id": finding_id,
+        "finding_created": finding_created,
+        "rubric_locked": locked_rubric_version_id is not None,
+    }
 
 
 async def get_regression_case(session: AsyncSession, *, case_id: UUID) -> dict[str, Any] | None:
@@ -168,6 +296,68 @@ async def list_regression_cases(
         )
     ).all()
     return [_case_row_to_dict(r) for r in rows]
+
+
+async def get_project_id_for_case(session: AsyncSession, *, case_id: UUID) -> UUID | None:
+    """Resolve the Project a RegressionCase belongs to by walking
+    case → source_finding → run → campaign → project. Used by the
+    sweep/run-case routes to scope audit + access checks back to the
+    project allowlist."""
+    from cats.db.schema import campaigns, runs
+
+    row = (
+        await session.execute(
+            select(campaigns.c.project_id)
+            .select_from(
+                regression_cases.join(
+                    findings, findings.c.id == regression_cases.c.source_finding_id
+                )
+                .join(runs, runs.c.id == findings.c.run_id)
+                .join(campaigns, campaigns.c.id == runs.c.campaign_id)
+            )
+            .where(regression_cases.c.id == case_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    return UUID(str(row.project_id))
+
+
+async def list_projects_with_cases(session: AsyncSession) -> list[dict[str, Any]]:
+    """Distinct projects that have at least one RegressionCase, plus the
+    case count per project. Powers the per-project sweep buttons on the
+    regressions list page."""
+    from cats.db.schema import campaigns, projects, runs
+
+    rows = (
+        await session.execute(
+            select(
+                projects.c.id,
+                projects.c.name,
+                projects.c.env,
+                projects.c.allow_run_against,
+            )
+            .select_from(
+                regression_cases.join(
+                    findings, findings.c.id == regression_cases.c.source_finding_id
+                )
+                .join(runs, runs.c.id == findings.c.run_id)
+                .join(campaigns, campaigns.c.id == runs.c.campaign_id)
+                .join(projects, projects.c.id == campaigns.c.project_id)
+            )
+            .group_by(projects.c.id, projects.c.name, projects.c.env, projects.c.allow_run_against)
+            .order_by(projects.c.name)
+        )
+    ).all()
+    return [
+        {
+            "id": UUID(str(r.id)),
+            "name": str(r.name),
+            "env": str(r.env or ""),
+            "allow_run_against": bool(r.allow_run_against),
+        }
+        for r in rows
+    ]
 
 
 async def update_exemplar(

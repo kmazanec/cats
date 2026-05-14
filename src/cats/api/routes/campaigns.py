@@ -11,7 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.api.auth import Principal, require_role, require_user
@@ -638,12 +638,38 @@ async def execution_fragment(
         execution = await get_execution_full(session, execution_id=execution_id, run_id=run_id)
         if execution is None:
             raise HTTPException(status_code=404, detail="execution not found for this run")
+        # Surface whether this execution's (run, category, signature) is
+        # already in the regression suite so the drawer can disable the
+        # "Promote to regression" button rather than fire a duplicate POST.
+        from cats.db.schema import findings as _findings_t
+        from cats.db.schema import regression_cases as _regression_cases_t
+
+        existing_case_row = (
+            await session.execute(
+                select(_regression_cases_t.c.id)
+                .select_from(
+                    _regression_cases_t.join(
+                        _findings_t,
+                        _findings_t.c.id == _regression_cases_t.c.source_finding_id,
+                    )
+                )
+                .where(_findings_t.c.run_id == run_id)
+                .where(_findings_t.c.category == execution["attack_category"])
+                .where(_findings_t.c.signature == execution["attack_signature"])
+            )
+        ).first()
+        existing_regression_case_id = (
+            UUID(str(existing_case_row.id)) if existing_case_row is not None else None
+        )
 
     return templates.TemplateResponse(
         request,
         "_execution_detail.html",
         {
             "execution": execution,
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "regression_case_id": existing_regression_case_id,
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         },
     )

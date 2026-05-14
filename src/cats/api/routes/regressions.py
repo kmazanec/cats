@@ -1,16 +1,21 @@
-"""R8 regressions list + detail.
+"""Regressions list + detail + manual promote/run controls.
 
-Two GET-only pages:
+Three GET pages and three CSRF-protected POST endpoints:
 
 - ``GET /regressions`` — every RegressionCase with its latest
-  ``regression_runs`` verdict, gate-by-gate. No filtering for R8;
-  expected volumes (one row per confirmed finding) make this fine.
+  ``regression_runs`` verdict, gate-by-gate, plus per-project sweep
+  controls.
 - ``GET /regressions/{case_id}`` — gate-by-gate detail for the most
-  recent run plus the source finding metadata.
-
-No POST routes — the only way to fire a regression sweep is the deploy
-webhook or the CLI. A future UI button would need a CSRF-protected
-form, which we deliberately omit for R8 to keep the surface tight.
+  recent run plus a "Run this case now" button.
+- ``POST /regressions/promote/{execution_id}`` — manually promote an
+  arbitrary attack execution into the regression suite, regardless of
+  the Judge verdict. Used by the run-detail drawer's "Promote to
+  regression" button so operators can capture interesting attacks even
+  when they didn't (yet) breach.
+- ``POST /regressions/{case_id}/run`` — fire one regression case
+  through the triple-gate runner against the project's current target.
+- ``POST /regressions/sweep/{project_id}`` — fire a full sweep over
+  all cases for a project. Same code path the deploy webhook hits.
 """
 
 from __future__ import annotations
@@ -18,19 +23,32 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy import desc, select
 
 from cats.api.auth import Principal, require_user
 from cats.api.templating import templates
 from cats.config import settings
 from cats.db.engine import session_scope
+from cats.db.repositories.audit_repo import write_audit
 from cats.db.repositories.regression_repo import (
+    get_project_id_for_case,
     get_regression_case,
     latest_run_for_case,
+    list_projects_with_cases,
     list_regression_cases,
+    promote_attack_execution,
 )
-from cats.db.schema import findings, regression_runs
+from cats.db.schema import findings, projects, regression_runs
+from cats.logging import get_logger
+from cats.security.csrf import require_csrf
+from cats.workers.regression_sweep import (
+    schedule_single_case_in_background,
+    schedule_sweep_in_background,
+)
+
+log = get_logger(__name__)
 
 router = APIRouter()
 
@@ -116,6 +134,7 @@ async def list_regressions_page(
 ) -> Any:
     async with session_scope() as session:
         cases = await list_regression_cases(session, limit=500)
+        projects_with_cases = await list_projects_with_cases(session)
     enriched = await _enrich_with_latest_run(cases)
     tally = {"fixed_held": 0, "regressed": 0, "needs_review": 0, "never_run": 0}
     for c in enriched:
@@ -129,7 +148,13 @@ async def list_regressions_page(
             else:
                 tally["never_run"] += 1
     ctx = _chrome_ctx(principal)
-    ctx.update({"cases": enriched, "tally": tally})
+    ctx.update(
+        {
+            "cases": enriched,
+            "tally": tally,
+            "projects_with_cases": projects_with_cases,
+        }
+    )
     return templates.TemplateResponse(request, "regressions_list.html", ctx)
 
 
@@ -157,6 +182,153 @@ async def regression_detail(
             )
         ).first()
     finding = dict(finding_row._mapping) if finding_row else {}
+    async with session_scope() as session:
+        project_id = await get_project_id_for_case(session, case_id=case_id)
     ctx = _chrome_ctx(principal)
-    ctx.update({"case": case, "latest_run": run, "finding": finding})
+    ctx.update(
+        {
+            "case": case,
+            "latest_run": run,
+            "finding": finding,
+            "project_id": project_id,
+        }
+    )
     return templates.TemplateResponse(request, "regression_detail.html", ctx)
+
+
+# ---------------------------------------------------------------------------
+# Mutating routes — promote, run-case, sweep
+# ---------------------------------------------------------------------------
+
+
+@router.post("/promote/{execution_id}", dependencies=[Depends(require_csrf)])
+async def promote_execution(
+    request: Request,
+    execution_id: UUID,
+    return_to: str = Form(""),
+    principal: Principal = Depends(require_user),
+) -> Any:
+    """Manually promote an arbitrary attack execution into the regression
+    suite — regardless of the Judge's verdict. Backs the per-execution
+    "Promote to regression" button in the run-detail drawer.
+
+    Idempotent on the underlying (run, category, signature) so re-clicking
+    just returns the existing case. The form posts a ``return_to`` value
+    so the browser lands back on the page the operator clicked from
+    (run detail, finding detail, etc.).
+    """
+    async with session_scope() as session:
+        outcome = await promote_attack_execution(
+            session,
+            attack_execution_id=execution_id,
+        )
+        if outcome is None:
+            raise HTTPException(status_code=404, detail="attack execution not found")
+        await write_audit(
+            session,
+            actor=f"user:{principal.email}",
+            action="regression.case.promoted_manually",
+            target_kind="regression_case",
+            target_id=outcome["case_id"],
+            payload={
+                "attack_execution_id": str(execution_id),
+                "finding_id": str(outcome["finding_id"]),
+                "finding_created": bool(outcome["finding_created"]),
+                "rubric_locked": bool(outcome["rubric_locked"]),
+            },
+        )
+    log.info(
+        "regression.case.promoted_manually",
+        case_id=str(outcome["case_id"]),
+        execution_id=str(execution_id),
+        actor=principal.email,
+    )
+    target = return_to or f"/regressions/{outcome['case_id']}"
+    if not target.startswith("/"):
+        # Defensive: never honour an absolute or scheme-bearing return_to.
+        target = f"/regressions/{outcome['case_id']}"
+    return RedirectResponse(url=target, status_code=303)
+
+
+@router.post("/{case_id}/run", dependencies=[Depends(require_csrf)])
+async def run_case_now(
+    request: Request,
+    case_id: UUID,
+    principal: Principal = Depends(require_user),
+) -> Any:
+    """Fire one RegressionCase through the triple-gate runner. Schedules
+    the run in the background — the redirect returns immediately so the
+    operator's browser doesn't sit on the LLM tool loop. The detail page
+    surfaces the result once the run row lands via ``latest_run_for_case``.
+    """
+    async with session_scope() as session:
+        case = await get_regression_case(session, case_id=case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="regression case not found")
+        project_id = await get_project_id_for_case(session, case_id=case_id)
+        await write_audit(
+            session,
+            actor=f"user:{principal.email}",
+            action="regression.case.run_manually",
+            target_kind="regression_case",
+            target_id=case_id,
+            payload={"project_id": str(project_id) if project_id else None},
+        )
+    schedule_single_case_in_background(case_id=case_id, triggered_by="manual_ui")
+    log.info(
+        "regression.case.run_manually",
+        case_id=str(case_id),
+        actor=principal.email,
+    )
+    return RedirectResponse(url=f"/regressions/{case_id}", status_code=303)
+
+
+@router.post("/sweep/{project_id}", dependencies=[Depends(require_csrf)])
+async def sweep_project(
+    request: Request,
+    project_id: UUID,
+    version_tag: str = Form("manual_ui"),
+    principal: Principal = Depends(require_user),
+) -> Any:
+    """Fire a full sweep over every RegressionCase tied to a project.
+    Same code path as the deploy webhook. Returns 303 to the
+    regressions list so the operator can watch the SSE-driven updates
+    swap in as cases finish."""
+    async with session_scope() as session:
+        row = (
+            await session.execute(
+                select(projects.c.id, projects.c.allow_run_against).where(
+                    projects.c.id == project_id
+                )
+            )
+        ).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        if not row.allow_run_against:
+            raise HTTPException(
+                status_code=403,
+                detail="project does not allow attacks to be run against it",
+            )
+        sweep_id = schedule_sweep_in_background(
+            project_id=project_id,
+            version_tag=version_tag[:120] or "manual_ui",
+            triggered_by="manual_ui",
+        )
+        await write_audit(
+            session,
+            actor=f"user:{principal.email}",
+            action="regression.sweep.started_manually",
+            target_kind="regression_sweep",
+            target_id=sweep_id,
+            payload={
+                "project_id": str(project_id),
+                "version_tag": version_tag or "manual_ui",
+            },
+        )
+    log.info(
+        "regression.sweep.started_manually",
+        sweep_id=str(sweep_id),
+        project_id=str(project_id),
+        actor=principal.email,
+    )
+    return RedirectResponse(url="/regressions", status_code=303)

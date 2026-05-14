@@ -21,6 +21,18 @@
       </div>
     </header>
     <div class="body">
+      <div class="row between" style="gap: 12px; margin-bottom: 14px; align-items: center; flex-wrap: wrap;">
+        <div class="muted" style="font-size: 12px; max-width: 540px;">
+          Re-run this case against the project's current target — same code path
+          the deploy webhook and <code class="mono">cats regression run-case</code>
+          CLI exercise. The verdict and gate states refresh once the background
+          task lands.
+        </div>
+        <form method="post" action="/regressions/{{ case.id }}/run" style="margin: 0;">
+          {{ csrf_input(request) | safe }}
+          <button type="submit" class="btn">Run case now</button>
+        </form>
+      </div>
       {% if latest_run is none %}
         <div class="empty">
           this case has never been swept

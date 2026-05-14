@@ -206,6 +206,38 @@ async def run_sweep(
     return sweep_id
 
 
+def schedule_single_case_in_background(
+    *,
+    case_id: UUID,
+    triggered_by: str = "manual_ui",
+) -> None:
+    """Fire-and-forget a single RegressionCase through the triple-gate
+    runner from a route handler. Backs the per-case "Run now" button on
+    ``/regressions/{case_id}``. The case runs against the project's
+    current target without a parent sweep row, so ``latest_run_for_case``
+    surfaces the new verdict on the detail page.
+
+    Same loop-keepalive pattern as ``schedule_sweep_in_background``: the
+    task is held in ``_BACKGROUND_SWEEPS`` so the loop doesn't GC the
+    coroutine before it finishes."""
+    import asyncio
+
+    from cats.regression.runner import run_regression_case
+
+    async def _go() -> None:
+        async with session_scope() as session:
+            await run_regression_case(
+                session,
+                case_id=case_id,
+                sweep_id=None,
+                triggered_by=triggered_by,
+            )
+
+    task = asyncio.create_task(_go(), name=f"regression-case-{case_id}")
+    _BACKGROUND_SWEEPS.add(task)
+    task.add_done_callback(_BACKGROUND_SWEEPS.discard)
+
+
 def schedule_sweep_in_background(
     *,
     project_id: UUID,

@@ -20,6 +20,53 @@
     </div>
   </section>
 
+  {% if projects_with_cases %}
+    <div class="panel">
+      <header>
+        <div class="title">Run the suite</div>
+        <div class="meta">one sweep per project — fires every case through the triple gate</div>
+      </header>
+      <div class="body flush">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th style="width: 90px;">Env</th>
+              <th style="width: 110px;">Allowed?</th>
+              <th class="num" style="width: 220px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in projects_with_cases %}
+              <tr>
+                <td>{{ p.name }}</td>
+                <td class="mono muted">{{ p.env or '—' }}</td>
+                <td>
+                  {% if p.allow_run_against %}
+                    <span class="dot green"></span>allowed
+                  {% else %}
+                    <span class="dot red"></span>blocked
+                  {% endif %}
+                </td>
+                <td class="num">
+                  {% if p.allow_run_against %}
+                    <form method="post" action="/regressions/sweep/{{ p.id }}" style="display: inline; margin: 0;">
+                      {{ csrf_input(request) | safe }}
+                      <input type="hidden" name="version_tag" value="manual_ui" />
+                      <button type="submit" class="btn">Sweep now</button>
+                    </form>
+                  {% else %}
+                    <span class="muted mono" style="font-size: 11px;">project allowlist blocks attacks</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+
   {% if cases %}
     <section class="stat-strip">
       <div class="stat">
