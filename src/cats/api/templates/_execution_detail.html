@@ -29,21 +29,44 @@
     </div>
   </div>
 
-  <div class="grid cols-2" style="gap: 18px;">
+  <div class="stack" style="gap: 16px;">
     <div>
       <div class="eyebrow cy">— Attack payload</div>
       <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">
         sent to target by <code class="mono">{{ execution.agent_role or 'red team' }}</code>
       </div>
-      <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.attack_payload | tojson(indent=2) }}</pre>
+      <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.attack_payload | tojson(indent=2) }}</pre>
     </div>
     <div>
-      <div class="eyebrow cy">— Target response</div>
+      <div class="eyebrow cy">— Target response (raw SSE stream)</div>
       <div class="mono muted" style="font-size: 11px; margin-bottom: 6px;">
         status {{ execution.target_status_code or '—' }} ·
-        latency {{ execution.target_latency_ms or '—' }}ms
+        latency {{ execution.target_latency_ms or '—' }}ms ·
+        {% if execution.target_response and execution.target_response.text is defined %}
+          {{ (execution.target_response.text | length) }} chars
+        {% endif %}
       </div>
-      <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.target_response | tojson(indent=2) }}</pre>
+      {# The verbatim SSE body is the operator's source of truth — every
+         ``event:``/``data:`` frame the target emitted, including the
+         preamble (meta/progress) and the final assistantMessage. Show
+         the raw text when present; otherwise dump the envelope as JSON
+         so error/empty cases still surface useful state. #}
+      {% if execution.target_response and execution.target_response.text is defined and execution.target_response.text %}
+        <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 560px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.target_response.text }}</pre>
+      {% else %}
+        <pre class="mono" style="background: var(--bg-3); border: 1px solid var(--line); padding: 12px; font-size: 11.5px; line-height: 1.5; max-height: 560px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink);">{{ execution.target_response | tojson(indent=2) }}</pre>
+      {% endif %}
+      {% if execution.target_response and execution.target_response.stream_shape is defined %}
+        <div class="mono muted" style="font-size: 11px; margin-top: 8px;">
+          stream shape ·
+          {% set ss = execution.target_response.stream_shape %}
+          assistantMessage <strong>{{ 'yes' if ss.has_assistant_message else 'no' }}</strong> ·
+          data frames {{ ss.data_payloads or 0 }} ·
+          chars {{ ss.char_count or 0 }}
+          {% if ss.has_unknown_event_types %} · <span class="sev medium">unknown event types</span>{% endif %}
+          {% if ss.has_bare_error_json %} · <span class="sev critical">bare error JSON</span>{% endif %}
+        </div>
+      {% endif %}
     </div>
   </div>
 

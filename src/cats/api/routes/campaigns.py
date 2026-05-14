@@ -5,6 +5,7 @@ events to render progress."""
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -306,13 +307,16 @@ async def run_detail(
     run_id: UUID,
     principal: Principal = Depends(require_user),
 ) -> Any:
-    """Per-run forensic view — every execution fired in this Run, plus
-    the findings it produced and the agent's multi-turn conversation
-    transcript. The Red Team agent emits one ``AttackEvent`` per run
-    (R10-followup); the transcript field on that envelope carries the
-    full ordered list of (user_message, target_response) turns the
-    agent fired. We surface it as a chat-style view so operators can
-    see what the agent actually did."""
+    """Per-run forensic view — chat-style replay of the multi-turn
+    conversation the Red Team agent fired, with the single run-level
+    Judge verdict rendered as a hero banner at the top and per-turn
+    execution detail available in a slide-out drawer.
+
+    The Red Team agent emits one ``AttackEvent`` per run; the
+    transcript field on that envelope carries the ordered list of
+    (user_message, target_response) turns. We weld each turn to its
+    ``attack_executions`` row via ``seed_idx`` so a click on a chat
+    bubble loads the full execution fragment into the side drawer."""
     async with session_scope() as session:
         run = await get_run_with_campaign(session, run_id=run_id, campaign_id=campaign_id)
         if run is None:
@@ -320,6 +324,36 @@ async def run_detail(
         executions = await list_executions_full(session, run_id=run_id)
         run_findings = await list_findings_for_run(session, run_id=run_id)
         transcript = await _load_run_transcript(session, run_id=run_id)
+        run_judgment = _run_judgment(executions)
+
+    # Map seed_idx -> execution row so the chat view can dereference
+    # each turn into the execution that backed it without a second
+    # round-trip. Falls back to None when the agent transcript and
+    # the execution table disagree (shouldn't happen, but defends the
+    # template from a KeyError).
+    exec_by_seed: dict[int, dict[str, Any]] = {}
+    for e in executions:
+        seed = e.get("seed_idx")
+        if isinstance(seed, int) and seed not in exec_by_seed:
+            exec_by_seed[seed] = e
+
+    if transcript is not None:
+        merged_turns: list[dict[str, Any]] = []
+        for t in transcript["turns"]:
+            if not isinstance(t, dict):
+                continue
+            seed = t.get("seed_idx")
+            ex = exec_by_seed.get(seed) if isinstance(seed, int) else None
+            assistant_msg = _parse_assistant_message(t.get("target_response") or "")
+            merged_turns.append(
+                {
+                    **t,
+                    "execution": ex,
+                    "execution_id": (str(ex["id"]) if ex else None),
+                    "assistant_message": assistant_msg,
+                }
+            )
+        transcript = {**transcript, "turns": merged_turns}
 
     ctx = _chrome_ctx(principal)
     ctx.update(
@@ -328,11 +362,82 @@ async def run_detail(
             "executions": executions,
             "findings": run_findings,
             "transcript": transcript,
+            "run_judgment": run_judgment,
             "cost_by_agent": _cost_by_agent(executions),
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         }
     )
     return templates.TemplateResponse(request, "run_detail.html", ctx)
+
+
+def _run_judgment(executions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the single run-level Judge verdict to display in the hero
+    banner. The Red Team submits the whole conversation once at the
+    end of a run, so at most one execution row carries a judge verdict
+    — typically the last turn the agent fired. We pick the latest
+    execution with a non-null verdict; if none is present (run failed
+    before submission) we return ``None`` and the template renders a
+    "pending" placeholder."""
+    judged = [e for e in executions if e.get("judge_verdict")]
+    if not judged:
+        return None
+    decisive = judged[-1]
+    return {
+        "verdict": decisive.get("judge_verdict"),
+        "exploitability": decisive.get("judge_exploitability"),
+        "rationale": decisive.get("judge_rationale") or "",
+        "evidence": decisive.get("judge_evidence") or {},
+        "model": decisive.get("judge_model") or "",
+        "decisive_seed_idx": decisive.get("seed_idx"),
+        "decisive_execution_id": str(decisive["id"]) if decisive.get("id") else None,
+    }
+
+
+def _parse_assistant_message(target_response: str) -> dict[str, Any] | None:
+    """Scan one turn's verbatim SSE body for the final
+    ``assistantMessage`` JSON frame and return the inner ``message``
+    object — the actual ``AssistantMessage`` shape (``segments``,
+    ``claimGroups``, ``gaps``, ``suggestedFollowUps``,
+    ``archetypeFlags``) the OpenEMR copilot panel renders.
+
+    Returns ``None`` when the target produced no assistantMessage
+    event (errors, refusals, mangled envelopes). The full SSE stream
+    is always available in the side drawer for forensics; only the
+    chat bubble strips the SSE envelope.
+
+    Wire shape: each SSE frame is ``event: assistantMessage`` paired
+    with a ``data:`` line carrying
+    ``{"type":"assistantMessage","message":{...AssistantMessage}}``.
+    We honor both the ``event:`` framing and the redundant
+    ``"type":"assistantMessage"`` self-declaration in the payload."""
+    if not target_response:
+        return None
+    current_event = ""
+    last_message: dict[str, Any] | None = None
+    for line in target_response.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            current_event = ""
+            continue
+        if stripped.startswith("event:"):
+            current_event = stripped[len("event:") :].strip()
+            continue
+        if stripped.startswith("data:"):
+            payload = stripped[len("data:") :].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            self_type = obj.get("type") if isinstance(obj.get("type"), str) else None
+            if current_event == "assistantMessage" or self_type == "assistantMessage":
+                inner = obj.get("message")
+                if isinstance(inner, dict):
+                    last_message = inner
+    return last_message
 
 
 async def _load_run_transcript(session: AsyncSession, *, run_id: UUID) -> dict[str, Any] | None:

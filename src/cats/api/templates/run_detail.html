@@ -2,8 +2,140 @@
 {% block title %}CATS · Run {{ (run.id|string)[:8] }}{% endblock %}
 {% block crumb %}Run · {{ (run.id|string)[:8] }}{% endblock %}
 
+{% block head %}
+<style>
+  /* Chat-style conversation thread — bubbles roughly mirror the
+     OpenEMR co-pilot panel: right-aligned attacker prompts, left-aligned
+     target replies with segment paragraphs + gap banners. */
+  .chat-thread { display: flex; flex-direction: column; gap: 18px; }
+  .chat-row { display: flex; gap: 14px; align-items: flex-start; }
+  .chat-row.user { justify-content: flex-end; }
+  .chat-row.assistant { justify-content: flex-start; }
+  .chat-row .avatar {
+    flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+    background: var(--bg-3); color: var(--ink-2); border: 1px solid var(--line);
+  }
+  .chat-row.user .avatar { background: var(--amber-soft); color: var(--amber); border-color: var(--amber); }
+  .chat-row.assistant .avatar { background: var(--cyan-soft); color: var(--cyan); border-color: var(--cyan); }
+  .bubble {
+    max-width: 78%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--bg-2);
+    cursor: pointer;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+    position: relative;
+  }
+  .bubble:hover { border-color: var(--cyan); box-shadow: 0 0 0 2px var(--cyan-soft); }
+  .bubble.active { border-color: var(--amber); box-shadow: 0 0 0 2px var(--amber-soft); }
+  .bubble.user { background: rgba(245,165,36,0.06); }
+  .bubble.assistant { background: var(--bg-2); }
+  .bubble-head {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 8px; font-size: 11px; color: var(--ink-3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .bubble-body {
+    font-size: 13px; line-height: 1.55; color: var(--ink);
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 360px; overflow-y: auto;
+  }
+  .bubble-body.copilot { white-space: normal; }
+  .bubble-body.copilot p { margin: 0 0 8px; }
+  .bubble-body.copilot p:last-child { margin-bottom: 0; }
+  .bubble-segment { display: block; }
+  .bubble-segment.redacted {
+    color: var(--ink-3); font-style: italic;
+    border-left: 2px solid var(--ink-4); padding-left: 8px;
+  }
+  .bubble-gap {
+    background: var(--amber-soft); border: 1px solid var(--amber);
+    color: var(--amber); padding: 6px 10px; border-radius: 4px;
+    font-size: 12px; margin-bottom: 8px;
+  }
+  .bubble-followups { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .bubble-followups .chip {
+    font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--ink-2); background: var(--bg-3);
+  }
+  .bubble-foot {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin-top: 8px; font-size: 11px; color: var(--ink-3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Right-side slide-out drawer for the execution detail. */
+  .exec-drawer {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: min(640px, 90vw);
+    background: var(--bg);
+    border-left: 1px solid var(--line);
+    box-shadow: -8px 0 24px rgba(0,0,0,0.5);
+    transform: translateX(100%);
+    transition: transform 200ms ease;
+    z-index: 1000;
+    display: flex; flex-direction: column;
+  }
+  .exec-drawer.open { transform: translateX(0); }
+  .exec-drawer header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+  .exec-drawer header .title { font-weight: 600; color: var(--ink); }
+  .exec-drawer .close {
+    background: transparent; border: 1px solid var(--line); color: var(--ink-2);
+    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  .exec-drawer .close:hover { border-color: var(--cyan); color: var(--cyan); }
+  .exec-drawer .body { padding: 18px 20px; overflow-y: auto; flex: 1; }
+  .drawer-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    opacity: 0; pointer-events: none; transition: opacity 200ms ease;
+    z-index: 999;
+  }
+  .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  /* Hero judgment banner. */
+  .judgment-hero {
+    border-left: 4px solid var(--ink-3);
+    background: var(--bg-2);
+    padding: 16px 20px;
+    border-radius: 6px;
+    display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap;
+  }
+  .judgment-hero.pass { border-left-color: var(--red); background: rgba(239,68,68,0.05); }
+  .judgment-hero.fail { border-left-color: var(--green); }
+  .judgment-hero.partial { border-left-color: var(--amber); }
+  .judgment-hero.error { border-left-color: var(--red); }
+  .judgment-hero.pending { border-left-color: var(--ink-4); }
+  .judgment-hero .verdict-block { min-width: 140px; }
+  .judgment-hero .verdict-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    letter-spacing: 1.5px; color: var(--ink-3); text-transform: uppercase;
+  }
+  .judgment-hero .verdict-value {
+    font-size: 22px; font-weight: 700; margin-top: 4px;
+  }
+  .judgment-hero .verdict-value.pass { color: var(--red); }
+  .judgment-hero .verdict-value.fail { color: var(--green); }
+  .judgment-hero .verdict-value.partial { color: var(--amber); }
+  .judgment-hero .verdict-value.error { color: var(--red); }
+  .judgment-hero .verdict-value.pending { color: var(--ink-3); }
+  .judgment-hero .rationale {
+    flex: 1; min-width: 260px; font-size: 13px; line-height: 1.55; color: var(--ink);
+  }
+  .judgment-hero .meta { font-size: 11px; color: var(--ink-3); margin-top: 6px;
+    font-family: 'JetBrains Mono', monospace; }
+</style>
+{% endblock %}
+
 {% block main %}
-<main class="stack" style="gap: 32px;">
+<main class="stack" style="gap: 24px;">
 
   <section>
     <div class="row" style="gap: 12px; margin-bottom: 6px;">
@@ -31,11 +163,43 @@
     </div>
   </section>
 
+  {# --- Hero: single run-level Judge verdict ---------------------- #}
+  {% set jv = run_judgment.verdict if run_judgment else 'pending' %}
+  <section class="judgment-hero {{ jv }}">
+    <div class="verdict-block">
+      <div class="verdict-label">Judge verdict</div>
+      <div class="verdict-value {{ jv }}">
+        {% if jv == 'pass' %}BREACH
+        {% elif jv == 'fail' %}HELD
+        {% elif jv == 'partial' %}PARTIAL
+        {% elif jv == 'error' %}ERROR
+        {% else %}PENDING{% endif %}
+      </div>
+      {% if run_judgment %}
+        <div class="meta">
+          exploit · <strong>{{ run_judgment.exploitability or '—' }}</strong><br>
+          model · {{ run_judgment.model or '—' }}<br>
+          {% if run_judgment.decisive_seed_idx is not none %}
+            decisive turn · T{{ run_judgment.decisive_seed_idx }}
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+    <div class="rationale">
+      {% if run_judgment and run_judgment.rationale %}
+        {{ run_judgment.rationale }}
+      {% else %}
+        <span class="muted">No judge rationale recorded for this run. The Red Team agent either crashed before submission or the worker is still processing.</span>
+      {% endif %}
+    </div>
+  </section>
+
+  {# --- Stat strip ---------------------------------------------------- #}
   <section class="stat-strip">
     <div class="stat">
-      <div class="label">Attacks fired</div>
+      <div class="label">Turns fired</div>
       <div class="num">{{ run.attacks_fired }}</div>
-      <div class="delta">recorded in attack_executions</div>
+      <div class="delta">attack_executions rows</div>
     </div>
     <div class="stat">
       <div class="label">Spend</div>
@@ -58,131 +222,157 @@
     </div>
   </section>
 
-  {% if transcript and transcript.turns %}
-    <div class="panel">
-      <header>
-        <div class="title">Conversation</div>
-        <div class="meta">
+  {# --- Chat conversation thread ----------------------------------- #}
+  <div class="panel">
+    <header>
+      <div class="title">Conversation</div>
+      <div class="meta">
+        {% if transcript and transcript.turns %}
           {{ transcript.turns|length }} turn{{ '' if transcript.turns|length == 1 else 's' }}
           · <code class="mono">{{ transcript.category }}</code>
           / <code class="mono">{{ transcript.technique }}</code>
           {% if transcript.stop_reason %}
             · stopped <code class="mono">{{ transcript.stop_reason }}</code>
           {% endif %}
-        </div>
-      </header>
-      <div class="body">
-        {% for turn in transcript.turns %}
-          <div style="margin-bottom: 18px; border-left: 2px solid #444; padding-left: 12px;">
-            <div class="row" style="gap: 12px; margin-bottom: 6px; align-items: center;">
-              <span class="pill">T{{ turn.seed_idx }}</span>
-              {% if turn.target_status_code %}
-                {% set sc = turn.target_status_code %}
-                <span class="dot {% if sc < 300 %}green{% elif sc < 500 %}amber{% else %}red{% endif %}"></span>
-                <span class="mono muted" style="font-size: 11px;">HTTP {{ sc }}</span>
-              {% endif %}
-              {% if turn.target_latency_ms %}
-                <span class="mono muted" style="font-size: 11px;">{{ turn.target_latency_ms }}ms</span>
-              {% endif %}
-              {% if turn.target_error %}
-                <span class="sev critical" style="font-size: 11px;">{{ turn.target_error }}</span>
-              {% endif %}
-            </div>
-            <div style="margin-bottom: 8px;">
-              <div class="muted" style="font-size: 11px; letter-spacing: 1px; margin-bottom: 3px;">ATTACKER →</div>
-              <pre style="white-space: pre-wrap; word-break: break-word; background: #181818; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 240px; overflow-y: auto; margin: 0;">{{ turn.user_message }}</pre>
-            </div>
-            <div>
-              <div class="muted" style="font-size: 11px; letter-spacing: 1px; margin-bottom: 3px;">← TARGET</div>
-              <pre style="white-space: pre-wrap; word-break: break-word; background: #181818; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 240px; overflow-y: auto; margin: 0;">{{ turn.target_response or '(empty)' }}</pre>
-            </div>
-          </div>
-        {% endfor %}
+          · click any message to inspect the underlying execution
+        {% else %}
+          no transcript recorded
+        {% endif %}
       </div>
-    </div>
-  {% endif %}
-
-  <div class="panel">
-    <header>
-      <div class="title">Attack executions</div>
-      <div class="meta">{{ executions|length }} fired · click a row to expand</div>
     </header>
-    <div class="body flush">
-      {% if executions %}
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th style="width: 90px;">Attack</th>
-              <th style="width: 60px;">Turn</th>
-              <th>Title</th>
-              <th style="width: 130px;">Agent role</th>
-              <th style="width: 90px;">Target</th>
-              <th class="num" style="width: 90px;">Latency</th>
-              <th style="width: 90px;">Filter</th>
-              <th style="width: 100px;">Judge</th>
-              <th class="num" style="width: 80px;">Tokens</th>
-              <th class="num" style="width: 90px;">USD</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for e in executions %}
-              <tr style="cursor: pointer;"
-                  hx-get="/campaigns/{{ run.campaign_id }}/runs/{{ run.id }}/executions/{{ e.id }}"
-                  hx-target="#exec-detail"
+    <div class="body">
+      {% if transcript and transcript.turns %}
+        <div class="chat-thread">
+          {% for turn in transcript.turns %}
+            {% set ex = turn.execution %}
+            {% set sc = turn.target_status_code %}
+            {# --- User (attacker) bubble --------------------------- #}
+            <div class="chat-row user">
+              <div
+                class="bubble user"
+                {% if turn.execution_id %}
+                  hx-get="/campaigns/{{ run.campaign_id }}/runs/{{ run.id }}/executions/{{ turn.execution_id }}"
+                  hx-target="#exec-drawer-body"
                   hx-swap="innerHTML"
-                  hx-on::after-request="document.getElementById('exec-detail').scrollIntoView({behavior:'smooth', block:'start'});">
-                <td class="mono muted">{{ (e.id|string)[:8] }}</td>
-                <td class="mono num">T{{ e.seed_idx if e.seed_idx is not none else 0 }}</td>
-                <td>
-                  <strong>{{ e.attack_title }}</strong>
-                  <div class="muted mono" style="font-size: 11px;">{{ e.attack_signature }}</div>
-                </td>
-                <td class="mono" style="font-size: 12px;">{{ e.agent_role or '—' }}</td>
-                <td class="mono">
-                  {% if e.target_status_code %}
-                    {% set sc = e.target_status_code %}
-                    <span class="dot {% if sc < 300 %}green{% elif sc < 500 %}amber{% else %}red{% endif %}"></span>{{ sc }}
-                  {% else %}<span class="muted">—</span>{% endif %}
-                </td>
-                <td class="num mono muted">{{ e.target_latency_ms }}ms</td>
-                <td>
-                  {% if e.filter_verdict == 'safe' %}<span class="dot green"></span>safe
-                  {% elif e.filter_verdict == 'attack_payload' %}<span class="dot amber"></span>payload
-                  {% elif e.filter_verdict == 'dangerous' %}<span class="dot red"></span>danger
-                  {% else %}<span class="dot"></span>{{ e.filter_verdict }}{% endif %}
-                </td>
-                <td>
-                  {% if e.judge_verdict == 'pass' %}<span class="sev high">breach</span>
-                  {% elif e.judge_verdict == 'fail' %}<span class="sev low">held</span>
-                  {% elif e.judge_verdict == 'partial' %}<span class="sev medium">partial</span>
-                  {% elif e.judge_verdict == 'error' %}<span class="sev critical">error</span>
-                  {% else %}<span class="muted mono">—</span>{% endif %}
-                </td>
-                <td class="num mono">{{ (e.tokens_in or 0) + (e.tokens_out or 0) }}</td>
-                <td class="num mono">${{ '%.4f'|format(e.usd or 0.0) }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+                  hx-on::after-request="document.getElementById('exec-drawer').classList.add('open'); document.getElementById('drawer-backdrop').classList.add('open'); document.querySelectorAll('.bubble.active').forEach(el => el.classList.remove('active')); this.classList.add('active');"
+                {% endif %}
+              >
+                <div class="bubble-head">
+                  <span class="pill">T{{ turn.seed_idx }}</span>
+                  <span>attacker →</span>
+                  {% if ex and ex.agent_role %}
+                    <span>· role <code class="mono">{{ ex.agent_role }}</code></span>
+                  {% endif %}
+                  {% if ex and ex.filter_verdict %}
+                    {% if ex.filter_verdict == 'safe' %}
+                      <span>· filter <span class="dot green"></span>safe</span>
+                    {% elif ex.filter_verdict == 'attack_payload' %}
+                      <span>· filter <span class="dot amber"></span>payload</span>
+                    {% elif ex.filter_verdict == 'dangerous' %}
+                      <span>· filter <span class="dot red"></span>danger</span>
+                    {% endif %}
+                  {% endif %}
+                </div>
+                <div class="bubble-body">{{ turn.user_message }}</div>
+                {% if ex %}
+                  <div class="bubble-foot">
+                    <span>tok in {{ ex.tokens_in or 0 }}</span>
+                    <span>· tok out {{ ex.tokens_out or 0 }}</span>
+                    <span>· ${{ '%.4f'|format(ex.usd or 0.0) }}</span>
+                  </div>
+                {% endif %}
+              </div>
+              <div class="avatar" title="attacker">A</div>
+            </div>
+
+            {# --- Assistant (target) bubble ------------------------ #}
+            <div class="chat-row assistant">
+              <div class="avatar" title="target co-pilot">T</div>
+              <div
+                class="bubble assistant"
+                {% if turn.execution_id %}
+                  hx-get="/campaigns/{{ run.campaign_id }}/runs/{{ run.id }}/executions/{{ turn.execution_id }}"
+                  hx-target="#exec-drawer-body"
+                  hx-swap="innerHTML"
+                  hx-on::after-request="document.getElementById('exec-drawer').classList.add('open'); document.getElementById('drawer-backdrop').classList.add('open'); document.querySelectorAll('.bubble.active').forEach(el => el.classList.remove('active')); this.classList.add('active');"
+                {% endif %}
+              >
+                <div class="bubble-head">
+                  {% if sc %}
+                    <span class="dot {% if sc < 300 %}green{% elif sc < 500 %}amber{% else %}red{% endif %}"></span>
+                    <span>HTTP {{ sc }}</span>
+                  {% endif %}
+                  {% if turn.target_latency_ms %}
+                    <span>· {{ turn.target_latency_ms }}ms</span>
+                  {% endif %}
+                  {% if turn.target_error %}
+                    <span class="sev critical">· {{ turn.target_error }}</span>
+                  {% endif %}
+                  <span>· ← target</span>
+                </div>
+
+                {% set am = turn.assistant_message %}
+                {% if am and am.gaps %}
+                  {% for g in am.gaps %}
+                    <div class="bubble-gap">
+                      <strong>{{ g.reason or 'safety' }}</strong>
+                      {% if g.message %} — {{ g.message }}{% endif %}
+                    </div>
+                  {% endfor %}
+                {% endif %}
+
+                {% if am and am.segments %}
+                  <div class="bubble-body copilot">
+                    {% for seg in am.segments %}
+                      {% if seg.redacted %}
+                        <p class="bubble-segment redacted">[content withheld]</p>
+                      {% else %}
+                        <p class="bubble-segment">{{ seg.text }}</p>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                  {% if am.suggestedFollowUps %}
+                    <div class="bubble-followups">
+                      {% for f in am.suggestedFollowUps %}
+                        <span class="chip">{{ f.label or f.followUp.prompt or '' }}</span>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                {% else %}
+                  {# No structured assistantMessage — the target never
+                     emitted the final frame (HTTP error, refusal, mangled
+                     envelope). Show a terse placeholder; the full SSE
+                     stream is one click away in the drawer. #}
+                  <div class="bubble-body copilot">
+                    <p class="muted" style="font-style: italic; margin: 0;">
+                      no assistantMessage emitted — open the side panel for the full SSE stream
+                    </p>
+                  </div>
+                {% endif %}
+
+                {% if ex %}
+                  <div class="bubble-foot">
+                    {% if ex.judge_verdict %}
+                      {% if ex.judge_verdict == 'pass' %}<span class="sev high">judge · breach</span>
+                      {% elif ex.judge_verdict == 'fail' %}<span class="sev low">judge · held</span>
+                      {% elif ex.judge_verdict == 'partial' %}<span class="sev medium">judge · partial</span>
+                      {% elif ex.judge_verdict == 'error' %}<span class="sev critical">judge · error</span>
+                      {% endif %}
+                      <span>·</span>
+                    {% endif %}
+                    {% if ex.model %}<span>model <code class="mono">{{ ex.model }}</code></span>{% endif %}
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
       {% else %}
         <div class="empty">
-          no executions recorded
-          <span class="hint">the worker started this run but no attack was fired before it ended</span>
+          no conversation recorded
+          <span class="hint">the worker started this run but the agent never emitted a transcript</span>
         </div>
       {% endif %}
-    </div>
-  </div>
-
-  <div class="panel cy" id="exec-detail-wrap">
-    <header>
-      <div class="title">Execution detail</div>
-      <div class="meta">click a row above to load</div>
-    </header>
-    <div class="body" id="exec-detail">
-      <div class="empty" style="border:0; background:transparent;">
-        no execution selected
-        <span class="hint">click any row in the table to see the payload, target response, and judge rationale</span>
-      </div>
     </div>
   </div>
 
@@ -254,4 +444,23 @@
     </div>
   </div>
 </main>
+
+{# --- Right-side execution detail drawer --------------------------- #}
+<div id="drawer-backdrop" class="drawer-backdrop"
+     onclick="document.getElementById('exec-drawer').classList.remove('open'); this.classList.remove('open'); document.querySelectorAll('.bubble.active').forEach(el => el.classList.remove('active'));"></div>
+<aside id="exec-drawer" class="exec-drawer" aria-hidden="true" aria-label="Execution detail">
+  <header>
+    <div class="title">Execution detail</div>
+    <button type="button" class="close"
+            onclick="document.getElementById('exec-drawer').classList.remove('open'); document.getElementById('drawer-backdrop').classList.remove('open'); document.querySelectorAll('.bubble.active').forEach(el => el.classList.remove('active'));">
+      close ✕
+    </button>
+  </header>
+  <div class="body" id="exec-drawer-body">
+    <div class="empty" style="border:0; background:transparent;">
+      no execution selected
+      <span class="hint">click any message in the conversation to load its execution detail here</span>
+    </div>
+  </div>
+</aside>
 {% endblock %}
