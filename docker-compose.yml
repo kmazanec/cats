@@ -86,6 +86,20 @@ services:
   # so adding/tweaking a worker is a one-line change. `<<: *worker-base`
   # merges the anchor into each service definition.
   # ---------------------------------------------------------------------------
+  # Dev-only file-watch reloader. When CATS_DEV_RELOAD=1 (default in
+  # the committed .env for local dev), each worker runs under
+  # ``watchmedo auto-restart`` so saving a .py file under ./src
+  # SIGTERMs the worker and respawns it on the new code. The api
+  # gets the same behavior via uvicorn ``--reload`` already.
+  #
+  # When CATS_DEV_RELOAD is unset/0 (prod via docker-compose.prod.yml
+  # — which leaves the env var alone — and CI), workers run the bare
+  # ``python -m`` entrypoint so a deploy doesn't restart workers
+  # mid-attack on every source bump.
+  #
+  # The shell wrapper resolves the entrypoint module from the env
+  # var the per-worker service sets (CATS_WORKER_MODULE) so the
+  # command body stays identical across all four workers.
   orchestrator:
     build: &worker-build
       context: .
@@ -101,6 +115,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://cats:cats@postgres:5432/cats
       REDIS_URL: redis://redis:6379/0
       DEFAULT_TARGET_BASE_URL: http://host.docker.internal:8300
+      # Dev-default: file-watch reload on .py change. Prod overlay
+      # sets this to 0 so a deploy doesn't restart workers mid-attack
+      # on every source bump.
+      CATS_DEV_RELOAD: ${CATS_DEV_RELOAD:-1}
     extra_hosts: &worker-extra-hosts
       - "host.docker.internal:host-gateway"
     volumes: &worker-volumes
@@ -109,7 +127,19 @@ services:
       - ./alembic.ini:/app/alembic.ini
     restart: unless-stopped
     container_name: cats-orchestrator
-    command: uv run python -m cats.workers.orchestrator
+    # When CATS_DEV_RELOAD=1 (dev default), wrap the worker in
+    # ``watchmedo auto-restart``: it watches ./src/**/*.py inside the
+    # container, sends SIGTERM to the worker on any change, waits up
+    # to 5s for graceful shutdown (the Worker base class handles
+    # SIGTERM via Worker.request_stop in messaging/worker.py), then
+    # respawns on the new code. When CATS_DEV_RELOAD=0/unset (prod),
+    # exec the bare python entrypoint.
+    command: >
+      sh -c 'if [ "$$CATS_DEV_RELOAD" = "1" ]; then
+               exec uv run watchmedo auto-restart --patterns="*.py" --recursive --signal SIGTERM --kill-after 5 --directory /app/src -- python -m cats.workers.orchestrator;
+             else
+               exec uv run python -m cats.workers.orchestrator;
+             fi'
 
   red_team:
     build: *worker-build
@@ -120,7 +150,12 @@ services:
     volumes: *worker-volumes
     restart: unless-stopped
     container_name: cats-red-team
-    command: uv run python -m cats.workers.red_team
+    command: >
+      sh -c 'if [ "$$CATS_DEV_RELOAD" = "1" ]; then
+               exec uv run watchmedo auto-restart --patterns="*.py" --recursive --signal SIGTERM --kill-after 5 --directory /app/src -- python -m cats.workers.red_team;
+             else
+               exec uv run python -m cats.workers.red_team;
+             fi'
 
   judge:
     build: *worker-build
@@ -131,7 +166,12 @@ services:
     volumes: *worker-volumes
     restart: unless-stopped
     container_name: cats-judge
-    command: uv run python -m cats.workers.judge
+    command: >
+      sh -c 'if [ "$$CATS_DEV_RELOAD" = "1" ]; then
+               exec uv run watchmedo auto-restart --patterns="*.py" --recursive --signal SIGTERM --kill-after 5 --directory /app/src -- python -m cats.workers.judge;
+             else
+               exec uv run python -m cats.workers.judge;
+             fi'
 
   # Documentation handles two workloads on one inbox:
   # - per-attack VerdictRendered → write a Finding + report row (fast, <5s)
@@ -155,7 +195,12 @@ services:
     extra_hosts: *worker-extra-hosts
     volumes: *worker-volumes
     restart: unless-stopped
-    command: uv run python -m cats.workers.documentation
+    command: >
+      sh -c 'if [ "$$CATS_DEV_RELOAD" = "1" ]; then
+               exec uv run watchmedo auto-restart --patterns="*.py" --recursive --signal SIGTERM --kill-after 5 --directory /app/src -- python -m cats.workers.documentation;
+             else
+               exec uv run python -m cats.workers.documentation;
+             fi'
     deploy:
       replicas: ${CATS_DOCUMENTATION_REPLICAS:-2}
 

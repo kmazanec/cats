@@ -41,6 +41,14 @@ dependencies = [
     "itsdangerous>=2.2",
     # Crypto (R2 — Fernet encryption for stored target credentials)
     "cryptography>=43",
+    # Dev-only file-watch reloader for the long-running worker
+    # processes (the api gets reload via uvicorn ``--reload``). Wrapped
+    # around each worker entrypoint when ``CATS_DEV_RELOAD=1``;
+    # docker-compose.prod.yml sets it to 0 so prod isn't reloading.
+    # Runtime dep rather than dev-only so the slim docker image
+    # (built with ``uv sync --no-dev``) still has watchmedo available
+    # when the local-dev compose flips on the reload env var.
+    "watchdog>=6.0",
 ]
 
 [project.optional-dependencies]
