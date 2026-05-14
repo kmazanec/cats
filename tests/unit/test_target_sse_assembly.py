@@ -254,3 +254,46 @@ def test_bare_error_returns_none_on_non_json() -> None:
 def test_bare_error_returns_none_when_error_is_not_string() -> None:
     assert _bare_error_in_sse('{"error":null}') is None
     assert _bare_error_in_sse('{"error":42}') is None
+
+
+# ---------------------------------------------------------------------------
+# _build_briefing_envelope — covers the kickoff path's empty-question gotcha
+# ---------------------------------------------------------------------------
+
+
+def _make_client() -> TargetClient:  # noqa: F821
+    from cats.target.client import TargetClient
+
+    return TargetClient(base_url="https://example", target_kind="copilot_proxy")
+
+
+def test_envelope_omits_empty_question_for_kickoff() -> None:
+    """The Co-Pilot's briefingRequestSchema marks ``question`` optional
+    but ``min(1)`` if present; sending ``question: ""`` fails Zod with
+    ``invalid_envelope``. The kickoff fires with an empty user_message
+    on purpose, so the field must be omitted entirely rather than
+    serialized as an empty string."""
+    from cats.target.contracts import AttackEnvelope
+
+    client = _make_client()
+    body = client._build_briefing_envelope(
+        AttackEnvelope(user_message="", canary="", extra={"task": "default_briefing"})
+    )
+    assert "question" not in body
+    assert body["task"] == "default_briefing"
+
+
+def test_envelope_includes_question_when_user_message_is_present() -> None:
+    from cats.target.contracts import AttackEnvelope
+
+    client = _make_client()
+    body = client._build_briefing_envelope(
+        AttackEnvelope(
+            user_message="please echo CATS-CANARY-ABCD",
+            canary="CATS-CANARY-ABCD",
+            extra={"task": "follow_up", "conversation_id": "conv-1"},
+        )
+    )
+    assert body["question"] == "please echo CATS-CANARY-ABCD"
+    assert body["task"] == "follow_up"
+    assert body["conversationId"] == "conv-1"

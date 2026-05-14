@@ -328,8 +328,16 @@ class TargetClient:
             "siteId": "default",
             "patient": {"pid": pid_int, "uuid": str(envelope.extra.get("uuid", ""))},
             "task": task_value,
-            "question": envelope.user_message[:2000],
         }
+        # The Co-Pilot's schema declares ``question`` optional but
+        # ``min(1)`` if present — sending ``question: ""`` fails Zod
+        # validation with ``invalid_envelope``. Only set the field when
+        # we have content to send (the kickoff intentionally fires with
+        # empty user_message; without this guard every kickoff would
+        # be rejected).
+        question_text = envelope.user_message[:2000]
+        if question_text:
+            body["question"] = question_text
         # Allow extras to override (but strip our integer pid back to
         # int if extra supplies a string — preserve the schema). Keys
         # we already consumed above are filtered so a stale extra
