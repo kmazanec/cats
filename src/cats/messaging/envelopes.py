@@ -50,16 +50,22 @@ AgentName = Literal[
 
 
 class PlanAttempt(BaseModel):
-    """One attempt in the Orchestrator's plan. The Red Team walks
-    attempts in order; each row supplies the specialist + per-attempt
-    budget the executor uses.
+    """One (category, technique) scenario in the Orchestrator's plan.
+    The Red Team agent gets ONE run per attempt; inside the run it
+    decides on its own how many turns to fire, bounded by
+    ``per_attempt_budget_usd`` (a hard USD cap) and a soft turn cap in
+    ``agent.MAX_TURNS_SOFT``.
 
-    ``seeds_per_attempt`` is K — the number of distinct seed attacks
-    the Red Team fires for this technique before moving on. Each seed
-    re-calls the specialist with an elevated temperature and the
-    prior seeds' user_messages threaded into the prompt, producing K
-    materially different angles on the same technique. Default 5;
-    bounded at 10 to keep blast radius predictable."""
+    ``seeds_per_attempt`` is deprecated as of the R10-followup revised
+    model: the agent decides how many turns it needs inside one
+    conversation rather than firing K fixed seeds. Still on the
+    schema so older queued envelopes decode without a migration; new
+    agent path ignores it.
+
+    ``max_consecutive_partials`` is also legacy from the pre-agent
+    pipeline (the old Mutator-driven partial loop on the bus). The
+    new agent owns its own escalation inside a single conversation,
+    so this field is ignored too — kept for backward compat."""
 
     model_config = ConfigDict(extra="forbid")
 

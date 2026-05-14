@@ -237,7 +237,7 @@ async def test_agent_drives_propose_fire_mutate_fire_submit(
                 "name": "submit_for_judgment",
                 "arguments": {
                     "rationale": "canary echoed in response 2",
-                    "expected_verdict": "pass",
+                    "self_assessment": "breached",
                 },
             },
         ),
@@ -252,7 +252,7 @@ async def test_agent_drives_propose_fire_mutate_fire_submit(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=4,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="unit-test-trace",
         )
@@ -260,7 +260,7 @@ async def test_agent_drives_propose_fire_mutate_fire_submit(
         install_override(None)
 
     assert len(result.transcript) == 2, "expected exactly two realized turns"
-    assert result.expected_verdict == "pass"
+    assert result.self_assessment == "breached"
     assert result.stop_reason == "agent_submitted"
     assert result.last_attack_id is not None
     # Each fire_at_target call should have produced one fire_prepared_attack call.
@@ -279,14 +279,16 @@ async def test_agent_force_submits_on_turn_cap(
     fake_propose: None,
     fake_mutator: None,
     _silence_audit: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the agent loops on propose → fire → fire → fire ... past the
-    seeds_per_attempt cap, the platform synthesizes a submit_for_judgment(fail)
+    soft turn cap, the platform synthesizes a submit_for_judgment(held)
     and terminates. The transcript still carries every realized turn."""
     _ = (fake_propose, fake_mutator)
-    # Script: propose, then fire repeatedly with explicit user_message
-    # overrides so each fire actually goes through. seeds_per_attempt=2,
-    # so on the 2nd fire we hit the cap and the executor force-submits.
+    # Lower MAX_TURNS_SOFT to 2 so the test exercises the cap without
+    # firing 20 turns. The agent reads the cap via AgentContext, which
+    # is built from the module constant at run_red_team_agent time.
+    monkeypatch.setattr(agent_mod, "MAX_TURNS_SOFT", 2)
     fake = FakeLLMClient()
     fake.register_sequence(
         "redteam_injection",
@@ -324,14 +326,14 @@ async def test_agent_force_submits_on_turn_cap(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=2,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="unit-test-trace-cap",
         )
     finally:
         install_override(None)
 
-    assert result.expected_verdict == "fail"
+    assert result.self_assessment == "held"
     assert result.stop_reason == "cap_reached_turns"
     assert len(result.transcript) == 2
     # The follow-up fire that would have exceeded the cap never ran.
@@ -359,7 +361,7 @@ async def test_agent_submit_without_firing_is_recorded_with_no_turns(
                 "name": "submit_for_judgment",
                 "arguments": {
                     "rationale": "give up immediately",
-                    "expected_verdict": "fail",
+                    "self_assessment": "held",
                 },
             },
         ),
@@ -374,7 +376,7 @@ async def test_agent_submit_without_firing_is_recorded_with_no_turns(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=4,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="unit-test-trace-empty",
         )
@@ -382,7 +384,7 @@ async def test_agent_submit_without_firing_is_recorded_with_no_turns(
         install_override(None)
 
     assert result.transcript == []
-    assert result.expected_verdict == "fail"
+    assert result.self_assessment == "held"
     assert result.last_attack_id is None
     assert len(fake_fire) == 0
 
@@ -418,7 +420,7 @@ async def test_agent_audit_log_records_submission(
                 "name": "submit_for_judgment",
                 "arguments": {
                     "rationale": "done",
-                    "expected_verdict": "partial",
+                    "self_assessment": "inconclusive",
                 },
             },
         ),
@@ -433,7 +435,7 @@ async def test_agent_audit_log_records_submission(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=4,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="unit-test-trace-audit",
         )
@@ -470,7 +472,7 @@ async def test_agent_unknown_tool_call_returns_error_payload(
             {
                 "id": "c2",
                 "name": "submit_for_judgment",
-                "arguments": {"rationale": "bailing", "expected_verdict": "fail"},
+                "arguments": {"rationale": "bailing", "self_assessment": "held"},
             },
         ),
     )
@@ -484,7 +486,7 @@ async def test_agent_unknown_tool_call_returns_error_payload(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=4,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="unit-test-trace-unknown",
         )
@@ -493,7 +495,7 @@ async def test_agent_unknown_tool_call_returns_error_payload(
 
     # Conversation ended via the agent's own submit, not by force.
     assert result.stop_reason == "agent_submitted"
-    assert result.expected_verdict == "fail"
+    assert result.self_assessment == "held"
     # No transcript — unknown tool didn't fire anything.
     assert result.transcript == []
 
@@ -505,17 +507,19 @@ async def test_agent_halts_mid_batch_when_parallel_tool_calls_blow_the_cap(
     fake_propose: None,
     fake_mutator: None,
     _silence_audit: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A model that emits parallel tool_calls in a single assistant turn
-    must not be allowed to burn past the seeds_per_attempt cap. The
+    must not be allowed to burn past the soft turn cap. The
     cap-before-dispatch check halts the inner loop after the first call
     that pushes us at-or-past the cap."""
     _ = (fake_propose, fake_mutator)
+    monkeypatch.setattr(agent_mod, "MAX_TURNS_SOFT", 2)
     fake = FakeLLMClient()
 
     # One assistant turn that emits propose+fire (2 calls) — won't hit cap.
     # Then one turn that emits fire+fire+fire (3 calls in one turn) with
-    # explicit overrides so each can fire. With seeds_per_attempt=2 the
+    # explicit overrides so each can fire. With per_attempt_budget_usd=1.00 the
     # first parallel fire takes us from 1→2 turns; the next call in the
     # same batch should short-circuit to a force-submit.
     def _seq() -> list[Any]:
@@ -576,7 +580,7 @@ async def test_agent_halts_mid_batch_when_parallel_tool_calls_blow_the_cap(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=2,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="parallel-cap",
         )
@@ -605,20 +609,24 @@ def test_role_for_category_falls_back_to_injection() -> None:
 
 
 def test_system_prompt_interpolates_assignment() -> None:
-    """The loader must substitute {category}, {technique}, and
-    {seeds_per_attempt} so the model sees a concrete assignment."""
+    """The loader must substitute {category}, {technique},
+    {budget_usd_cap}, and {max_turns_soft} so the model sees a
+    concrete assignment + its budget."""
     text = agent_mod._load_system_prompt(
         category="injection",
         technique="ignore_previous",
-        seeds_per_attempt=7,
+        budget_usd_cap=0.50,
+        max_turns_soft=15,
     )
     assert "injection" in text
     assert "ignore_previous" in text
-    assert "7 turns" in text
+    assert "$0.50" in text
+    assert "~15 attack turns" in text
     # No stray template placeholders.
     assert "{category}" not in text
     assert "{technique}" not in text
-    assert "{seeds_per_attempt}" not in text
+    assert "{budget_usd_cap" not in text
+    assert "{max_turns_soft}" not in text
 
 
 @pytest.mark.asyncio
@@ -657,7 +665,7 @@ async def test_propose_attack_rejected_when_called_twice(
             {
                 "id": "c3",
                 "name": "submit_for_judgment",
-                "arguments": {"rationale": "noted error", "expected_verdict": "fail"},
+                "arguments": {"rationale": "noted error", "self_assessment": "held"},
             },
         ),
     )
@@ -671,7 +679,7 @@ async def test_propose_attack_rejected_when_called_twice(
             attempt=PlanAttempt(
                 category="injection",
                 technique="ignore_previous",
-                seeds_per_attempt=4,
+                per_attempt_budget_usd=1.00,
             ),
             trace_id="unit-test-trace-dup-propose",
         )

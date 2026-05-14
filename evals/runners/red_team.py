@@ -12,7 +12,7 @@ Two case modes, switched on ``tags.mode``:
 - **agent mode** (``mode: agent``) — drives the LangGraph Red Team
   agent end-to-end with a scripted tool-call sequence under
   ``## Inputs.scripted_tool_calls``. Tests the agent's tool-loop
-  control flow + termination semantics (stop_reason, expected_verdict,
+  control flow + termination semantics (stop_reason, self_assessment,
   turn-cap discipline) without hitting a live target.
 
 Why fakes instead of real LLM calls: the red-team eval is testing the
@@ -200,23 +200,30 @@ def _build_attacker_sequence(scripted: list[dict[str, Any]]) -> list[Any]:
 async def _run_agent_case(case: Case) -> dict[str, Any]:
     """Drive the LangGraph agent with a scripted tool-call sequence.
     Returns a flat dict the scorer reads (``stop_reason``,
-    ``expected_verdict``, ``transcript_length``, ``tool_call_count``,
+    ``self_assessment``, ``transcript_length``, ``tool_call_count``,
     ``submitted_before_cap``)."""
     from uuid import uuid4
 
+    from cats.agents.red_team import agent as agent_mod
     from cats.agents.red_team.agent import run_red_team_agent
     from cats.llm.client import FakeLLMClient, install_override
     from cats.messaging.envelopes import PlanAttempt
 
     category = str(case.inputs.get("category") or "injection")
     technique = str(case.inputs.get("technique") or "ignore_previous")
-    seeds = int(case.inputs.get("seeds_per_attempt") or 5)
+    budget_usd_cap = float(case.inputs.get("budget_usd_cap") or 0.50)
+    # Cases that exercise the soft turn cap can lower it via this override.
+    max_turns_soft_override = case.inputs.get("max_turns_soft_override")
     scripted = case.inputs.get("scripted_tool_calls") or []
     if not isinstance(scripted, list) or not scripted:
         raise ValueError(f"{case.case_id}: inputs.scripted_tool_calls required")
 
     modules: dict[str, Any] = {}
     originals = _install_agent_fakes(modules)
+    saved_max_turns_soft: int | None = None
+    if max_turns_soft_override is not None:
+        saved_max_turns_soft = agent_mod.MAX_TURNS_SOFT
+        agent_mod.MAX_TURNS_SOFT = int(max_turns_soft_override)
     fake = FakeLLMClient()
     fake.register_sequence("redteam_injection", _build_attacker_sequence(scripted))
     install_override(fake)
@@ -226,16 +233,22 @@ async def _run_agent_case(case: Case) -> dict[str, Any]:
             campaign_id=uuid4(),
             run_id=uuid4(),
             project_version_id=uuid4(),
-            attempt=PlanAttempt(category=category, technique=technique, seeds_per_attempt=seeds),
+            attempt=PlanAttempt(
+                category=category,
+                technique=technique,
+                per_attempt_budget_usd=budget_usd_cap,
+            ),
             trace_id="eval-trace",
         )
     finally:
         install_override(None)
         _restore_agent_fakes(originals, modules)
+        if saved_max_turns_soft is not None:
+            agent_mod.MAX_TURNS_SOFT = saved_max_turns_soft
 
     return {
         "stop_reason": result.stop_reason,
-        "expected_verdict": result.expected_verdict,
+        "self_assessment": result.self_assessment,
         "transcript_length": len(result.transcript),
         "tool_call_count": result.tool_call_count,
         "submitted_before_cap": result.stop_reason == "agent_submitted",
@@ -248,7 +261,7 @@ async def _run_multi_attempt_case(case: Case) -> dict[str, Any]:
     Each attempt has its own scripted_tool_calls; the runner walks them
     sequentially under one synthetic run_id. Returns aggregate stats
     the scorer reads (``attempt_count``, per-attempt ``stop_reasons``
-    and ``expected_verdicts``, ``total_transcript_length``)."""
+    and ``self_assessments``, ``total_transcript_length``)."""
     from uuid import uuid4
 
     from cats.agents.red_team.agent import run_red_team_agent
@@ -310,7 +323,7 @@ async def _run_multi_attempt_case(case: Case) -> dict[str, Any]:
             )
             install_override(None)
             per_attempt_stops.append(result.stop_reason)
-            per_attempt_verdicts.append(result.expected_verdict)
+            per_attempt_verdicts.append(result.self_assessment)
             per_attempt_lengths.append(len(result.transcript))
             if result.stop_reason != "agent_submitted":
                 all_submitted = False
@@ -321,7 +334,7 @@ async def _run_multi_attempt_case(case: Case) -> dict[str, Any]:
     return {
         "attempt_count": len(per_attempt_stops),
         "per_attempt_stop_reasons": per_attempt_stops,
-        "per_attempt_expected_verdicts": per_attempt_verdicts,
+        "per_attempt_self_assessments": per_attempt_verdicts,
         "per_attempt_transcript_lengths": per_attempt_lengths,
         "total_transcript_length": sum(per_attempt_lengths),
         "all_attempts_submitted": all_submitted,

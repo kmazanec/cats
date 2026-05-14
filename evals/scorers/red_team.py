@@ -105,7 +105,7 @@ def score(case: Case, proposal: dict[str, Any]) -> ScoreResult:
         )
 
     # Agent-mode (R10-follow-up) checks. The runner's agent-mode path
-    # produces a different shape: stop_reason / expected_verdict /
+    # produces a different shape: stop_reason / self_assessment /
     # transcript_length / tool_call_count / submitted_before_cap.
     if "stop_reason" in exp:
         got = str(proposal.get("stop_reason") or "")
@@ -114,12 +114,12 @@ def score(case: Case, proposal: dict[str, Any]) -> ScoreResult:
             got == exp["stop_reason"],
             f"got={got!r} expected={exp['stop_reason']!r}",
         )
-    if "expected_verdict" in exp:
-        got = str(proposal.get("expected_verdict") or "")
+    if "self_assessment" in exp:
+        got = str(proposal.get("self_assessment") or "")
         result.add(
-            "expected_verdict",
-            got == exp["expected_verdict"],
-            f"got={got!r} expected={exp['expected_verdict']!r}",
+            "self_assessment",
+            got == exp["self_assessment"],
+            f"got={got!r} expected={exp['self_assessment']!r}",
         )
     if "transcript_min_length" in exp:
         n = int(proposal.get("transcript_length") or 0)
@@ -173,11 +173,11 @@ def score(case: Case, proposal: dict[str, Any]) -> ScoreResult:
             got_list == expected_list,
             f"got={got_list} expected={expected_list}",
         )
-    if "per_attempt_expected_verdicts" in exp:
-        got_list = list(proposal.get("per_attempt_expected_verdicts") or [])
-        expected_list = list(exp["per_attempt_expected_verdicts"])
+    if "per_attempt_self_assessments" in exp:
+        got_list = list(proposal.get("per_attempt_self_assessments") or [])
+        expected_list = list(exp["per_attempt_self_assessments"])
         result.add(
-            "per_attempt_expected_verdicts",
+            "per_attempt_self_assessments",
             got_list == expected_list,
             f"got={got_list} expected={expected_list}",
         )

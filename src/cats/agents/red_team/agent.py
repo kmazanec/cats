@@ -1,9 +1,9 @@
 """Red Team LangGraph agent.
 
-One :class:`run_red_team_agent` call drives one plan attempt to
-completion. The agent picks tools, fires at the target, mutates, and
-decides when to submit — autonomously. The worker just supplies the
-assignment and consumes the result.
+One :class:`run_red_team_agent` call drives one (category, technique)
+scenario to completion. The agent picks tools, fires at the target,
+mutates, and decides when to submit — autonomously. The worker
+supplies the assignment + budget and consumes the transcript.
 
 Topology::
 
@@ -11,24 +11,25 @@ Topology::
 
 Two nodes:
 
-- **attacker** — runs the LLM with the four tools advertised. Returns
+- **attacker** — runs the LLM with the advertised tools. Returns
   ``messages`` with the assistant turn appended (text + tool_calls).
 - **tool_executor** — dispatches each tool call from the latest
   assistant turn through ``tools.dispatch``. Appends one ``role=tool``
   message per call. If any call was terminal (``submit_for_judgment``),
   the next conditional edge routes to END.
 
-Safety caps (defense-in-depth, never expected to fire on well-behaved
-models):
+Stop conditions (in order of preference):
 
-- ``MAX_AGENT_TURNS`` — total LLM round-trips per conversation.
-- ``MAX_TOOL_CALLS`` — total tool dispatches per conversation.
-- ``MAX_TURNS_FROM_PLAN`` — ``PlanAttempt.seeds_per_attempt`` ceiling on
-  realized turns (each realized turn = one ``fire_at_target`` success).
+1. The agent calls ``submit_for_judgment`` — its own decision, based
+   on either confidence it breached or the angle is dead.
+2. USD budget cap hit (``PlanAttempt.per_attempt_budget_usd``).
+3. Soft turn cap hit (``MAX_TURNS_SOFT``, ~20).
+4. Tool-call cap hit (``MAX_TOOL_CALLS``, ~30).
+5. LLM-turn cap hit (``MAX_AGENT_TURNS``, ~20).
 
-Hitting any cap forces a synthetic ``submit_for_judgment(fail,
-"cap reached")`` so the worker still gets a single AttackEvent and the
-Judge still sees the partial transcript.
+(2) through (5) all synthesize a ``submit_for_judgment(fail, "cap
+reached")`` so the worker still gets one AttackEvent and the Judge
+still sees the partial transcript.
 """
 
 from __future__ import annotations
@@ -59,8 +60,13 @@ from cats.messaging.envelopes import ConversationTurnPayload, PlanAttempt
 log = get_logger(__name__)
 
 
-MAX_AGENT_TURNS: int = 12
-MAX_TOOL_CALLS: int = 20
+# Defense-in-depth caps. None of these are the agent's "target" — the
+# agent should call ``submit_for_judgment`` long before any of these
+# trip. They're set well above the typical conversation length the
+# Week-3 brief describes ("generate ten variants" → ~20 turns of room).
+MAX_AGENT_TURNS: int = 20
+MAX_TOOL_CALLS: int = 30
+MAX_TURNS_SOFT: int = 20
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +95,14 @@ class RedTeamAgentResult:
     ``AttackEvent`` envelope. ``last_attack_id`` is the canonical
     ``attacks.id`` of the final realized turn — the Judge's verdict
     row keys against it. ``stop_reason`` is one of ``agent_submitted``
-    / ``cap_reached_turns`` / ``cap_reached_tool_calls`` / ``agent_error``
-    / ``no_turns_fired`` so the campaign UI surfaces *why* the
-    conversation ended."""
+    / ``cap_reached_budget`` / ``cap_reached_turns`` /
+    ``cap_reached_tool_calls`` / ``cap_reached_llm_turns`` /
+    ``agent_error`` / ``no_turns_fired``. ``self_assessment`` is the
+    agent's own read on whether it breached — recorded for audit only,
+    NOT visible to the Judge."""
 
     transcript: list[ConversationTurnPayload]
-    expected_verdict: str
+    self_assessment: str
     submission_rationale: str
     stop_reason: str
     tool_call_count: int
@@ -175,16 +183,22 @@ _CTX_HOLDER: dict[str, AgentContext] = {}
 _SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
 
 
-def _load_system_prompt(*, category: str, technique: str, seeds_per_attempt: int) -> str:
-    """Read the system prompt template + interpolate the assignment.
-
-    Loaded once per process — the file is small and stable, but caching
-    it avoids re-reading from disk on every conversation."""
+def _load_system_prompt(
+    *,
+    category: str,
+    technique: str,
+    budget_usd_cap: float,
+    max_turns_soft: int,
+) -> str:
+    """Read the system prompt template + interpolate the assignment +
+    the budget. The agent sees its USD budget and a soft turn cap so it
+    can decide when to wrap up; neither value is a target."""
     template = _SYSTEM_PROMPT_TEMPLATE
     return template.format(
         category=category,
         technique=technique,
-        seeds_per_attempt=seeds_per_attempt,
+        budget_usd_cap=budget_usd_cap,
+        max_turns_soft=max_turns_soft,
     )
 
 
@@ -247,7 +261,9 @@ async def _attacker_node(state: _AgentGraphState) -> dict[str, Any]:
 
 
 def _record_cost(ctx: AgentContext, *, role: str, result: LLMResult) -> None:
-    """Stash one cost entry on the ctx for the worker to read back."""
+    """Stash one cost entry on the ctx for the worker to read back +
+    advance ``budget_consumed_usd`` so the cap-check logic in
+    ``_tool_executor_node`` sees the running total."""
     ctx_costs: list[AgentTurnCost] = getattr(ctx, "_costs", None) or []
     ctx_costs.append(
         AgentTurnCost(
@@ -262,6 +278,7 @@ def _record_cost(ctx: AgentContext, *, role: str, result: LLMResult) -> None:
     # AgentContext is a dataclass — slot-bypass via __dict__ to keep
     # the public surface clean.
     ctx.__dict__["_costs"] = ctx_costs
+    ctx.budget_consumed_usd += result.usd_estimate
 
 
 async def _tool_executor_node(state: _AgentGraphState) -> dict[str, Any]:
@@ -282,14 +299,25 @@ async def _tool_executor_node(state: _AgentGraphState) -> dict[str, Any]:
         # Parallel tool_calls in one assistant turn: short-circuit once
         # any prior call in this batch was terminal or pushed us past a
         # cap. Without this, a model emitting `fire_at_target` 3x in one
-        # turn would burn past seeds_per_attempt before the cap check
+        # turn would burn past the soft turn cap before the cap check
         # could halt it.
         if terminal_hit or ctx.submitted:
             break
-        if len(ctx.turns) >= ctx.seeds_per_attempt:
+        if ctx.budget_consumed_usd >= ctx.budget_usd_cap and ctx.budget_usd_cap > 0:
             await _force_submit(
                 ctx,
-                rationale=f"turn cap reached ({ctx.seeds_per_attempt})",
+                rationale=(
+                    f"budget cap reached (${ctx.budget_consumed_usd:.4f} / "
+                    f"${ctx.budget_usd_cap:.4f})"
+                ),
+                stop_reason="cap_reached_budget",
+            )
+            terminal_hit = True
+            break
+        if len(ctx.turns) >= ctx.max_turns_soft:
+            await _force_submit(
+                ctx,
+                rationale=f"soft turn cap reached ({ctx.max_turns_soft})",
                 stop_reason="cap_reached_turns",
             )
             terminal_hit = True
@@ -334,7 +362,23 @@ async def _tool_executor_node(state: _AgentGraphState) -> dict[str, Any]:
         )
         if outcome.terminal:
             terminal_hit = True
-        # Cap enforcement.
+        # Cap enforcement after dispatch — same conditions as the
+        # pre-dispatch check, but caught here for the case where the
+        # tool itself pushed us across a cap.
+        if (
+            ctx.budget_consumed_usd >= ctx.budget_usd_cap
+            and ctx.budget_usd_cap > 0
+            and not terminal_hit
+        ):
+            await _force_submit(
+                ctx,
+                rationale=(
+                    f"budget cap reached (${ctx.budget_consumed_usd:.4f} / "
+                    f"${ctx.budget_usd_cap:.4f})"
+                ),
+                stop_reason="cap_reached_budget",
+            )
+            terminal_hit = True
         if ctx.tool_call_count >= MAX_TOOL_CALLS and not terminal_hit:
             await _force_submit(
                 ctx,
@@ -342,10 +386,10 @@ async def _tool_executor_node(state: _AgentGraphState) -> dict[str, Any]:
                 stop_reason="cap_reached_tool_calls",
             )
             terminal_hit = True
-        if len(ctx.turns) >= ctx.seeds_per_attempt and not terminal_hit:
+        if len(ctx.turns) >= ctx.max_turns_soft and not terminal_hit:
             await _force_submit(
                 ctx,
-                rationale=f"turn cap reached ({ctx.seeds_per_attempt})",
+                rationale=f"soft turn cap reached ({ctx.max_turns_soft})",
                 stop_reason="cap_reached_turns",
             )
             terminal_hit = True
@@ -377,7 +421,10 @@ async def _force_submit(
         return
     ctx.submitted = True
     ctx.submission_rationale = rationale
-    ctx.expected_verdict = "fail"
+    # The agent didn't get to assess this — the cap synthesized the
+    # stop. Record as "held" (the platform's defaulting), not as a
+    # specific Judge hint.
+    ctx.self_assessment = "held"
     ctx.stop_reason = stop_reason
     await write_audit(
         ctx.session,
@@ -438,7 +485,7 @@ def _route_after_tools(state: _AgentGraphState) -> str:
     if assistant_turns >= MAX_AGENT_TURNS:
         if not ctx.submitted:
             ctx.submitted = True
-            ctx.expected_verdict = "fail"
+            ctx.self_assessment = "held"
             ctx.stop_reason = "cap_reached_llm_turns"
             ctx.submission_rationale = f"LLM-turn cap reached ({MAX_AGENT_TURNS})"
         return END
@@ -488,7 +535,7 @@ async def run_red_team_agent(
     Side-effects (DB writes, target HTTP calls, audit-log rows) all
     happen via the tools the agent calls. This function is just the
     LangGraph driver."""
-    seeds = max(1, min(attempt.seeds_per_attempt, MAX_AGENT_TURNS))
+    budget_usd_cap = max(0.0, float(attempt.per_attempt_budget_usd))
     ctx = AgentContext(
         session=session,
         campaign_id=campaign_id,
@@ -496,9 +543,9 @@ async def run_red_team_agent(
         project_version_id=project_version_id,
         category=attempt.category,
         technique=attempt.technique,
-        seeds_per_attempt=seeds,
-        max_consecutive_partials=attempt.max_consecutive_partials,
         trace_id=trace_id,
+        budget_usd_cap=budget_usd_cap,
+        max_turns_soft=MAX_TURNS_SOFT,
         shares_conversation=attempt.category in CONVERSATION_SHARING_CATEGORIES,
     )
     ctx_key = f"{run_id}:{trace_id or 'no-trace'}"
@@ -507,7 +554,8 @@ async def run_red_team_agent(
     system_prompt = _load_system_prompt(
         category=attempt.category,
         technique=attempt.technique,
-        seeds_per_attempt=seeds,
+        budget_usd_cap=budget_usd_cap,
+        max_turns_soft=MAX_TURNS_SOFT,
     )
     initial_state = _AgentGraphState(
         ctx_key=ctx_key,
@@ -516,9 +564,10 @@ async def run_red_team_agent(
             _Message(
                 role="user",
                 content=(
-                    "Begin the conversation. Call propose_attack with your "
-                    f"opening for category={attempt.category!r}, "
-                    f"technique={attempt.technique!r}."
+                    "Begin. Your scenario is "
+                    f"category={attempt.category!r}, technique={attempt.technique!r}. "
+                    "Start by calling lookup_regression_history to see what's "
+                    "previously worked or been blocked, then propose_attack."
                 ),
             ),
         ],
@@ -532,7 +581,8 @@ async def run_red_team_agent(
         payload={
             "category": attempt.category,
             "technique": attempt.technique,
-            "seeds_per_attempt": seeds,
+            "budget_usd_cap": budget_usd_cap,
+            "max_turns_soft": MAX_TURNS_SOFT,
         },
         trace_id=trace_id,
     )
@@ -569,7 +619,7 @@ async def run_red_team_agent(
     costs_raw: list[AgentTurnCost] = ctx.__dict__.get("_costs", [])
     return RedTeamAgentResult(
         transcript=transcript,
-        expected_verdict=ctx.expected_verdict or "fail",
+        self_assessment=ctx.self_assessment or "inconclusive",
         submission_rationale=ctx.submission_rationale,
         stop_reason=ctx.stop_reason or "agent_submitted",
         tool_call_count=ctx.tool_call_count,

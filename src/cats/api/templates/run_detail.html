@@ -58,6 +58,50 @@
     </div>
   </section>
 
+  {% if transcript and transcript.turns %}
+    <div class="panel">
+      <header>
+        <div class="title">Conversation</div>
+        <div class="meta">
+          {{ transcript.turns|length }} turn{{ '' if transcript.turns|length == 1 else 's' }}
+          · <code class="mono">{{ transcript.category }}</code>
+          / <code class="mono">{{ transcript.technique }}</code>
+          {% if transcript.stop_reason %}
+            · stopped <code class="mono">{{ transcript.stop_reason }}</code>
+          {% endif %}
+        </div>
+      </header>
+      <div class="body">
+        {% for turn in transcript.turns %}
+          <div style="margin-bottom: 18px; border-left: 2px solid #444; padding-left: 12px;">
+            <div class="row" style="gap: 12px; margin-bottom: 6px; align-items: center;">
+              <span class="pill">T{{ turn.seed_idx }}</span>
+              {% if turn.target_status_code %}
+                {% set sc = turn.target_status_code %}
+                <span class="dot {% if sc < 300 %}green{% elif sc < 500 %}amber{% else %}red{% endif %}"></span>
+                <span class="mono muted" style="font-size: 11px;">HTTP {{ sc }}</span>
+              {% endif %}
+              {% if turn.target_latency_ms %}
+                <span class="mono muted" style="font-size: 11px;">{{ turn.target_latency_ms }}ms</span>
+              {% endif %}
+              {% if turn.target_error %}
+                <span class="sev critical" style="font-size: 11px;">{{ turn.target_error }}</span>
+              {% endif %}
+            </div>
+            <div style="margin-bottom: 8px;">
+              <div class="muted" style="font-size: 11px; letter-spacing: 1px; margin-bottom: 3px;">ATTACKER →</div>
+              <pre style="white-space: pre-wrap; word-break: break-word; background: #181818; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 240px; overflow-y: auto; margin: 0;">{{ turn.user_message }}</pre>
+            </div>
+            <div>
+              <div class="muted" style="font-size: 11px; letter-spacing: 1px; margin-bottom: 3px;">← TARGET</div>
+              <pre style="white-space: pre-wrap; word-break: break-word; background: #181818; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 240px; overflow-y: auto; margin: 0;">{{ turn.target_response or '(empty)' }}</pre>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
   <div class="panel">
     <header>
       <div class="title">Attack executions</div>

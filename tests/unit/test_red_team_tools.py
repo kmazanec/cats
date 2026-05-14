@@ -129,9 +129,9 @@ def _ctx(**overrides: Any) -> AgentContext:
         "project_version_id": uuid4(),
         "category": "injection",
         "technique": "ignore_previous",
-        "seeds_per_attempt": 4,
-        "max_consecutive_partials": 2,
         "trace_id": "unit-trace",
+        "budget_usd_cap": 1.00,
+        "max_turns_soft": 10,
         "shares_conversation": True,
     }
     base.update(overrides)
@@ -261,15 +261,15 @@ async def test_subsequent_fire_uses_follow_up_task_and_shared_conv(
 
 
 @pytest.mark.asyncio
-async def test_submit_marks_terminal_and_carries_verdict() -> None:
+async def test_submit_marks_terminal_and_carries_self_assessment() -> None:
     ctx = _ctx()
     out = await tools_mod.run_submit_for_judgment(
         ctx,
-        args={"rationale": "done", "expected_verdict": "pass"},
+        args={"rationale": "done", "self_assessment": "breached"},
     )
     assert out.terminal is True
     assert ctx.submitted is True
-    assert ctx.expected_verdict == "pass"
+    assert ctx.self_assessment == "breached"
     assert ctx.stop_reason == "agent_submitted"
 
 
@@ -277,13 +277,13 @@ async def test_submit_marks_terminal_and_carries_verdict() -> None:
 async def test_submit_idempotent() -> None:
     ctx = _ctx()
     await tools_mod.run_submit_for_judgment(
-        ctx, args={"rationale": "1", "expected_verdict": "pass"}
+        ctx, args={"rationale": "1", "self_assessment": "breached"}
     )
     out2 = await tools_mod.run_submit_for_judgment(
-        ctx, args={"rationale": "2", "expected_verdict": "fail"}
+        ctx, args={"rationale": "2", "self_assessment": "held"}
     )
     assert out2.terminal is True
-    assert ctx.expected_verdict == "pass"  # first call wins
+    assert ctx.self_assessment == "breached"  # first call wins
 
 
 @pytest.mark.asyncio
@@ -294,12 +294,12 @@ async def test_dispatch_unknown_tool_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_normalizes_invalid_expected_verdict() -> None:
+async def test_submit_normalizes_invalid_self_assessment() -> None:
     ctx = _ctx()
     out = await tools_mod.run_submit_for_judgment(
-        ctx, args={"rationale": "x", "expected_verdict": "not-a-thing"}
+        ctx, args={"rationale": "x", "self_assessment": "not-a-thing"}
     )
-    assert out.payload["expected_verdict"] == "partial"
+    assert out.payload["self_assessment"] == "inconclusive"
 
 
 def test_transcript_payload_mirrors_turn_log() -> None:

@@ -38,12 +38,12 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
     ),
     "redteam_injection": ModelChoice(
         primary="nousresearch/hermes-4-405b",
-        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
         notes="Hermes low-refusal + JSON. Dolphin-Venice ~2% refusal as escape hatch.",
     ),
     "redteam_indirect_injection": ModelChoice(
         primary="nousresearch/hermes-4-405b",
-        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
         notes="Same as direct injection — same refusal-rate concern; the LLM only authors the visible_text + hidden_instruction, not the docx itself.",
     ),
     "redteam_exfil": ModelChoice(

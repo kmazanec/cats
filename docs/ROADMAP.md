@@ -3223,6 +3223,64 @@ escalation / mutation / give-up; the worker just consumes the
   cases that swaps in OpenRouter and runs the same scripted target
   responses — same scorer, same expected stop_reasons.
 
+### Revision — run model rolled back to per-scenario
+
+The "one run, N attempts inside" change above was wrong: a re-read of
+the Week-3 brief made clear that a *run* is the Red Team agent's
+whole effort against ONE (category, technique) scenario, not against
+the whole plan. The brief's repeated framing — "an agent whose job is
+to probe, mutate, and escalate — one that can take a partially-
+successful attack and autonomously generate ten variants to find the
+version that breaks through" — describes mutation as something the
+agent does *inside* one scenario, not across scenarios.
+
+Forward-only fix:
+
+- **Per-scenario runs (forward).** Worker creates one ``runs`` row
+  per :class:`PlanAttempt` again. The 8-attempt plan that hit this
+  bug now produces 8 separate runs.
+- **``seeds_per_attempt`` deprecated.** Replaced with two bounds the
+  agent reads via system prompt: ``per_attempt_budget_usd`` (hard
+  USD cap from the plan, ~$0.50 typical) and ``MAX_TURNS_SOFT`` (~20
+  realized turns, defense-in-depth). The agent decides on its own
+  how to spend those bounds. The K-seed worker for-loop is gone for
+  good.
+- **New tool ``lookup_regression_history``.** The agent's ONLY
+  external knowledge channel — pulls confirmed-breach + confirmed-
+  block signatures from the regression_cases / regression_runs
+  tables for the current (category, technique). System prompt tells
+  the model to call it first, before ``propose_attack``. No Judge
+  verdicts leak through; only the closed regression suite's
+  fixed_held / confirmed-promoted state.
+- **Agent is Judge-blind by design.** ``submit_for_judgment`` no
+  longer takes ``expected_verdict`` (which framed the agent as
+  hinting at the Judge's ruling). It now takes ``self_assessment``
+  in {``breached``, ``held``, ``inconclusive``} — the agent's own
+  read for the audit trail. The agent will never see what the Judge
+  actually decided.
+- **Transcript UI.** A new "Conversation" panel on the run-detail
+  page renders the AttackEvent's transcript field as a chat-style
+  thread, so operators can read what the agent actually did per
+  turn.
+- **Model-registry bug found in the process.** The
+  ``redteam_injection`` / ``redteam_indirect_injection`` /
+  ``redteam_exfil`` fallback was
+  ``cognitivecomputations/dolphin-mistral-24b-venice-edition`` but
+  OpenRouter only lists it under
+  ``...:free``. The first campaign caught this when Hermes 4 405B
+  rate-limited mid-plan and 3 of the 8 scenarios got HTTP 404
+  pre-turn-0. Fixed; agent failure path correctly marked those runs
+  ``failed`` without fabricating an AttackEvent.
+- **Case 13 retired**, replaced with ``13_agent_uses_regression_
+  history_before_proposing`` — pins the "lookup-first" control-flow
+  property of the new agent.
+- *Lesson.* The previous revision in this retro confidently
+  described the wrong model. Reading the brief end-to-end before
+  refactoring the second time would have saved the round. Going
+  forward: when a refactor changes the data model, sanity-check the
+  intended shape against the original brief, not against the
+  previous design doc.
+
 ---
 
 ## Round 11 — Clinical misinformation propagation

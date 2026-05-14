@@ -370,3 +370,116 @@ async def update_finding_status_from_run(
         .where(findings.c.id == source_finding_id)
         .values(status=new_status, updated_at=_utcnow())
     )
+
+
+async def history_for_scenario(
+    session: AsyncSession,
+    *,
+    category: str,
+    technique: str,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Cross-campaign knowledge channel for the Red Team agent.
+
+    Returns the regression history for one (category, technique)
+    scenario — the only external signal the agent is allowed to see
+    about prior runs. Two buckets:
+
+    - ``known_breaches``: prior findings on this scenario that promoted
+      to a regression case (i.e. an attack was confirmed to breach the
+      co-pilot in a past campaign and the locked rubric agreed). Each
+      entry carries one exemplar ``user_message`` so the agent can use
+      it as a starting point or know to avoid it if it expects the
+      defense has changed.
+    - ``known_blocks``: prior regression-run results where the
+      previously-confirmed exploit was found to NO LONGER work
+      (``fixed_held``) — i.e. the defense has held. Helps the agent
+      avoid trying an angle that's already been fixed.
+
+    Read-only; no Judge verdicts from in-progress runs are leaked
+    (only confirmed regression-case state). The runs each entry
+    references are *closed* (already documented + promoted), so this
+    is properly historical, not in-flight.
+
+    Limited to ``limit`` exemplars per bucket so the prompt doesn't
+    balloon."""
+    from sqlalchemy import text as _text
+
+    # Known breaches: regression_cases whose source-finding has a
+    # category match and whose canonical attacks include one with this
+    # technique. Pull one user_message per case as an exemplar.
+    breaches_rows = (
+        await session.execute(
+            _text(
+                """
+                SELECT DISTINCT
+                    rc.id AS case_id,
+                    f.signature AS finding_signature,
+                    f.severity AS severity,
+                    f.title AS title,
+                    f.created_at AS first_seen,
+                    a.payload->>'user_message' AS exemplar_user_message,
+                    a.signature AS attack_signature
+                FROM regression_cases rc
+                JOIN findings f ON f.id = rc.source_finding_id
+                JOIN attack_executions ae ON ae.run_id = f.run_id
+                JOIN attacks a ON a.id = ae.attack_id
+                WHERE f.category = :category
+                  AND a.payload->>'technique' = :technique
+                ORDER BY f.created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"category": category, "technique": technique, "limit": int(limit)},
+        )
+    ).all()
+
+    # Known blocks: regression_runs with fixed_held status on cases
+    # matching this (category, technique). One row per case, latest
+    # blocked run.
+    blocks_rows = (
+        await session.execute(
+            _text(
+                """
+                SELECT DISTINCT
+                    rr.regression_case_id AS case_id,
+                    f.signature AS finding_signature,
+                    rr.finished_at AS confirmed_at
+                FROM regression_runs rr
+                JOIN regression_cases rc ON rc.id = rr.regression_case_id
+                JOIN findings f ON f.id = rc.source_finding_id
+                JOIN attack_executions ae ON ae.run_id = f.run_id
+                JOIN attacks a ON a.id = ae.attack_id
+                WHERE rr.status = 'fixed_held'
+                  AND f.category = :category
+                  AND a.payload->>'technique' = :technique
+                ORDER BY rr.finished_at DESC NULLS LAST
+                LIMIT :limit
+                """
+            ),
+            {"category": category, "technique": technique, "limit": int(limit)},
+        )
+    ).all()
+
+    return {
+        "category": category,
+        "technique": technique,
+        "known_breaches": [
+            {
+                "finding_signature": str(r.finding_signature or ""),
+                "severity": str(r.severity or ""),
+                "title": str(r.title or "")[:200],
+                "first_seen": (r.first_seen.isoformat() if r.first_seen else ""),
+                "exemplar_user_message": str(r.exemplar_user_message or "")[:1500],
+                "attack_signature": str(r.attack_signature or ""),
+            }
+            for r in breaches_rows
+        ],
+        "known_blocks": [
+            {
+                "finding_signature": str(r.finding_signature or ""),
+                "confirmed_blocked_at": (r.confirmed_at.isoformat() if r.confirmed_at else ""),
+            }
+            for r in blocks_rows
+        ],
+    }

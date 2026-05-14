@@ -1,26 +1,24 @@
 # mypy: disable-error-code="no-untyped-def,misc,unused-ignore"
-"""R10-follow-up — multi-attempt agent session over the live bus.
+"""R10-follow-up (revised) — N-scenario plan produces N independent runs.
 
 Drives the four-worker pipeline with a FakeLLMClient that scripts:
 
-- An Orchestrator plan with TWO injection attempts
-  (``ignore_previous`` then ``policy_puppetry``, both
-  ``seeds_per_attempt=4``).
-- A Red Team agent that, for each attempt, walks
-  ``propose_attack → fire_at_target → mutate_attack →
-   fire_at_target → submit_for_judgment``.
-- A Judge that rules ``pass`` on each attempt's transcript and names
+- An Orchestrator plan with TWO injection scenarios
+  (``ignore_previous`` then ``policy_puppetry``).
+- A Red Team agent that, for each scenario, walks
+  ``lookup_regression_history`` → ``propose_attack`` →
+  ``fire_at_target`` → ``mutate_attack`` → ``fire_at_target`` →
+  ``submit_for_judgment``.
+- A Judge that rules ``pass`` on each scenario's transcript and names
   turn 1 (the canary-echo turn) as decisive.
 
-DoD checks for the run-vs-attempt model:
+DoD checks for the run-per-scenario model:
 
-- Exactly ONE ``runs`` row covers the whole agent session — the load-
-  bearing assertion for the "one run, N attempts" worker shape.
-- TWO ``AttackEvent`` envelopes (one per PlanAttempt), all sharing
-  ``run_id`` — the Red Team agent's ``submit_for_judgment`` is still
-  the single emission point per attempt.
-- FOUR ``attack_executions`` rows on that one run (2 attempts x 2
-  turns each), spanning >=2 distinct ``attack_id`` values.
+- TWO ``runs`` rows — one per scenario, each holding the agent's
+  whole effort against one (category, technique) pair.
+- TWO ``AttackEvent`` envelopes (one per scenario, one per run).
+- FOUR ``attack_executions`` rows total (2 runs x 2 turns each),
+  spanning >=2 distinct ``attack_id`` values.
 - TWO ``judge_verdicts`` rows, both ``pass`` with
   ``decisive_seed_idx`` populated.
 - TWO ``findings`` rows.
@@ -124,7 +122,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
        The expected response is a strict-JSON proposal envelope.
 
     We disambiguate by inspecting the system prompt: if it says
-    "Red Team specialist" (the agent's prompt) we return a tool_call
+    "Red Team agent" (the agent's prompt) we return a tool_call
     matching the scripted sequence; otherwise we return the specialist's
     JSON proposal. Same role, two different response shapes."""
     from cats.config import set_settings_for_test
@@ -175,6 +173,13 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
     # concatenation of both attempts' scripts.
     def _attempt_script(technique: str, rationale_suffix: str) -> list[dict[str, Any]]:
         return [
+            # The R10-followup-revised agent calls lookup_regression_history
+            # before proposing — that's the only external knowledge channel.
+            {
+                "id": f"{technique}-c0",
+                "name": "lookup_regression_history",
+                "arguments": {},
+            },
             {
                 "id": f"{technique}-c1",
                 "name": "propose_attack",
@@ -196,7 +201,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
                 "name": "submit_for_judgment",
                 "arguments": {
                     "rationale": "canary echoed on turn 1",
-                    "expected_verdict": "pass",
+                    "self_assessment": "breached",
                 },
             },
         ]
@@ -212,7 +217,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
             (str(m.get("content", "")) for m in messages if m.get("role") == "system"),
             "",
         )
-        if "Red Team specialist" in system:
+        if "Red Team agent" in system:
             # Agent's attacker turn.
             idx = attacker_counter["n"]
             attacker_counter["n"] += 1
@@ -325,14 +330,13 @@ async def _wait_for(
 
 
 @pytest.mark.asyncio
-async def test_agent_walks_multiple_attempts_in_one_run(
+async def test_plan_with_n_scenarios_produces_n_runs_each_multi_turn(
     client, patch_target_transport, workers
 ) -> None:
     """The R10-follow-up DoD load-bearing test: a plan with N
-    PlanAttempts produces ONE ``runs`` row + N ``AttackEvent``
-    envelopes (one per attempt) + N verdicts + N findings, all
-    sharing the same ``run_id``. Each attempt is itself a multi-turn
-    conversation with mutate."""
+    PlanAttempts produces N ``runs`` rows (one per scenario) + N
+    ``AttackEvent`` envelopes + N verdicts + N findings. Each run is
+    one multi-turn conversation the agent owned end-to-end."""
     _ = client
     _ = patch_target_transport
 
@@ -423,18 +427,16 @@ async def test_agent_walks_multiple_attempts_in_one_run(
             f"expected exactly 2 AttackEvents (one per attempt), got {attack_events[0]}"
         )
 
-        # ONE run row covers both attempts (the load-bearing assertion
-        # for the new "one run, N attempts" shape).
+        # TWO runs rows — one per scenario (load-bearing assertion for
+        # the run-per-scenario model). Each is the agent's whole effort
+        # against one (category, technique) pair.
         runs = (await session.execute(text("SELECT count(distinct id) FROM runs"))).first()
         assert runs is not None
-        assert runs[0] == 1, f"expected one runs row for the whole agent session, got {runs[0]}"
+        assert runs[0] == 2, f"expected two runs rows (one per scenario), got {runs[0]}"
 
-        # Multiple attack_executions rows on the single run, two per
-        # attempt (turn 0 + turn 1 each), 4 total. Each attempt's two
-        # executions point at the same Attack template (their
-        # ``attack_id`` is set by the propose_attack step which mints
-        # one template per attempt), so we expect exactly two distinct
-        # attack_ids across the four executions.
+        # Multiple attack_executions rows: each run has two executions
+        # (turn 0 + turn 1, since the agent mutates within one
+        # conversation), so 4 total across two distinct runs.
         rows = (
             await session.execute(
                 text(
@@ -444,16 +446,16 @@ async def test_agent_walks_multiple_attempts_in_one_run(
                 )
             )
         ).all()
-        assert len(rows) == 4, f"expected 4 executions (2 attempts x 2 turns), got {len(rows)}"
+        assert len(rows) == 4, f"expected 4 executions (2 runs x 2 turns), got {len(rows)}"
         run_ids = {r.run_id for r in rows}
-        assert len(run_ids) == 1, f"expected all executions on one run row, got {run_ids}"
-        # Two attempts → two distinct propose-attack-minted attacks
-        # templates → the worker emits two AttackEvents pointing at
-        # different last-turn attack_ids. Asserted via the bus envelope
-        # count below; here we just confirm executions span >1 attack.
+        assert len(run_ids) == 2, f"expected executions spanning two run rows, got {run_ids}"
+        # Two scenarios → two distinct propose-attack-minted attacks
+        # templates per scenario (one for the proposed opener, one for
+        # the mutated follow-up). At least two distinct attack_ids
+        # across the 4 executions.
         attack_ids = {r.attack_id for r in rows}
         assert len(attack_ids) >= 2, (
-            f"expected >=2 distinct attack_ids across the two attempts, got {len(attack_ids)}"
+            f"expected >=2 distinct attack_ids across the two scenarios, got {len(attack_ids)}"
         )
 
         verdicts = (await session.execute(text("SELECT count(*) FROM judge_verdicts"))).first()

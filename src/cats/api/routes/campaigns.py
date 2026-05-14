@@ -10,6 +10,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.api.auth import Principal, require_role, require_user
 from cats.api.templating import templates
@@ -304,15 +306,20 @@ async def run_detail(
     run_id: UUID,
     principal: Principal = Depends(require_user),
 ) -> Any:
-    """Per-run forensic view — every execution fired in this Run, plus the
-    findings it produced. The campaign detail page links here once a Run
-    is visible in its table."""
+    """Per-run forensic view — every execution fired in this Run, plus
+    the findings it produced and the agent's multi-turn conversation
+    transcript. The Red Team agent emits one ``AttackEvent`` per run
+    (R10-followup); the transcript field on that envelope carries the
+    full ordered list of (user_message, target_response) turns the
+    agent fired. We surface it as a chat-style view so operators can
+    see what the agent actually did."""
     async with session_scope() as session:
         run = await get_run_with_campaign(session, run_id=run_id, campaign_id=campaign_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found for this campaign")
         executions = await list_executions_full(session, run_id=run_id)
         run_findings = await list_findings_for_run(session, run_id=run_id)
+        transcript = await _load_run_transcript(session, run_id=run_id)
 
     ctx = _chrome_ctx(principal)
     ctx.update(
@@ -320,11 +327,52 @@ async def run_detail(
             "run": run,
             "executions": executions,
             "findings": run_findings,
+            "transcript": transcript,
             "cost_by_agent": _cost_by_agent(executions),
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         }
     )
     return templates.TemplateResponse(request, "run_detail.html", ctx)
+
+
+async def _load_run_transcript(session: AsyncSession, *, run_id: UUID) -> dict[str, Any] | None:
+    """Pull the agent's conversation transcript for one run from the
+    ``AttackEvent`` envelope on the bus. Returns a dict with
+    ``category``, ``technique``, ``stop_reason``, and ``turns`` (list
+    of ``{seed_idx, user_message, target_response, target_status_code,
+    target_latency_ms, target_error}`` dicts in firing order). Returns
+    None when the agent never emitted an AttackEvent (e.g. crashed
+    before turn 0)."""
+    row = (
+        await session.execute(
+            text(
+                """
+                SELECT payload_json
+                FROM agent_messages
+                WHERE kind = 'AttackEvent'
+                  AND (payload_json->>'run_id')::uuid = :run_id
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ),
+            {"run_id": run_id},
+        )
+    ).first()
+    if row is None:
+        return None
+    payload = row.payload_json
+    if not isinstance(payload, dict):
+        return None
+    turns = payload.get("transcript") or []
+    if not isinstance(turns, list):
+        turns = []
+    return {
+        "category": str(payload.get("category", "")),
+        "technique": str(payload.get("technique", "")),
+        "stop_reason": str(payload.get("conversation_stop_reason", "")),
+        "canary": str(payload.get("canary", "")),
+        "turns": turns,
+    }
 
 
 @router.get("/{campaign_id}/runs/{run_id}/executions/{execution_id}")

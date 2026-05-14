@@ -122,10 +122,12 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     # turn (responses must be tool calls) and (b) the injection
     # specialist's JSON proposal (called from inside the agent's
     # ``propose_attack`` tool). Disambiguate by the system prompt:
-    # "Red Team specialist" appears in the agent's prompt but not in
+    # "Red Team agent" appears in the agent's prompt but not in
     # the specialist's. The attacker sequence here drives:
-    # propose_attack → fire_at_target → submit_for_judgment.
+    # lookup_regression_history → propose_attack → fire_at_target →
+    # submit_for_judgment.
     attacker_script: list[dict[str, Any]] = [
+        {"id": "c0", "name": "lookup_regression_history", "arguments": {}},
         {
             "id": "c1",
             "name": "propose_attack",
@@ -141,7 +143,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
             "name": "submit_for_judgment",
             "arguments": {
                 "rationale": "canary echoed; submitting",
-                "expected_verdict": "pass",
+                "self_assessment": "breached",
             },
         },
     ]
@@ -152,7 +154,7 @@ def _install_fake_llm(monkeypatch: pytest.MonkeyPatch) -> None:
             (str(m.get("content", "")) for m in messages if m.get("role") == "system"),
             "",
         )
-        if "Red Team specialist" in system:
+        if "Red Team agent" in system:
             idx = attacker_counter["n"]
             attacker_counter["n"] += 1
             if idx < len(attacker_script):

@@ -1,28 +1,31 @@
 """Red Team worker process.
 
-R10-follow-up — the Red Team is now an autonomous LangGraph agent that
-owns its own multi-turn conversation. The worker's job here is small:
+R10-follow-up (revised) — the Red Team is an autonomous LangGraph
+agent that owns one multi-turn conversation per (category, technique)
+scenario. Per the Week-3 brief, a "run" is the agent's whole effort
+against ONE scenario; the agent decides how many turns to fire and
+when to submit, bounded by a USD budget from the plan + a soft turn
+cap defense-in-depth.
 
-1. Consume :class:`CampaignPlanApprovedPayload` envelopes from the bus.
-2. Create ONE ``runs`` row per approved plan and mark it ``running``.
-3. For each :class:`PlanAttempt` in the plan, call
-   :func:`run_red_team_agent` with the shared ``run_id``. The agent
-   decides what to send, fires at the live target, mutates on its own,
-   and submits when it judges that attempt's conversation done. Each
-   attempt produces its own :class:`AttackEvent` (so the Judge can
-   rule per-attempt) but they all share ``run_id``.
-4. Mark the run terminal when every attempt has been walked.
+The worker's job:
 
-The run boundary is the *agent's whole session against the project*,
-not one attempt — that's how an operator naturally reads "a Red Team
-run." Multiple ``AttackEvent`` envelopes sharing a ``run_id`` is the
-shape the UI and Judge are built for.
+1. Consume :class:`CampaignPlanApprovedPayload` envelopes from the
+   bus.
+2. For each :class:`PlanAttempt` in the plan, create ONE ``runs``
+   row, mark it ``running``, invoke :func:`run_red_team_agent`, emit
+   one :class:`AttackEvent` envelope, and mark the run ``completed``.
+3. Halt-on-consecutive-fails still applies at the plan level — but
+   here "fail" means "the agent never reached the target" (transport
+   error before turn 1), not "the Judge ruled fail." The agent does
+   not know about the Judge.
 
-The previous worker-driven for-loop (seed 0..K-1) + side-car escalation
-strategist is gone — those decisions live inside the agent now. The
-partial-verdict variant loop is also gone: the agent already mutates
-within an attempt; a Judge ``partial`` ruling is now the verdict (it
-doesn't trigger another worker-driven turn).
+The Red Team agent has zero visibility into Judge verdicts — that's
+the brief's "evaluation must be independent of attack engine"
+constraint. The only cross-run knowledge channel is the regression
+suite, which the agent reads via the ``lookup_regression_history``
+tool. Partial verdicts from the Judge land on this worker's inbox
+but are dropped (the agent already submitted its best shot; spinning
+up another conversation on partial would leak Judge signal back).
 """
 
 from __future__ import annotations
@@ -110,23 +113,70 @@ class RedTeamWorker(Worker):
         payload: CampaignPlanApprovedPayload,
         trace_id: str,
     ) -> None:
-        """Walk the plan. ONE ``runs`` row covers the whole session;
-        the agent walks every :class:`PlanAttempt` inside it. Each
-        attempt is a multi-turn conversation that produces its own
-        ``AttackEvent`` envelope — all sharing ``run_id`` so the UI
-        and Judge can group them by session.
+        """Walk the plan one attempt at a time. Each :class:`PlanAttempt`
+        becomes ONE ``runs`` row — that's the agent's whole effort
+        against one (category, technique) scenario.
+
+        Halt-on-consecutive-fails still applies at the plan level — but
+        here "fail" only means "the agent never reached the target"
+        (transport error before turn 1), not "the Judge ruled fail."
+        The agent does not know about the Judge."""
+        plan = payload.plan
+        consecutive_fails = 0
+        for idx, attempt in enumerate(plan.attempts):
+            try:
+                ok = await self._run_one_scenario(
+                    session,
+                    payload=payload,
+                    attempt=attempt,
+                    attempt_idx=idx,
+                    trace_id=trace_id,
+                )
+            except Exception as exc:
+                self._log.exception(
+                    "red_team.scenario_failed",
+                    error=repr(exc),
+                    campaign_id=str(payload.campaign_id),
+                    attempt_idx=idx,
+                )
+                ok = False
+
+            if not ok:
+                consecutive_fails += 1
+                if consecutive_fails >= plan.halt_on_consecutive_fails:
+                    self._log.info(
+                        "red_team.halted",
+                        reason="consecutive_fails",
+                        campaign_id=str(payload.campaign_id),
+                    )
+                    return
+            else:
+                consecutive_fails = 0
+
+    async def _run_one_scenario(
+        self,
+        session: AsyncSession,
+        *,
+        payload: CampaignPlanApprovedPayload,
+        attempt: PlanAttempt,
+        attempt_idx: int,
+        trace_id: str,
+    ) -> bool:
+        """One scenario = one (category, technique) pair = one run row
+        + one agent invocation + one AttackEvent. Returns ``True`` when
+        the agent fired at least one turn and emitted an AttackEvent;
+        ``False`` when it never reached the target (transport error).
 
         Run lifecycle:
-          - Create the run row and mark ``running`` before the first
-            attempt fires.
-          - On unrecoverable agent failure (no turns fired), advance
-            the ``halt_on_consecutive_fails`` counter; halt the rest
-            of the plan if it crosses the threshold.
-          - Mark the run ``completed`` once the plan has been walked
-            (or the consecutive-fails halt fired).
-          - On a bare exception escaping the loop, mark ``failed``.
+          - Create the run row + mark ``running`` before the agent
+            starts.
+          - On agent crash, mark the run ``failed``.
+          - On agent submit with no turns fired (transport error),
+            mark the run ``failed`` so the campaign-detail UI flags
+            it. Halt counter advances at the plan level.
+          - On agent submit with at least one turn, emit the
+            AttackEvent and mark the run ``completed``.
         """
-        plan = payload.plan
         run_id = await create_run_in_campaign(
             session,
             campaign_id=payload.campaign_id,
@@ -138,97 +188,29 @@ class RedTeamWorker(Worker):
             campaign_id=payload.campaign_id,
             run_id=run_id,
             payload={
-                "attempt_count": len(plan.attempts),
+                "category": attempt.category,
+                "technique": attempt.technique,
+                "attempt_idx": attempt_idx,
                 "agent_driven": True,
                 "multi_turn": True,
             },
         )
 
-        consecutive_fails = 0
-        total_budget_usd = 0.0
         try:
-            for idx, attempt in enumerate(plan.attempts):
-                try:
-                    ok, budget_usd = await self._run_one_attempt(
-                        session,
-                        payload=payload,
-                        run_id=run_id,
-                        attempt=attempt,
-                        attempt_idx=idx,
-                        trace_id=trace_id,
-                    )
-                except Exception as exc:
-                    self._log.exception(
-                        "red_team.agent_attempt_failed",
-                        error=repr(exc),
-                        campaign_id=str(payload.campaign_id),
-                        attempt_idx=idx,
-                    )
-                    ok = False
-                    budget_usd = 0.0
-
-                total_budget_usd += budget_usd
-                if not ok:
-                    consecutive_fails += 1
-                    if consecutive_fails >= plan.halt_on_consecutive_fails:
-                        self._log.info(
-                            "red_team.halted",
-                            reason="consecutive_fails",
-                            campaign_id=str(payload.campaign_id),
-                            run_id=str(run_id),
-                        )
-                        break
-                else:
-                    consecutive_fails = 0
+            agent_result: RedTeamAgentResult = await run_red_team_agent(
+                session=session,
+                campaign_id=payload.campaign_id,
+                run_id=run_id,
+                project_version_id=payload.project_version_id,
+                attempt=attempt,
+                trace_id=trace_id,
+            )
         except Exception:
             await mark_run_failed(session, run_id=run_id)
             raise
-        await mark_run_completed(
-            session,
-            run_id=run_id,
-            budget_consumed_usd=total_budget_usd,
-        )
-
-    async def _run_one_attempt(
-        self,
-        session: AsyncSession,
-        *,
-        payload: CampaignPlanApprovedPayload,
-        run_id: UUID,
-        attempt: PlanAttempt,
-        attempt_idx: int,
-        trace_id: str,
-    ) -> tuple[bool, float]:
-        """Drive ONE LangGraph agent attempt inside the run. Returns
-        ``(ok, budget_consumed_usd)``: ``ok=True`` when at least one
-        turn fired and an ``AttackEvent`` was emitted; ``False`` when
-        the agent never reached the target.
-
-        The run row is owned by the caller — this function only
-        publishes per-attempt SSE events and emits the AttackEvent."""
-        await publish(
-            kind="attempt_started",
-            campaign_id=payload.campaign_id,
-            run_id=run_id,
-            payload={
-                "attempt_idx": attempt_idx,
-                "category": attempt.category,
-                "technique": attempt.technique,
-            },
-        )
-
-        agent_result: RedTeamAgentResult = await run_red_team_agent(
-            session=session,
-            campaign_id=payload.campaign_id,
-            run_id=run_id,
-            project_version_id=payload.project_version_id,
-            attempt=attempt,
-            trace_id=trace_id,
-        )
         budget_usd = sum(c.usd for c in agent_result.costs)
 
         if not agent_result.transcript:
-            # Agent never fired anything — no AttackEvent to emit.
             self._log.warning(
                 "red_team.agent_no_turns",
                 campaign_id=str(payload.campaign_id),
@@ -236,18 +218,18 @@ class RedTeamWorker(Worker):
                 attempt_idx=attempt_idx,
                 stop_reason=agent_result.stop_reason,
             )
-            return False, budget_usd
+            await mark_run_failed(session, run_id=run_id)
+            return False
 
         if agent_result.last_attack_id is None or agent_result.last_turn is None:
-            # Defensive: transcript non-empty but no last_attack_id is
-            # a structural bug — log loudly and treat as a no-turn run.
             self._log.error(
                 "red_team.agent_missing_last_attack_id",
                 run_id=str(run_id),
                 attempt_idx=attempt_idx,
                 stop_reason=agent_result.stop_reason,
             )
-            return False, budget_usd
+            await mark_run_failed(session, run_id=run_id)
+            return False
 
         await self._bus.emit(
             session,
@@ -255,7 +237,6 @@ class RedTeamWorker(Worker):
                 campaign_id=payload.campaign_id,
                 run_id=run_id,
                 attempt=attempt,
-                attempt_idx=attempt_idx,
                 trace_id=trace_id,
                 transcript=agent_result.transcript,
                 last_turn=agent_result.last_turn,
@@ -264,7 +245,12 @@ class RedTeamWorker(Worker):
                 stop_reason=agent_result.stop_reason,
             ),
         )
-        return True, budget_usd
+        await mark_run_completed(
+            session,
+            run_id=run_id,
+            budget_consumed_usd=budget_usd,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Verdict-rendered handler
@@ -312,7 +298,6 @@ def _attack_event_envelope(
     campaign_id: UUID,
     run_id: UUID,
     attempt: PlanAttempt,
-    attempt_idx: int,
     trace_id: str,
     transcript: list[ConversationTurnPayload],
     last_turn: ConversationTurnPayload,
@@ -320,11 +305,10 @@ def _attack_event_envelope(
     canary: str,
     stop_reason: str,
 ) -> Envelope[AttackEventPayload]:
-    """Build one ``AttackEvent`` per agent attempt. Multiple attempts
-    in one run produce multiple envelopes sharing ``run_id`` — they're
-    disambiguated by ``attack_execution_id`` (each attempt fires its
-    own ``attack_executions`` rows) and the ``attempt_idx``-suffixed
-    idempotency key.
+    """Build the one ``AttackEvent`` envelope an agent run emits.
+
+    One scenario → one run → one AttackEvent, so the idempotency key
+    just keys on ``run_id`` — every other field is derived from it.
 
     Legacy fields mirror the final realized turn so single-turn-aware
     consumers (the Judge's evidence layer, older reports) keep working
@@ -354,9 +338,7 @@ def _attack_event_envelope(
         trace_id=trace_id,
         campaign_id=campaign_id,
         attack_id=last_attack_id,
-        idempotency_key=(
-            f"red_team_agent:attack_event:{run_id}:{attempt_idx}:{last_turn.attack_execution_id}"
-        ),
+        idempotency_key=f"red_team_agent:attack_event:{run_id}",
     )
 
 
