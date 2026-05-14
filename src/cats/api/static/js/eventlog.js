@@ -165,6 +165,16 @@
       label: "campaign · halted",
       body: (p) => p.reason || "halted",
     },
+    campaign_report_generated: {
+      cls: "agent-doc",
+      label: "campaign · report ready",
+      body: (p) => {
+        const bits = [];
+        if (p.artifacts != null) bits.push(`${p.artifacts} artifact${p.artifacts === 1 ? "" : "s"}`);
+        if (p.used_fallback) bits.push("fallback writer");
+        return bits.length ? bits.join(" · ") : "rollup report generated";
+      },
+    },
   };
 
   function renderRow(env) {
@@ -205,6 +215,14 @@
   // Event-kind -> which avatar to show next. `null` means "don't
   // change" (purely informational events). The mapping reflects the
   // pipeline ordering: orchestrator → red_team → judge → documentor.
+  // The pipeline runs many (category, technique) scenarios per
+  // campaign, so a single run_completed does NOT mean the campaign is
+  // done — the next run_started will flip back to red_team. The only
+  // events that mark the *campaign* as complete are
+  // campaign_report_generated (the Documentation agent finished the
+  // rollup) and campaign_halted (early-stop by the output filter or
+  // operator). After the per-run verdict lands we sit on "documentor"
+  // until either the next run starts or the rollup report lands.
   const STAGE_BY_KIND = {
     campaign_requested: "orchestrator",
     plan_proposed: "orchestrator",
@@ -215,7 +233,8 @@
     attack_executed: "judge",
     judge_verdict_rendered: "documentor",
     finding_promoted: "documentor",
-    run_completed: "complete",
+    run_completed: "documentor",
+    campaign_report_generated: "complete",
     campaign_halted: "complete",
   };
   const STAGE_META = {
@@ -241,7 +260,7 @@
     },
     complete: {
       label: "Campaign complete",
-      img: "/static/img/judge.png",
+      img: "/static/img/documentor.png",
       pulse: false,
     },
     failed: {
@@ -315,9 +334,13 @@
         setArtifactState(planEl, "red");
       }
     }
-    // Report becomes available once the campaign reaches a terminal stage.
+    // Report becomes available once the Documentation agent has
+    // finished the rollup — that's a separate event from any single
+    // run_completed (multi-run campaigns fire many of those before the
+    // writer kicks in). campaign_halted also opens the report so an
+    // operator can read the partial.
     if (reportEl && campaignId) {
-      if (env.kind === "run_completed" || env.kind === "campaign_halted") {
+      if (env.kind === "campaign_report_generated" || env.kind === "campaign_halted") {
         setArtifactReady(
           reportEl,
           "/campaigns/" + campaignId + "/report",

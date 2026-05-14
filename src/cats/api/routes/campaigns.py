@@ -31,6 +31,7 @@ from cats.db.repositories.campaign_repo import (
     list_findings_for_run,
     list_runs_for_campaign,
 )
+from cats.db.repositories.campaign_report_repo import get_campaign_report
 from cats.db.repositories.kickoff_repo import get_for_run as _get_kickoff_for_run
 from cats.db.repositories.project_repo import get_project, list_projects
 from cats.logging import get_logger
@@ -224,7 +225,10 @@ async def campaign_detail(
             )
         ).first()
         latest_plan_status = plan_status_row.status if plan_status_row else None
+        report_row = await get_campaign_report(session, campaign_id=campaign_id)
+        report_status = report_row["status"] if report_row else None
 
+    report_ready = report_status == "completed"
     ctx = _chrome_ctx(principal)
     ctx.update(
         {
@@ -235,10 +239,11 @@ async def campaign_detail(
             "executions": executions,
             "cost_by_agent": _cost_by_agent(executions),
             "latest_plan_status": latest_plan_status,
+            "report_ready": report_ready,
             "stage": _initial_stage(
                 plan_status=latest_plan_status,
                 runs=runs,
-                findings=findings,
+                report_status=report_status,
             ),
             "langsmith_url_base": settings.langsmith_url_base.rstrip("/"),
         }
@@ -251,7 +256,7 @@ _STAGE_META: dict[str, dict[str, str]] = {
     "red_team": {"label": "Red Team attacking", "img": "/static/img/red-team.png"},
     "judge": {"label": "Judge evaluating", "img": "/static/img/judge.png"},
     "documentor": {"label": "Documentor writing", "img": "/static/img/documentor.png"},
-    "complete": {"label": "Campaign complete", "img": "/static/img/judge.png"},
+    "complete": {"label": "Campaign complete", "img": "/static/img/documentor.png"},
     "failed": {"label": "Campaign failed", "img": "/static/img/orchestrator.png"},
     "idle": {"label": "Awaiting trigger", "img": "/static/img/orchestrator.png"},
 }
@@ -261,25 +266,33 @@ def _initial_stage(
     *,
     plan_status: str | None,
     runs: list[dict[str, Any]],
-    findings: list[dict[str, Any]],
+    report_status: str | None,
 ) -> dict[str, str]:
     """Pick the avatar to show on page load. The SSE handler updates
     this in the browser as events arrive — this is the cold-start
-    fallback so the page never paints with no avatar."""
+    fallback so the page never paints with no avatar.
+
+    A campaign is "complete" only once the Documentation agent has
+    written the rollup report (``campaign_reports.status == 'completed'``).
+    A single terminal run does NOT mean the campaign is done — the
+    Orchestrator may have queued many ``(category, technique)`` runs
+    and the documenter only fires after all of them land.
+    """
     if plan_status in (None, "proposed"):
         key = "orchestrator"
     elif plan_status in ("failed", "rejected"):
         key = "failed"
+    elif not runs or any(r["status"] in ("pending", "running") for r in runs):
+        key = "red_team"
+    elif report_status == "completed":
+        key = "complete"
+    elif report_status == "failed":
+        key = "failed"
     else:
-        latest = runs[0] if runs else None
-        if latest is None:
-            key = "red_team"
-        elif latest["status"] == "completed":
-            key = "documentor" if findings else "complete"
-        elif latest["status"] == "failed":
-            key = "failed"
-        else:
-            key = "red_team"
+        # All runs are terminal but the rollup report isn't done yet —
+        # the Documentation agent is either generating or about to be
+        # enqueued.
+        key = "documentor"
     meta = _STAGE_META[key]
     return {"key": key, "label": meta["label"], "img": meta["img"]}
 

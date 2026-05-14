@@ -21,7 +21,11 @@
   </section>
 
   {# --- Stage banner: which agent is active + campaign artifacts ----- #}
-  {% set _report_ready = stage.key in ('complete', 'failed') or (latest_run and latest_run.status in ('completed', 'failed')) %}
+  {# Report is "ready" only once the Documentation agent's rollup row
+     lands in completed/failed state — a single completed run is not
+     enough (multi-run campaigns have many of those before the writer
+     fires). #}
+  {% set _report_ready = report_ready %}
   {% set _plan_ready = latest_plan_status is not none %}
   {% if latest_plan_status == 'proposed' %}
     {% set _plan_state = 'amber' %}{% set _plan_label = 'pending approval' %}
