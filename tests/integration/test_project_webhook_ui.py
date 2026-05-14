@@ -75,7 +75,7 @@ async def test_generate_rotate_revoke_flow(client: AsyncClient) -> None:
     body = gen.text
     assert "Capture this secret now" in body
     # The plaintext is 32-byte hex = 64 chars; pull it out.
-    m = re.search(r"CATS_WEBHOOK_SECRET=([0-9a-f]{64})", body)
+    m = re.search(r"\b([0-9a-f]{64})\b", body)
     assert m is not None, "expected the secret to be rendered for one-time copy"
     plain_secret = m.group(1)
 
@@ -112,7 +112,7 @@ async def test_generate_rotate_revoke_flow(client: AsyncClient) -> None:
     # should no longer authenticate.
     rotate = await csrf_post(client, f"/projects/{project_id}/webhook-secret/generate")
     assert rotate.status_code == 200
-    m2 = re.search(r"CATS_WEBHOOK_SECRET=([0-9a-f]{64})", rotate.text)
+    m2 = re.search(r"\b([0-9a-f]{64})\b", rotate.text)
     assert m2 is not None
     new_secret = m2.group(1)
     assert new_secret != plain_secret

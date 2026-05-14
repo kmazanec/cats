@@ -99,13 +99,18 @@
           {% endif %}
         </div>
       </header>
-      <div class="body stack" style="gap: 12px;">
+      <div class="body stack" style="gap: 14px;">
         <p class="muted" style="font-size: 13px;">
           Authenticated regression sweep on Co-Pilot redeploy. The project's
           upstream CI signs the POST body with HMAC-SHA256 using a secret
-          generated here. Webhook URL:
-          <code class="mono">POST /webhooks/deploy/{{ project.id }}</code>.
+          generated here.
         </p>
+
+        <div class="stack" style="gap: 6px;">
+          <div class="eyebrow">Webhook URL</div>
+          <pre class="mono" style="padding: 10px 12px; background: var(--bg-2, #0e1119); border-radius: 6px; white-space: pre-wrap; word-break: break-all; user-select: all; font-size: 12px;">POST {{ webhook_url }}</pre>
+        </div>
+
         {% if project.has_deploy_webhook_secret %}
           <p class="muted" style="font-size: 13px;">
             A secret is configured. Generating a new one rotates it and
@@ -134,6 +139,49 @@
             <button class="btn" type="submit"><span class="ch">▸</span>generate secret</button>
           </form>
         {% endif %}
+
+        <details style="margin-top: 4px;">
+          <summary class="muted" style="cursor: pointer; font-size: 13px;">
+            GitLab CI setup
+          </summary>
+          <div class="stack" style="gap: 10px; margin-top: 10px;">
+            <p class="muted" style="font-size: 12px;">
+              <strong>1.</strong> In the OpenEMR project on GitLab, go to
+              <span class="mono">Settings → CI/CD → Variables</span> and add three
+              <strong>Protected + Masked</strong> variables:
+            </p>
+            <pre class="mono" style="padding: 10px 12px; background: var(--bg-2, #0e1119); border-radius: 6px; font-size: 12px; white-space: pre-wrap;">CATS_WEBHOOK_URL    {{ webhook_url }}
+CATS_WEBHOOK_SECRET (from "generate secret" above — shown once)
+CATS_PROJECT_ID     {{ project.id }}</pre>
+            <p class="muted" style="font-size: 12px;">
+              <strong>2.</strong> Add a post-deploy job to
+              <span class="mono">.gitlab-ci.yml</span>:
+            </p>
+            <pre class="mono" style="padding: 10px 12px; background: var(--bg-2, #0e1119); border-radius: 6px; font-size: 11px; white-space: pre; overflow-x: auto;">notify-cats-regression:
+  stage: .post
+  needs: ["deploy"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl python3
+  script:
+    - |
+      BODY=$(printf '{"version_tag":"%s"}' "$CI_COMMIT_SHORT_SHA")
+      SIG=$(printf '%s' "$BODY" | python3 -c "import sys,hmac,hashlib,os; \
+        print('sha256=' + hmac.new(os.environ['CATS_WEBHOOK_SECRET'].encode(), \
+        sys.stdin.buffer.read(), hashlib.sha256).hexdigest())")
+      curl -fsS -X POST "$CATS_WEBHOOK_URL" \
+        -H "Content-Type: application/json" \
+        -H "X-CATS-Signature: $SIG" \
+        --data-raw "$BODY"</pre>
+            <p class="muted" style="font-size: 11px;">
+              The HMAC must be computed over the <strong>exact bytes</strong> that
+              are sent. Use <span class="mono">--data-raw</span> (not
+              <span class="mono">--data</span>) so curl doesn't strip whitespace.
+            </p>
+          </div>
+        </details>
       </div>
     </div>
   {% endif %}

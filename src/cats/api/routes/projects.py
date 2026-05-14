@@ -31,6 +31,19 @@ from cats.security.csrf import require_csrf
 router = APIRouter()
 
 
+def _absolute_webhook_url(request: Request, project_id: UUID) -> str:
+    """Compose the public-facing webhook URL from the incoming request.
+
+    Honors ``X-Forwarded-Proto`` and ``X-Forwarded-Host`` when present so
+    a reverse-proxied deploy (the production posture) renders the
+    operator-visible URL with the proxy's scheme + host, not the
+    internal Uvicorn one. Falls back to ``request.url`` otherwise.
+    """
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.url.netloc
+    return f"{proto}://{host}/webhooks/deploy/{project_id}"
+
+
 def _chrome_ctx(principal: Principal) -> dict[str, Any]:
     return {
         "active": "projects",
@@ -173,6 +186,7 @@ async def edit_project_form(
             "form_action": f"/projects/{project_id}",
             "form_title": f"Edit {project['name']}",
             "submit_label": "save",
+            "webhook_url": _absolute_webhook_url(request, project_id),
         }
     )
     return templates.TemplateResponse(request, "project_form.html", ctx)
@@ -279,7 +293,7 @@ async def generate_webhook_secret(
         {
             "project": existing,
             "secret": plain_secret,
-            "webhook_url_path": f"/webhooks/deploy/{project_id}",
+            "webhook_url": _absolute_webhook_url(request, project_id),
         }
     )
     return templates.TemplateResponse(request, "project_webhook_secret.html", ctx)
