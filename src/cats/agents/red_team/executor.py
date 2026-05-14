@@ -43,6 +43,7 @@ from cats.agents.red_team.injection.dispatcher import (
 )
 from cats.agents.red_team.patient_selection import choose_pid_for_run
 from cats.agents.red_team.tool_abuse import dispatcher as tool_abuse_dispatcher
+from cats.agents.red_team.xss import dispatcher as xss_dispatcher
 from cats.db.repositories.kickoff_repo import record_kickoff
 from cats.db.repositories.run_repo import (
     record_execution,
@@ -66,7 +67,14 @@ from cats.target.contracts import AttachmentSpec, AttackEnvelope
 # tool/area mentions against the per-task baseline in
 # ``reports/tool_abuse/baselines.md``.
 _SUPPORTED_CATEGORIES: frozenset[str] = frozenset(
-    {"injection", "indirect_injection", "exfil", "tool_abuse", "clinical_misinformation"}
+    {
+        "injection",
+        "indirect_injection",
+        "exfil",
+        "tool_abuse",
+        "clinical_misinformation",
+        "xss",
+    }
 )
 
 log = get_logger(__name__)
@@ -207,7 +215,12 @@ async def _propose_attack(
     the active patient as returned by the agent's kickoff turn. Only
     the ``clinical_misinformation`` specialist reads it today — it
     needs the chart context to pick a fact the chart contradicts. The
-    other categories accept the argument but ignore it."""
+    other categories accept the argument but ignore it.
+
+    R12 — the ``xss`` specialist consumes only the most recent
+    ``prior_target_responses`` entry (singular last turn) for
+    hedge-targeting on multi-turn escalation. The XSS escalation
+    ladder is documented in each technique's system_prompt.md."""
     llm = get_llm()
 
     if category == "injection":
@@ -332,6 +345,38 @@ async def _propose_attack(
             envelope=AttackEnvelope(user_message=misinfo.user_message),
             cost_role="redteam_clinical_misinformation",
             llm_result=misinfo.llm,
+        )
+
+    if category == "xss":
+        # XSS specialist reads only the most recent target response —
+        # the escalation ladder in the system prompts tells it how to
+        # target the specific hedge the model just took.
+        last_response = prior_target_responses[-1] if prior_target_responses else ""
+        xss_prop = await xss_dispatcher.propose_technique(
+            technique=technique,
+            llm=llm,
+            prior_target_response=last_response,
+        )
+        return _NormalizedProposal(
+            title=xss_prop.title,
+            description=xss_prop.description,
+            user_message=xss_prop.user_message,
+            # xss has no canary — the deterministic check is payload-
+            # agnostic (scans for any recognized XSS pattern). Leave
+            # canary empty so the attack-row hashing pipeline stays
+            # uniform across categories.
+            canary="",
+            technique=xss_prop.technique,
+            payload_extras={
+                "expected_payload": xss_prop.expected_payload,
+                "escalation_hints": xss_prop.escalation_hints,
+            },
+            envelope=AttackEnvelope(user_message=xss_prop.user_message),
+            cost_role="redteam_xss",
+            # The XssProposal.llm is Optional in the dataclass but the
+            # build_proposal path always populates it; runtime path here
+            # always has a real LLMResult.
+            llm_result=xss_prop.llm,  # type: ignore[arg-type]
         )
 
     raise NotImplementedError(

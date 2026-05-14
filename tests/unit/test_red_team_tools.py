@@ -763,6 +763,102 @@ async def test_propose_attack_records_llm_cost_on_ctx(fake_propose_with_cost: No
     assert ctx.budget_consumed_usd == pytest.approx(0.0123)
 
 
+@pytest.fixture
+def fake_propose_with_payload_extras(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fake _propose_attack that returns non-empty payload_extras so
+    we can assert the mutator/fire pipeline carries them forward.
+
+    R12 regression: before the fix, mutate_attack rebuilt
+    pending_attack_payload without these extras, leaving the
+    deterministic check inputless on every mutated turn."""
+    from cats.agents.red_team.executor import _NormalizedProposal
+    from cats.llm.client import LLMResult
+    from cats.target.contracts import AttackEnvelope
+
+    async def _fake_propose(
+        *,
+        category: str,
+        technique: str,
+        seed_idx: int = 0,
+        prior_user_messages: list[str] | None = None,
+        prior_target_responses: list[str] | None = None,
+        kickoff_briefing: str = "",
+    ) -> _NormalizedProposal:
+        _ = (seed_idx, prior_user_messages, prior_target_responses, kickoff_briefing)
+        return _NormalizedProposal(
+            title=f"{category}/{technique}",
+            description="unit",
+            user_message="opener payload",
+            canary="",
+            technique=technique,
+            payload_extras={
+                "expected_payload": "<script>alert(1)</script>",
+                "escalation_hints": ["pivot A", "pivot B"],
+            },
+            envelope=AttackEnvelope(user_message="opener payload"),
+            cost_role="redteam_xss",
+            llm_result=LLMResult(
+                text="{}",
+                model="fake-xss",
+                tokens_in=1,
+                tokens_out=1,
+                usd_estimate=0.0,
+                trace_id="t",
+            ),
+        )
+
+    monkeypatch.setattr(tools_mod, "_propose_attack", _fake_propose)
+
+
+@pytest.mark.asyncio
+async def test_mutator_preserves_payload_extras_across_turns(
+    fake_propose_with_payload_extras: None,
+    fake_mutator: None,
+    fire_calls: list[dict[str, Any]],
+) -> None:
+    """R12 fix: payload_extras (XSS expected_payload, clinical-misinfo
+    markers, etc.) flow from propose_attack → first fire → mutate →
+    second fire WITHOUT being dropped. Before this fix, the second
+    fire's attack_payload was missing the extras and the deterministic
+    check ran without them — which silently flipped pass/fail verdicts
+    to inconclusive on every mutated turn."""
+    _ = (fake_propose_with_payload_extras, fake_mutator, fire_calls)
+    ctx = _ctx(category="xss", technique="script_tag")
+
+    await tools_mod.run_propose_attack(
+        ctx,
+        args={"category": "xss", "technique": "script_tag", "rationale": "x"},
+    )
+    # Sanity: extras landed on ctx after propose.
+    assert ctx.pending_payload_extras == {
+        "expected_payload": "<script>alert(1)</script>",
+        "escalation_hints": ["pivot A", "pivot B"],
+    }
+
+    # First fire — extras should reach fire_prepared_attack.
+    await tools_mod.run_fire_at_target(ctx, args={})
+    assert len(fire_calls) == 1
+    assert fire_calls[0]["payload_extras"] == {
+        "expected_payload": "<script>alert(1)</script>",
+        "escalation_hints": ["pivot A", "pivot B"],
+    }
+
+    # Mutate — must NOT clear extras.
+    await tools_mod.run_mutate_attack(ctx, args={"rationale": "push"}, llm=FakeLLMClient())
+    assert ctx.pending_payload_extras == {
+        "expected_payload": "<script>alert(1)</script>",
+        "escalation_hints": ["pivot A", "pivot B"],
+    }
+
+    # Second fire — extras still reach the executor.
+    await tools_mod.run_fire_at_target(ctx, args={})
+    assert len(fire_calls) == 2
+    assert fire_calls[1]["payload_extras"] == {
+        "expected_payload": "<script>alert(1)</script>",
+        "escalation_hints": ["pivot A", "pivot B"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_mutate_attack_records_llm_cost_on_ctx(
     fake_propose_with_cost: None, fake_mutator_with_cost: None, fire_calls: list[dict[str, Any]]

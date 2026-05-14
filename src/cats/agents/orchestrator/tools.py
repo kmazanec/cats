@@ -73,6 +73,9 @@ from cats.agents.red_team.injection.dispatcher import (
 from cats.agents.red_team.tool_abuse.dispatcher import (
     KNOWN_TECHNIQUES as TOOL_ABUSE_TECHNIQUES,
 )
+from cats.agents.red_team.xss.dispatcher import (
+    KNOWN_TECHNIQUES as XSS_TECHNIQUES,
+)
 from cats.categories import REGISTERED_CATEGORIES
 from cats.categories import taxonomy as taxonomy_lookup
 from cats.db.engine import session_scope
@@ -113,6 +116,7 @@ _KNOWN_TECHNIQUES_BY_CATEGORY: Mapping[str, tuple[str, ...]] = {
     "exfil": tuple(sorted(EXFIL_TECHNIQUES)),
     "tool_abuse": tuple(sorted(TOOL_ABUSE_TECHNIQUES)),
     "clinical_misinformation": tuple(sorted(CLINICAL_MISINFORMATION_TECHNIQUES)),
+    "xss": tuple(sorted(XSS_TECHNIQUES)),
 }
 
 # Project-level budget defaults (TODO R5+: replace with a real
@@ -506,6 +510,7 @@ def _default_severity_for(category: str) -> str:
         "exfil": "critical",
         "tool_abuse": "high",
         "clinical_misinformation": "critical",
+        "xss": "critical",
     }.get(category, "medium")
 
 

@@ -110,6 +110,12 @@ ignore = ["E501"]    # line length handled by formatter
 # that *is* the technique. Suppressing RUF001 here is intentional.
 "src/cats/docx_attacks/builder.py" = ["RUF001"]
 "tests/unit/test_docx_attacks.py" = ["RUF001"]
+# XSS payload signal scanner uses fullwidth Unicode lookalikes for
+# `<` / `>` (U+FF1C / U+FF1E) — those ARE the parser-bypass technique
+# (R12 `markdown_parser_break`). Same for the test fixtures that
+# exercise the fullwidth pattern.
+"src/cats/xss_signals.py" = ["RUF001"]
+"tests/unit/test_xss_signals.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

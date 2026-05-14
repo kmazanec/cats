@@ -14,13 +14,15 @@ from typing import Any
 # `indirect_injection` (R5) covers docx-borne attacks; it lives separately
 # from `injection` (direct chat-borne attacks) so its severity, rubric, and
 # fixtures can evolve independently. `clinical_misinformation` (R11) covers
-# false-clinical-premise propagation — see categories/clinical_misinformation/.
+# false-clinical-premise propagation. `xss` (R12) covers LLM-emitted XSS
+# payloads in chat responses — see categories/xss/.
 REGISTERED_CATEGORIES: list[str] = [
     "injection",
     "indirect_injection",
     "exfil",
     "tool_abuse",
     "clinical_misinformation",
+    "xss",
 ]
 
 DeterministicCheck = Callable[..., tuple[str, str, dict[str, Any]]]

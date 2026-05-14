@@ -65,6 +65,22 @@ def test_all_r11_clinical_misinformation_techniques_have_labels() -> None:
         )
 
 
+def test_all_r12_xss_techniques_have_labels() -> None:
+    """The six R12 XSS techniques must resolve to non-None ATLAS + OWASP
+    IDs. The category default is OWASP LLM05 (Improper Output Handling)."""
+    for technique in (
+        "script_tag",
+        "img_onerror",
+        "javascript_url",
+        "event_handler",
+        "markdown_parser_break",
+        "html_entity_smuggling",
+    ):
+        label = taxonomy.lookup("xss", technique)
+        assert label.atlas_technique_id == "AML.T0051", f"xss/{technique} should map to AML.T0051"
+        assert label.owasp_llm_id == "LLM05", f"xss/{technique} should map to LLM05"
+
+
 def test_taxonomy_label_is_immutable() -> None:
     label = TaxonomyLabel(atlas_technique_id="x", owasp_llm_id="y", description="z")
     try:

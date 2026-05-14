@@ -27,6 +27,7 @@ AgentRole = Literal[
     "redteam_exfil",
     "redteam_toolabuse",
     "redteam_clinical_misinformation",
+    "redteam_xss",
     "mutator",
     "judge",
     "judge_third_vote",
@@ -113,6 +114,20 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
         primary="anthropic/claude-haiku-4.5",
         fallback="anthropic/claude-sonnet-4.5",
         notes="Clinical-realism wins over low-refusal here. JSON output only; no tool calls.",
+    ),
+    # R12 — XSS content generator. Same logic as the other adversarial
+    # generators: the model must be willing to write literal <script>
+    # tags, javascript: URIs, and event-handler attributes. Hermes 4
+    # 405B is the proven low-refusal-rate open model on OpenRouter
+    # today; Dolphin-Venice is the ~2%-refusal escape hatch when Hermes
+    # hedges. Sonnet 4.5 is NOT a useful fallback here — it reliably
+    # refuses XSS payload requests even with authorized-pentest
+    # framing, which is the exact failure mode this role exists to
+    # avoid.
+    "redteam_xss": ModelChoice(
+        primary="nousresearch/hermes-4-405b",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+        notes="Low-refusal XSS payload generation. JSON output only; no tool calls. Specialist prompts include explicit do-not-refuse language because even Hermes occasionally hedges on cookie-exfil framings.",
     ),
     "mutator": ModelChoice(
         primary="deepseek/deepseek-chat",

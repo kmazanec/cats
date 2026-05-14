@@ -284,6 +284,13 @@ class AgentContext:
     # mutate_attack carries the same attachment forward (no per-turn
     # re-synthesis yet — that's a follow-up).
     pending_attachment: AttachmentSpec | None = None
+    # Category-specific payload extras (markers, false-premise markers,
+    # XSS expected_payload + escalation_hints, etc.) carried forward
+    # from propose_attack into each subsequent fire_at_target. The
+    # mutator preserves these — the variant changes the user_message,
+    # not the per-category metadata the deterministic check + findings
+    # pipeline rely on. R12 (mutator-carry-forward fix).
+    pending_payload_extras: dict[str, Any] = field(default_factory=dict)
     # Wire-level conversationId minted by the target on the kickoff
     # turn (fired inside propose_attack). All fire_at_target calls then
     # ride the same conversationId as `task=follow_up`.
@@ -501,6 +508,12 @@ async def run_propose_attack(
     # never fires — fire_prepared_attack would build a bare envelope and
     # the target client routes by envelope.attachment.
     ctx.pending_attachment = proposal.envelope.attachment
+    # Carry category-specific payload extras into subsequent fires +
+    # mutations. The deterministic check at judging time reads this
+    # dict (it lands in attack_payload via fire_prepared_attack), so
+    # losing it on mutated turns would silently flip the verdict to
+    # inconclusive — which is what R11 shipped with and R12 fixes.
+    ctx.pending_payload_extras = dict(proposal.payload_extras)
     ctx.propose_called = True
     # The category/technique can drift if the agent picks something
     # different from what the worker handed in; honor the agent's
@@ -570,6 +583,10 @@ async def run_mutate_attack(
     # duration of one conversation (the Judge's deterministic check
     # looks for it in any turn's response).
     ctx.pending_canary = last.canary
+    # pending_payload_extras is intentionally NOT reset here. The
+    # per-category extras (XSS expected_payload, exfil markers, etc.)
+    # belong to the conversation, not to a single turn — the mutator
+    # only changes the user_message wording. R12 fix.
     return ToolOutcome(
         payload={
             "user_message": variant.user_message,
@@ -648,6 +665,12 @@ async def run_fire_at_target(
         user_message=ctx.pending_user_message,
         canary=ctx.pending_canary,
         attachment=ctx.pending_attachment,
+        # R12 — thread category-specific payload extras into every
+        # fire so the deterministic check sees them on mutator turns
+        # too. Without this, R11's clinical_misinformation +
+        # R12's XSS deterministic-check inputs would be silently
+        # missing on every turn after propose_attack.
+        payload_extras=dict(ctx.pending_payload_extras),
         title=(
             f"agent · turn {seed_idx} · {ctx.technique}"
             if seed_idx == 0
