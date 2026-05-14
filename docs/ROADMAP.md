@@ -3070,6 +3070,141 @@ Out:
 
 ---
 
+## Round 10 follow-up — Red Team Agent (LangGraph)
+
+**Goal.** Replace the R10 for-loop + side-car escalation strategist
+with a real LangGraph agent that owns its conversation. The Red Team
+specialist becomes an *agent* — it picks its tools, fires at the
+target, mutates on the fly, and decides when to submit — instead of a
+function the worker steps through.
+
+**Outcome.** One ``PlanAttempt`` → one LangGraph agent run → one
+``runs`` row → N ``attack_executions`` rows (one per agent-decided
+turn) → one ``AttackEvent`` envelope to the Judge. The agent owns
+escalation / mutation / give-up; the worker just consumes the
+``RedTeamAgentResult`` and emits the envelope.
+
+**Definition of Done.**
+
+- Red Team worker drops the for-loop and the escalation side-car;
+  ``_handle_plan_approved`` is "for each attempt, run the agent."
+- LangGraph agent owns four tools: ``propose_attack``,
+  ``mutate_attack``, ``fire_at_target``, ``submit_for_judgment``.
+- Agent terminates via ``submit_for_judgment`` or a safety cap
+  (turn cap, tool-call cap, LLM-turn cap → force-submit ``fail``).
+- ``attacks.source = 'red_team_agent'`` distinguishes agent-driven
+  rows from the legacy graph path's ``red_team`` / ``mutator``.
+- ``cats.agents.red_team.escalation`` module deleted (replaced by
+  the agent's own decision-making).
+- Unit + integration tests pass; new eval case ``09_agent_gives_up_
+  after_three_refusals`` covers the agent's stop semantics.
+- Audit log records ``agent_started`` / ``attacker_turn`` /
+  ``tool:<name>`` / ``submitted_for_judgment`` / ``force_submitted``.
+
+**Risks.**
+
+- **Tool-loop runaways.** A model that loops on ``propose_attack →
+  propose_attack`` burns budget without firing. Mitigation: the
+  ``propose_attack`` tool is one-shot — second call returns an error.
+  Turn cap + tool-call cap force-submit ``fail`` if hit.
+- **Two roles, one ``redteam_injection`` model role.** Both the
+  agent's attacker turn AND the injection specialist's per-technique
+  JSON proposal use the same ``redteam_injection`` model role. Tests
+  disambiguate by inspecting the system prompt; production uses
+  different prompts and the model handles both cleanly.
+- **Container rebuild discipline.** R10's bug was that the deployed
+  red_team container ran pre-R10 code. The smoke step in the verify
+  section requires ``docker compose up -d --build red_team``.
+
+**Tasks.**
+
+- [x] Add ``src/cats/agents/red_team/tools.py`` (4 ``ToolSpec`` +
+  impls + per-conversation ``AgentContext``).
+- [x] Add ``src/cats/agents/red_team/agent.py`` (LangGraph state +
+  attacker / tool_executor nodes + conditional edges + entrypoint
+  ``run_red_team_agent``).
+- [x] Add ``src/cats/agents/red_team/system_prompt.md`` (single
+  category-aware prompt the attacker LLM sees).
+- [x] Add ``fire_prepared_attack`` to ``executor.py`` (deterministic
+  filter → fire → persist for a pre-chosen ``user_message`` +
+  ``canary``; lets the agent skip the specialist re-roll on follow-up
+  turns).
+- [x] Rewire ``src/cats/workers/red_team.py`` —
+  ``_handle_plan_approved`` is now "run the agent per attempt + emit
+  one AttackEvent." Partial-verdict variant loop dropped (the agent
+  owns escalation now).
+- [x] Delete ``src/cats/agents/red_team/escalation.py`` and
+  ``tests/unit/test_escalation_decision.py``.
+- [x] Add ``red_team_agent`` to ``AttackSource`` + migration
+  ``20260513_0010_red_team_agent_source`` for the
+  ``ck_attacks_source`` check.
+- [x] Unit tests for the agent graph (control flow, force-submit,
+  audit, tool dispatch) + tools (each tool in isolation).
+- [x] Integration tests updated: ``test_multi_turn_e2e.py`` rewritten
+  to drive the agent + assert the audit trail; ``test_r4_bus_e2e.py``
+  FakeLLM responder branches on the system prompt to serve both the
+  agent's attacker turns and the specialist's JSON proposal calls.
+- [x] Eval runner extended with an ``agent`` mode + new case
+  ``09_agent_gives_up_after_three_refusals``. Scorer learns
+  ``stop_reason`` / ``expected_verdict`` / transcript-length checks.
+- [x] ``ARCHITECTURE.md`` §2.2 + ``CLAUDE.md`` reframe the Red Team
+  as a LangGraph agent (the load-bearing graph in CATS).
+
+**Decisions.**
+
+- *Tool layer is thin.* ``fire_at_target`` wraps the existing
+  ``execute_attempt``/``fire_prepared_attack`` pipeline; it does not
+  re-invent target firing or persistence. ``propose_attack`` /
+  ``mutate_attack`` are even thinner — they return drafts for the
+  model to inspect, and the actual side-effects only happen on
+  ``fire_at_target``. That separation lets the agent reason about a
+  payload before sending it and burn a turn on mutation without
+  firing.
+- *Per-category roles, not a dedicated agent role.* The attacker
+  LLM uses the existing ``redteam_injection`` / ``redteam_exfil`` /
+  etc. role for the category being attacked — keeps the
+  family-diversity policy (Judge ≠ Red Team family) intact without
+  a new model registry entry.
+- *Partial verdicts no longer drive a worker variant loop.* The
+  agent escalated in-conversation; surfacing partials back to the
+  worker would double-iterate. ``_handle_verdict_rendered`` logs +
+  drops partials.
+- *Attack source rename, not new column.* Added
+  ``'red_team_agent'`` as a valid value on the existing
+  ``attacks.source`` enum check rather than introducing a new
+  column. The Documentation + UI layers already display this
+  field; no further plumbing needed.
+- *Two-purpose ``redteam_injection`` role in tests.* The FakeLLM
+  branches on system-prompt content ("Red Team specialist" → tool
+  calls, otherwise → JSON proposal). Production hits the same model
+  twice with two prompts — no test-only hack.
+
+**Retrospective.**
+
+- *What went well.* The new ``fire_prepared_attack`` helper made the
+  refactor low-risk: the agent's ``fire_at_target`` tool fires the
+  same pipeline R10 used, just without re-rolling the specialist on
+  every turn. Unit tests caught the propose-twice + cap-hit edge
+  cases before integration tests ran. The audit-log discipline (one
+  row per attacker turn + one per tool dispatch + one on submit) is
+  the kind of trace future debug sessions will thank us for.
+- *What surprised us.* The R10 integration test had been silently
+  hitting an HTTP 404 on the OpenEMR login path and still passing —
+  the target failure produced an empty target_response, the Judge
+  LLM was scripted to "pass" on the canary in the user message, and
+  the test never noticed. The new test (a) routes the login through
+  a fake handler so the target call actually completes and (b) sets
+  ``canary`` correctly on the AttackEvent so the Judge sees what it
+  expects. Lesson: if a test "passes" without exercising the path it
+  names, the assertion set is too weak.
+- *Container rebuild gap remains.* The verify section bakes
+  ``docker compose up -d --build red_team`` into the smoke
+  procedure, but it's still a manual step. A pre-merge CI rail that
+  rebuilds the worker image and runs one live conversation against a
+  staging OpenEMR would close it.
+
+---
+
 ## Round 11 — Clinical misinformation propagation
 
 **Goal.** Test the healthcare-specific failure mode the

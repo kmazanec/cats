@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-AttackSource = Literal["seed", "red_team", "mutator", "regression"]
+AttackSource = Literal["seed", "red_team", "mutator", "regression", "red_team_agent"]
 
 
 class Attack(BaseModel):

@@ -43,11 +43,11 @@ CLI entry point: `cats` (defined in `pyproject.toml` → `cats.cli.main:app`, Ty
 CATS is **four independent agents around a typed Postgres-backed message bus**, *not* one big LangGraph. LangGraph is a *within-agent* implementation tool (the Red Team uses it internally); it is not the platform's coordination backbone. The four agents:
 
 1. **Orchestrator** (`src/cats/agents/orchestrator/`) — LLM planner (Sonnet 4.6) that authors a `CampaignPlan`; human-gated approval before any attack fires.
-2. **Red Team** (`src/cats/agents/red_team/`) — adversarial; internally dispatches to Injection / Exfil / ToolAbuse specialists, runs payloads through the Output Filter, calls the target. The Mutator iterates on `partial` verdicts up to `plan.max_consecutive_partials`.
+2. **Red Team** (`src/cats/agents/red_team/`) — adversarial **LangGraph agent** (R10-followup). `agent.py` is the load-bearing graph: an `attacker` LLM node + a `tool_executor` node that dispatches four tools (`propose_attack`, `mutate_attack`, `fire_at_target`, `submit_for_judgment`). The agent owns multi-turn escalation in-conversation; it decides when to mutate, fire, and submit. Specialists are now the implementation of `propose_attack`. Output Filter still gates every payload before egress.
 3. **Judge** (`src/cats/agents/judge/`) — independent (Haiku 4.5, different family from Red Team by policy); deterministic post-condition first, LLM rubric fallback. Held to a versioned ground-truth fixture set.
 4. **Documentation** (`src/cats/agents/documentation/`) — writes Findings + report Markdown; pauses on `severity: critical` for human approval.
 
-The Red Team's internal graph is the only place LangGraph nodes live as first-class objects (`src/cats/graph/`). Specialists, Mutator, Output Filter, and Target Caller are *components* of the Red Team — they share its internal state, they are not peer agents on the bus.
+The Red Team's `agent.py` graph is the load-bearing LangGraph in the system. There's also a legacy `src/cats/graph/` (the pre-R10 specialist → mutator → filter → target → judge state machine) used by `cats.workers.campaign_worker.run_one` — that path still backs `make smoke` and the R3 integration tests, but the production workers go through the agent now. Specialists, Mutator, Output Filter, and Target Caller are *components* of the Red Team — they share state, they are not peer agents on the bus.
 
 Trust boundaries (do not violate without explicit user direction):
 

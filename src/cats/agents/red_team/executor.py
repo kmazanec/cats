@@ -408,6 +408,118 @@ async def execute_attempt(
                 state.last_trace_id = variant.llm.trace_id
                 with_cost(state, role="redteam_mutator", llm_result=variant.llm)
 
+    return await _persist_and_fire(
+        session,
+        state=state,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        project_version_id=project_version_id,
+        category=category,
+        technique=technique,
+        iteration=iteration,
+        seed_idx=seed_idx,
+        user_message=user_message,
+        canary=canary,
+        title=title,
+        description=description,
+        envelope=envelope,
+        payload_extras=payload_extras,
+        conversation_id=conversation_id,
+        task=task,
+    )
+
+
+async def fire_prepared_attack(
+    session: AsyncSession,
+    *,
+    campaign_id: UUID,
+    run_id: UUID,
+    project_version_id: UUID,
+    category: str,
+    technique: str,
+    seed_idx: int,
+    iteration: int,
+    user_message: str,
+    canary: str,
+    title: str,
+    description: str,
+    conversation_id: str | None,
+    task: str,
+    payload_extras: dict[str, Any] | None = None,
+    source: str = "red_team_agent",
+) -> AttemptResult:
+    """Fire a pre-prepared user_message at the target. Used by the
+    LangGraph Red Team agent: the agent decides what to send (calling
+    its own ``propose_attack`` / ``mutate_attack`` tools), then hands
+    the chosen ``user_message`` + ``canary`` here for the deterministic
+    "scan → fire → record execution" pipeline. Returns the same
+    :class:`AttemptResult` ``execute_attempt`` returns so downstream
+    code (envelope construction, transcript building) is unchanged.
+
+    Unlike :func:`execute_attempt`, this function does NOT call a
+    specialist or the Mutator — the agent already made those decisions.
+    The ``source`` field on the persisted ``attacks`` row defaults to
+    ``red_team_agent`` so the audit trail distinguishes agent-driven
+    turns from the legacy graph path's ``red_team`` / ``mutator`` rows.
+    """
+    if category not in _SUPPORTED_CATEGORIES:
+        raise NotImplementedError(
+            f"category={category!r} has no specialist family; "
+            f"supported: {sorted(_SUPPORTED_CATEGORIES)}"
+        )
+    state = await _hydrate_target(session, project_version_id)
+    state.run_id = run_id
+    state.campaign_id = campaign_id
+    state.selected_category = category
+    state.selected_technique = technique
+    envelope = AttackEnvelope(user_message=user_message, canary=canary)
+    return await _persist_and_fire(
+        session,
+        state=state,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        project_version_id=project_version_id,
+        category=category,
+        technique=technique,
+        iteration=iteration,
+        seed_idx=seed_idx,
+        user_message=user_message,
+        canary=canary,
+        title=title,
+        description=description,
+        envelope=envelope,
+        payload_extras=payload_extras or {},
+        conversation_id=conversation_id,
+        task=task,
+        attack_source=source,
+    )
+
+
+async def _persist_and_fire(
+    session: AsyncSession,
+    *,
+    state: CampaignState,
+    campaign_id: UUID,
+    run_id: UUID,
+    project_version_id: UUID,
+    category: str,
+    technique: str,
+    iteration: int,
+    seed_idx: int,
+    user_message: str,
+    canary: str,
+    title: str,
+    description: str,
+    envelope: AttackEnvelope,
+    payload_extras: dict[str, Any],
+    conversation_id: str | None,
+    task: str,
+    attack_source: str | None = None,
+) -> AttemptResult:
+    """Shared tail of execute_attempt + fire_prepared_attack: build the
+    payload dict + Attack row, scan, persist, fire, record the
+    execution row, and return AttemptResult. Side-effect-heavy by
+    design — everything that mutates DB + hits the network lives here."""
     attack_payload: dict[str, Any] = {
         "endpoint": "/interface/modules/custom_modules/oe-module-clinical-copilot"
         "/public/agent.php?action=briefing",
@@ -422,12 +534,14 @@ async def execute_attempt(
         "task": task,
         **payload_extras,
     }
+    if attack_source is None:
+        attack_source = "red_team" if iteration == 0 else "mutator"
     attack = Attack(
         category=category,
         title=title,
         description=description,
         payload=attack_payload,
-        source="red_team" if iteration == 0 else "mutator",
+        source=attack_source,
         created_in_run_id=run_id,
     )
     attack = attack.model_copy(update={"signature": attack.compute_signature()})
@@ -447,7 +561,7 @@ async def execute_attempt(
         description=attack.description,
         payload=attack.payload,
         signature=attack.signature,
-        source="red_team" if iteration == 0 else "mutator",
+        source=attack_source,
         run_id=run_id,
     )
 

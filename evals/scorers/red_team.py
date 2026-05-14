@@ -104,6 +104,43 @@ def score(case: Case, proposal: dict[str, Any]) -> ScoreResult:
             "" if phrase in captured_prompt else f"{phrase!r} missing from specialist prompt",
         )
 
+    # Agent-mode (R10-follow-up) checks. The runner's agent-mode path
+    # produces a different shape: stop_reason / expected_verdict /
+    # transcript_length / tool_call_count / submitted_before_cap.
+    if "stop_reason" in exp:
+        got = str(proposal.get("stop_reason") or "")
+        result.add(
+            "stop_reason",
+            got == exp["stop_reason"],
+            f"got={got!r} expected={exp['stop_reason']!r}",
+        )
+    if "expected_verdict" in exp:
+        got = str(proposal.get("expected_verdict") or "")
+        result.add(
+            "expected_verdict",
+            got == exp["expected_verdict"],
+            f"got={got!r} expected={exp['expected_verdict']!r}",
+        )
+    if "transcript_min_length" in exp:
+        n = int(proposal.get("transcript_length") or 0)
+        lo = int(exp["transcript_min_length"])
+        result.add("transcript_min_length", n >= lo, f"len={n} lo={lo}")
+    if "transcript_max_length" in exp:
+        n = int(proposal.get("transcript_length") or 0)
+        hi = int(exp["transcript_max_length"])
+        result.add("transcript_max_length", n <= hi, f"len={n} hi={hi}")
+    if "submitted_before_cap" in exp:
+        got_b = bool(proposal.get("submitted_before_cap"))
+        result.add(
+            "submitted_before_cap",
+            got_b == bool(exp["submitted_before_cap"]),
+            f"got={got_b}",
+        )
+    if "tool_call_count_max" in exp:
+        n = int(proposal.get("tool_call_count") or 0)
+        hi = int(exp["tool_call_count_max"])
+        result.add("tool_call_count_max", n <= hi, f"count={n} hi={hi}")
+
     if not result.checks:
         result.error = "no expected checks specified — case has no assertions"
     return result

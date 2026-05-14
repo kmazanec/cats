@@ -301,11 +301,26 @@ Two diagrams. The first shows *which agent talks to which*:
 four independent worker processes communicating through a
 typed message bus, with two human-in-the-loop approval gates
 (plan approval and critical-finding approval). The second
-zooms into the Red Team agent's internal LangGraph: the
-mechanical specialist → mutator → filter → target sequence
-that turns one approved plan attempt into one attack event
-emitted back onto the bus. The system-level view of *where
+zooms into the Red Team agent's internal LangGraph — *the*
+load-bearing graph in CATS (the platform-level coordination
+is the bus, not LangGraph). The system-level view of *where
 these agents live* is in §3.
+
+**R10-follow-up.** The Red Team is now an autonomous
+LangGraph agent that owns its conversation: it picks tools,
+fires at the target, mutates on the fly, and decides when to
+submit. The worker just consumes the result and emits one
+``AttackEvent``. The agent advertises four tools to its
+attacker LLM (``propose_attack``, ``mutate_attack``,
+``fire_at_target``, ``submit_for_judgment``) and runs until
+the model calls ``submit_for_judgment`` or a safety cap
+force-submits a synthetic ``fail``. The earlier R10 shape (a
+worker for-loop + a side-car escalation strategist) was a
+pipeline disguised as an agent — every decision was a
+function, none was authored by the agent itself. The
+follow-up replaces that with a real agent loop where the
+specialist's *role* is to call tools and the worker's role is
+to consume what the agent produced.
 
 **Diagram A — Four agents around the message bus.** Each box
 is an independent worker process. Each labeled arrow is a typed
