@@ -25,6 +25,7 @@ coverage.xml
 
 .claude/*local*
 .claude/*lock*
+.claude/worktrees/
 
 # Env / secrets
 .env

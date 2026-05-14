@@ -48,6 +48,7 @@ from cats.agents.red_team.tools import (
     ALL_TOOLS,
     CONVERSATION_SHARING_CATEGORIES,
     AgentContext,
+    AgentTurnCost,
     dispatch,
     role_for_category,
     transcript_payload,
@@ -72,19 +73,6 @@ MAX_TURNS_SOFT: int = 20
 # ---------------------------------------------------------------------------
 # Result the worker reads back
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class AgentTurnCost:
-    """Per-LLM-call cost line for the agent. The worker rolls these up
-    into the campaign cost view."""
-
-    role: str
-    model: str
-    tokens_in: int
-    tokens_out: int
-    usd: float
-    trace_id: str
 
 
 @dataclass(frozen=True)
@@ -255,30 +243,9 @@ async def _attacker_node(state: _AgentGraphState) -> dict[str, Any]:
             {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in result.tool_calls
         ],
     )
-    _record_cost(ctx, role=role, result=result)
+    ctx.record_cost(role=role, result=result)
     # Persist cost so the worker can return it.
     return {"messages": [*state.messages, new_msg]}
-
-
-def _record_cost(ctx: AgentContext, *, role: str, result: LLMResult) -> None:
-    """Stash one cost entry on the ctx for the worker to read back +
-    advance ``budget_consumed_usd`` so the cap-check logic in
-    ``_tool_executor_node`` sees the running total."""
-    ctx_costs: list[AgentTurnCost] = getattr(ctx, "_costs", None) or []
-    ctx_costs.append(
-        AgentTurnCost(
-            role=role,
-            model=result.model,
-            tokens_in=result.tokens_in,
-            tokens_out=result.tokens_out,
-            usd=result.usd_estimate,
-            trace_id=result.trace_id,
-        )
-    )
-    # AgentContext is a dataclass — slot-bypass via __dict__ to keep
-    # the public surface clean.
-    ctx.__dict__["_costs"] = ctx_costs
-    ctx.budget_consumed_usd += result.usd_estimate
 
 
 async def _tool_executor_node(state: _AgentGraphState) -> dict[str, Any]:
@@ -616,7 +583,7 @@ async def run_red_team_agent(
         ctx.stop_reason = "no_turns_fired"
 
     transcript = transcript_payload(ctx)
-    costs_raw: list[AgentTurnCost] = ctx.__dict__.get("_costs", [])
+    costs_raw: list[AgentTurnCost] = list(ctx.costs)
     return RedTeamAgentResult(
         transcript=transcript,
         self_assessment=ctx.self_assessment or "inconclusive",

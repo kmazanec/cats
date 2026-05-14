@@ -530,7 +530,16 @@ async def get_run_with_campaign(
 ) -> dict[str, Any] | None:
     """Fetch one Run together with its parent Campaign + Project. Returns
     None if the run doesn't exist or doesn't belong to that campaign — the
-    route layer uses that to 404 rather than leak unrelated runs."""
+    route layer uses that to 404 rather than leak unrelated runs.
+
+    ``attacks_fired`` and ``budget_consumed_usd`` are derived from
+    ``attack_executions`` rather than the denormed ``runs`` columns —
+    same rationale as ``list_runs_for_campaign``: the legacy worker
+    path set ``runs.attacks_fired`` to a fixed 1 and the agent path
+    sometimes lands a 0/0 due to session timing; the per-execution
+    rows are the source of truth."""
+    from sqlalchemy import func
+
     row = (
         await session.execute(
             select(
@@ -538,8 +547,6 @@ async def get_run_with_campaign(
                 runs.c.status,
                 runs.c.started_at,
                 runs.c.ended_at,
-                runs.c.attacks_fired,
-                runs.c.budget_consumed_usd,
                 runs.c.created_at,
                 campaigns.c.id.label("campaign_id"),
                 campaigns.c.name.label("campaign_name"),
@@ -558,13 +565,23 @@ async def get_run_with_campaign(
     ).first()
     if row is None:
         return None
+    exec_row = (
+        await session.execute(
+            select(
+                func.count(attack_executions.c.id).label("exec_count"),
+                func.coalesce(func.sum(attack_executions.c.usd_estimate), 0.0).label("usd_total"),
+            ).where(attack_executions.c.run_id == run_id)
+        )
+    ).first()
+    attacks_fired = int(exec_row.exec_count or 0) if exec_row else 0
+    budget_consumed_usd = float(exec_row.usd_total or 0.0) if exec_row else 0.0
     return {
         "id": row.id,
         "status": row.status,
         "started_at": row.started_at,
         "ended_at": row.ended_at,
-        "attacks_fired": row.attacks_fired,
-        "budget_consumed_usd": row.budget_consumed_usd,
+        "attacks_fired": attacks_fired,
+        "budget_consumed_usd": budget_consumed_usd,
         "created_at": row.created_at,
         "campaign_id": row.campaign_id,
         "campaign_name": row.campaign_name,

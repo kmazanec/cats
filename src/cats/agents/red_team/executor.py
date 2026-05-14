@@ -447,6 +447,7 @@ async def fire_prepared_attack(
     task: str,
     payload_extras: dict[str, Any] | None = None,
     source: str = "red_team_agent",
+    prior_agent_costs: list[dict[str, Any]] | None = None,
 ) -> AttemptResult:
     """Fire a pre-prepared user_message at the target. Used by the
     LangGraph Red Team agent: the agent decides what to send (calling
@@ -472,6 +473,24 @@ async def fire_prepared_attack(
     state.campaign_id = campaign_id
     state.selected_category = category
     state.selected_technique = technique
+    # Seed per_agent_costs from the agent's accumulated LLM spend so
+    # the attack_executions row that ``_persist_and_fire`` writes
+    # carries the supervisor + propose/mutate cost burned producing
+    # this turn (the legacy execute_attempt path fills this from its
+    # own _propose_attack call inline; the agent path drives the LLM
+    # in tools.py and threads the cost here).
+    from cats.graph.state import AgentCostEntry as _CostEntry
+
+    for c in prior_agent_costs or []:
+        state.per_agent_costs.append(
+            _CostEntry(
+                role=str(c.get("role", "red_team")),
+                model=str(c.get("model", "")),
+                tokens_in=int(c.get("tokens_in") or 0),
+                tokens_out=int(c.get("tokens_out") or 0),
+                usd=float(c.get("usd") or 0.0),
+            )
+        )
     envelope = AttackEnvelope(user_message=user_message, canary=canary)
     return await _persist_and_fire(
         session,

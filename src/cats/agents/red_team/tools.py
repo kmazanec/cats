@@ -39,7 +39,7 @@ from cats.agents.red_team.executor import (
 )
 from cats.graph.events import publish
 from cats.graph.state import CampaignState
-from cats.llm.client import LLMClient, ToolSpec
+from cats.llm.client import LLMClient, LLMResult, ToolSpec
 from cats.llm.models import AgentRole
 from cats.logging import get_logger
 from cats.messaging.envelopes import ConversationTurnPayload
@@ -222,6 +222,21 @@ class TurnRecord:
     attack_id: UUID
 
 
+@dataclass(frozen=True)
+class AgentTurnCost:
+    """Per-LLM-call cost line for the agent. The worker rolls these up
+    into the campaign cost view; ``run_fire_at_target`` also slices
+    them per realized turn so each ``attack_executions`` row carries
+    the LLM cost the agent burned producing that turn."""
+
+    role: str
+    model: str
+    tokens_in: int
+    tokens_out: int
+    usd: float
+    trace_id: str
+
+
 @dataclass
 class AgentContext:
     """The mutable per-conversation state the tools share. Each
@@ -279,6 +294,16 @@ class AgentContext:
     # Tool call counters for cap enforcement.
     tool_call_count: int = 0
     propose_called: bool = False
+    # Per-LLM-call cost log. The supervisor LLM in ``_attacker_node``
+    # appends here each turn; ``run_propose_attack`` / ``run_mutate_attack``
+    # also append for the per-category content-generator call. The
+    # worker rolls the full list into the run-level budget; the
+    # ``fire_at_target`` tool slices ``costs[last_attributed_cost_idx:]``
+    # into the per-execution row so the UI's "cost by agent" panel sees
+    # both the supervisor cost and the content-generator cost the agent
+    # spent producing that specific turn.
+    costs: list[AgentTurnCost] = field(default_factory=list)
+    last_attributed_cost_idx: int = 0
 
     @property
     def next_seed_idx(self) -> int:
@@ -287,6 +312,36 @@ class AgentContext:
     @property
     def budget_remaining_usd(self) -> float:
         return max(0.0, self.budget_usd_cap - self.budget_consumed_usd)
+
+    def record_cost(self, *, role: str, result: LLMResult) -> None:
+        """Append one LLM call's cost to ``self.costs`` and bump
+        ``budget_consumed_usd`` so the cap-check sees the running
+        total. Used by every node/tool that calls an LLM (the supervisor
+        attacker turn, propose_attack's content generator, the mutator).
+        """
+        self.costs.append(
+            AgentTurnCost(
+                role=role,
+                model=result.model,
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
+                usd=result.usd_estimate,
+                trace_id=result.trace_id,
+            )
+        )
+        self.budget_consumed_usd += result.usd_estimate
+
+    def drain_pending_costs(self) -> list[AgentTurnCost]:
+        """Return the costs accumulated since the last ``fire_at_target``
+        and advance the attribution cursor. The ``fire_at_target`` tool
+        calls this so each ``attack_executions`` row carries exactly the
+        LLM cost the agent burned producing that turn — supervisor +
+        content generator. Costs accumulated *after* the final fire (e.g.
+        the submit_for_judgment turn) stay on ``ctx.costs`` for the
+        run-level rollup but are not attributed to any execution row."""
+        pending = self.costs[self.last_attributed_cost_idx :]
+        self.last_attributed_cost_idx = len(self.costs)
+        return list(pending)
 
 
 CONVERSATION_SHARING_CATEGORIES: frozenset[str] = frozenset(
@@ -377,6 +432,7 @@ async def run_propose_attack(
         prior_user_messages=[],
         prior_target_responses=[],
     )
+    ctx.record_cost(role=proposal.cost_role, result=proposal.llm_result)
     ctx.pending_user_message = proposal.user_message
     ctx.pending_canary = proposal.canary
     ctx.propose_called = True
@@ -432,6 +488,8 @@ async def run_mutate_attack(
     state.pending_canary = last.canary
     state.last_verdict_rationale = last.target_response[:1000]
     variant = await generate_variant(state=state, llm=llm)
+    if variant.llm is not None:
+        ctx.record_cost(role="redteam_mutator", result=variant.llm)
     ctx.pending_user_message = variant.user_message
     # Carry the canary forward — the canary is the same for the
     # duration of one conversation (the Judge's deterministic check
@@ -486,6 +544,10 @@ async def run_fire_at_target(
     # verbatim — `fire_prepared_attack` runs the deterministic filter
     # → fire → persist pipeline without re-invoking a specialist or
     # the mutator (those were the agent's decisions, made above).
+    # Drain costs accumulated since the last fire (supervisor turns +
+    # propose/mutate calls) so this execution row carries the LLM cost
+    # attributable to producing this specific turn.
+    pending_costs = ctx.drain_pending_costs()
     result: AttemptResult = await fire_prepared_attack(
         session=ctx.session,
         campaign_id=ctx.campaign_id,
@@ -505,6 +567,16 @@ async def run_fire_at_target(
         description=(f"Red Team agent turn {seed_idx} for {ctx.category}/{ctx.technique}"),
         conversation_id=ctx.conversation_id,
         task=task,
+        prior_agent_costs=[
+            {
+                "role": c.role,
+                "model": c.model,
+                "tokens_in": c.tokens_in,
+                "tokens_out": c.tokens_out,
+                "usd": c.usd,
+            }
+            for c in pending_costs
+        ],
     )
 
     # Capture conversation_id from turn 0's meta SSE frame.
