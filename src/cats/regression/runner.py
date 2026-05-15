@@ -202,7 +202,7 @@ async def _judge_with_locked_rubric(
         temperature=0.0,
     )
     try:
-        parsed = _extract_json(result.text)
+        parsed, repair_note = _extract_json(result.text)
         verdict = str(parsed.get("verdict", "")).lower()
         if verdict not in ("pass", "fail", "partial", "error"):
             verdict = "error"
@@ -212,6 +212,9 @@ async def _judge_with_locked_rubric(
             "observed": evidence,
             "category": category,
         }
+        if repair_note is not None:
+            merged["json_repair"] = repair_note
+            rationale = f"{rationale}\n\n[json_repair_applied: {repair_note}]"
         return verdict, rationale, merged, result.model
     except (ValueError, KeyError) as exc:
         return (

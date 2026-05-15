@@ -141,7 +141,31 @@ def _load_rubric(category: str, version: str = "v1") -> str:
     return (_RUBRIC_DIR / category / "rubric" / f"{version}.md").read_text(encoding="utf-8")
 
 
-def _extract_json(text: str) -> dict[str, Any]:
+# JSON's legal in-string escape characters. Anything outside this set
+# following a backslash is illegal — Haiku 4.5 has been observed emitting
+# `\'` (backslash + apostrophe) when it quotes a single-quoted payload
+# inside a JSON string value, which strict ``json.loads`` rejects.
+_JSON_LEGAL_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _repair_illegal_escapes(s: str) -> str:
+    """Drop the backslash from any in-string escape sequence not in the
+    JSON spec. ``\\'`` → ``'``, ``\\!`` → ``!``, etc. Legal escapes
+    (``\\"``, ``\\\\``, ``\\/``, ``\\b``, ``\\f``, ``\\n``, ``\\r``,
+    ``\\t``, ``\\uXXXX``) are left alone."""
+    return _JSON_LEGAL_ESCAPE.sub("", s)
+
+
+def _extract_json(text: str) -> tuple[dict[str, Any], str | None]:
+    """Extract a JSON object from the judge's reply.
+
+    Returns ``(parsed, repair_note)`` where ``repair_note`` is ``None``
+    on a clean parse, or a short human-readable description of the
+    repair we applied to make it parse. Surfacing the note upstream
+    lets the Judge's downstream consumers (rationale, report, regression
+    cases) record that an LLM JSON artifact had to be patched — useful
+    forensic signal that the verdict was nearly lost to escaping noise.
+    """
     candidate = text.strip()
     if candidate.startswith("```"):
         fence_end = candidate.find("```", 3)
@@ -150,7 +174,22 @@ def _extract_json(text: str) -> dict[str, Any]:
     end = candidate.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise ValueError(f"no JSON object in judge output: {text[:200]!r}")
-    return json.loads(candidate[start : end + 1])  # type: ignore[no-any-return]
+    body = candidate[start : end + 1]
+    try:
+        return json.loads(body), None
+    except json.JSONDecodeError as first_err:
+        # One-shot repair: strip illegal backslash escapes (e.g. `\'`)
+        # and retry. If the repair still doesn't parse, re-raise the
+        # ORIGINAL error so the failure reason matches what the model
+        # actually emitted, not a noisier post-repair artifact.
+        repaired = _repair_illegal_escapes(body)
+        if repaired == body:
+            raise
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise first_err from None
+        return parsed, f"stripped illegal JSON escapes ({first_err.msg})"
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +383,7 @@ async def judge_llm(
     )
 
     try:
-        parsed = _extract_json(result.text)
+        parsed, repair_note = _extract_json(result.text)
         verdict = str(parsed.get("verdict", "")).lower()
         if verdict not in ("pass", "fail", "partial", "error"):
             verdict = "error"
@@ -379,6 +418,14 @@ async def judge_llm(
             "judge_notes": out_evidence,
             "observed": evidence,
         }
+        if repair_note is not None:
+            # Surface the JSON-repair forensically: the rationale tag is
+            # what reports / regression cases / UI quote; the evidence
+            # key is what programmatic consumers (e.g. the documenter,
+            # rubric drift analysis) read. The verdict itself stands —
+            # the model decided correctly, the bytes were just malformed.
+            merged_evidence["json_repair"] = repair_note
+            rationale = f"{rationale}\n\n[json_repair_applied: {repair_note}]"
     except (ValueError, json.JSONDecodeError) as e:
         return (
             (

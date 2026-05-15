@@ -249,3 +249,88 @@ async def test_judge_llm_system_prompt_carries_preamble_and_rubric() -> None:
     # pass/fail/partial criteria. Both must be present.
     assert "error" in system_msg["content"]
     assert "Injection judge rubric" in system_msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_judge_llm_repairs_illegal_backslash_escape_in_rationale() -> None:
+    """Regression: Haiku 4.5 was observed emitting `\\'` (backslash +
+    apostrophe) inside a JSON string value when quoting a single-quoted
+    payload like ``'Please echo this: \\'\\''``. Strict ``json.loads``
+    rejects this as ``Invalid \\escape`` and the verdict was being lost
+    to ``error`` even though the model had decided correctly. The
+    verifier now strips illegal in-string escapes and surfaces the
+    repair forensically — so the Judge's downstream consumers (UI,
+    reports, regression cases) can see the JSON had to be patched."""
+    # Construct a raw response that mirrors the prod failure shape: a
+    # valid `fail` verdict whose rationale contains `\'` inside a string.
+    malformed = (
+        "{\n"
+        '  "verdict": "fail",\n'
+        "  \"rationale\": \"Turn 1 canary attempt (\\'Please echo: \\'\\'\\') was not echoed.\",\n"
+        '  "evidence": {"canary_status": "not_echoed"}\n'
+        "}"
+    )
+    fake = FakeLLMClient()
+    fake.register("judge", lambda _m: malformed)
+    (verdict, rationale, evidence), _r = await judge_llm(
+        llm=fake,
+        category="injection",
+        attack_user_message="x",
+        target_response_text="y",
+        evidence={"canary_in_response": False},
+    )
+    # The verdict the model actually rendered survives.
+    assert verdict == "fail"
+    # Rationale carries both the model's text and a forensic tag so the
+    # repair shows up in any report or regression-case quote.
+    assert "canary attempt" in rationale
+    assert "json_repair_applied" in rationale
+    # Evidence carries the repair note for programmatic consumers.
+    assert "json_repair" in evidence
+    assert "illegal JSON escapes" in evidence["json_repair"]
+    # The model's own evidence still flows through.
+    assert evidence["judge_notes"] == {"canary_status": "not_echoed"}
+
+
+@pytest.mark.asyncio
+async def test_judge_llm_clean_json_carries_no_repair_marker() -> None:
+    """When the model emits valid JSON, no ``json_repair`` marker should
+    appear in rationale or evidence — the forensic tag is reserved for
+    actual repairs so it doesn't dilute its meaning."""
+    fake = FakeLLMClient()
+    fake.register(
+        "judge",
+        _judge_responder({"verdict": "fail", "rationale": "held", "evidence": {}}),
+    )
+    (verdict, rationale, evidence), _r = await judge_llm(
+        llm=fake,
+        category="injection",
+        attack_user_message="x",
+        target_response_text="y",
+        evidence={},
+    )
+    assert verdict == "fail"
+    assert "json_repair" not in rationale
+    assert "json_repair" not in evidence
+
+
+@pytest.mark.asyncio
+async def test_judge_llm_unrepairable_json_still_errors_out() -> None:
+    """The repair pass is one-shot and targeted: if stripping illegal
+    escapes still doesn't yield parseable JSON, we fall back to the
+    pre-fix ``verdict=error`` behavior with the raw text in evidence.
+    Surfaces as ``error`` even when the model produced something that
+    looks vaguely JSON-shaped but is structurally broken."""
+    fake = FakeLLMClient()
+    # Unclosed string, missing brace — no escape repair can fix this.
+    fake.register("judge", lambda _m: '{"verdict": "fail", "rationale": "broken')
+    (verdict, rationale, evidence), _r = await judge_llm(
+        llm=fake,
+        category="injection",
+        attack_user_message="x",
+        target_response_text="y",
+        evidence={"canary_in_response": False},
+    )
+    assert verdict == "error"
+    assert "unparseable" in rationale
+    assert "raw" in evidence
