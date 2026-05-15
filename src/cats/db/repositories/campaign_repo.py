@@ -123,31 +123,55 @@ async def create_campaign_and_run(
 
 async def list_campaigns(session: AsyncSession, *, limit: int = 100) -> list[dict[str, Any]]:
     """Return campaigns (newest first) joined with their target project and
-    a one-row summary of the most-recent run (status, attacks, spend).
+    a roll-up across **every** run in the campaign — attacks fired, spend,
+    findings count, run count, and a campaign-level status derived from
+    the per-run statuses.
 
-    ``attacks_fired`` and ``budget_consumed_usd`` derive from
-    ``attack_executions`` rather than the ``runs`` columns — same
-    source-of-truth rule as ``list_runs_for_campaign``."""
-    from sqlalchemy import func
+    A campaign may carry many ``(category, technique)`` runs (the Red Team
+    worker materialises one per planned attempt), so summing only the
+    latest run's executions — as we used to — understated multi-run
+    campaigns. ``attacks_fired`` and ``budget_consumed_usd`` are now the
+    sum across all of the campaign's runs, matching the per-run totals on
+    the detail page when they're added up by hand.
+    """
+    from sqlalchemy import case, func
 
-    latest_run = (
+    # Per-campaign run roll-up: how many runs, how many in each status,
+    # and the wall-clock window across the whole campaign.
+    run_rollup = (
         select(
-            runs.c.campaign_id,
-            runs.c.id.label("run_id"),
-            runs.c.status,
-            runs.c.started_at,
+            runs.c.campaign_id.label("campaign_id"),
+            func.count(runs.c.id).label("run_count"),
+            func.sum(case((runs.c.status == "running", 1), else_=0)).label("running_count"),
+            func.sum(case((runs.c.status == "pending", 1), else_=0)).label("pending_count"),
+            func.sum(case((runs.c.status == "failed", 1), else_=0)).label("failed_count"),
+            func.sum(case((runs.c.status == "completed", 1), else_=0)).label("completed_count"),
+            func.min(runs.c.started_at).label("first_started_at"),
+            func.max(runs.c.ended_at).label("last_ended_at"),
         )
-        .order_by(runs.c.campaign_id, desc(runs.c.created_at))
-        .distinct(runs.c.campaign_id)
+        .group_by(runs.c.campaign_id)
         .subquery()
     )
+    # Per-campaign execution roll-up: sum across every run, not just the
+    # latest one. Joining attack_executions → runs lets us group straight
+    # by campaign_id without an intermediate per-run aggregation.
     exec_rollup = (
         select(
-            attack_executions.c.run_id,
+            runs.c.campaign_id.label("campaign_id"),
             func.count(attack_executions.c.id).label("exec_count"),
             func.coalesce(func.sum(attack_executions.c.usd_estimate), 0.0).label("usd_total"),
         )
-        .group_by(attack_executions.c.run_id)
+        .select_from(attack_executions.join(runs, runs.c.id == attack_executions.c.run_id))
+        .group_by(runs.c.campaign_id)
+        .subquery()
+    )
+    findings_rollup = (
+        select(
+            runs.c.campaign_id.label("campaign_id"),
+            func.count(findings.c.id).label("findings_count"),
+        )
+        .select_from(findings.join(runs, runs.c.id == findings.c.run_id))
+        .group_by(runs.c.campaign_id)
         .subquery()
     )
     stmt = (
@@ -161,40 +185,86 @@ async def list_campaigns(session: AsyncSession, *, limit: int = 100) -> list[dic
             projects.c.id.label("project_id"),
             projects.c.name.label("project_name"),
             projects.c.env.label("project_env"),
-            latest_run.c.run_id,
-            latest_run.c.status,
+            run_rollup.c.run_count,
+            run_rollup.c.running_count,
+            run_rollup.c.pending_count,
+            run_rollup.c.failed_count,
+            run_rollup.c.completed_count,
+            run_rollup.c.first_started_at,
+            run_rollup.c.last_ended_at,
             exec_rollup.c.exec_count,
             exec_rollup.c.usd_total,
-            latest_run.c.started_at,
+            findings_rollup.c.findings_count,
         )
         .select_from(
             campaigns.join(projects, campaigns.c.project_id == projects.c.id)
-            .outerjoin(latest_run, campaigns.c.id == latest_run.c.campaign_id)
-            .outerjoin(exec_rollup, latest_run.c.run_id == exec_rollup.c.run_id)
+            .outerjoin(run_rollup, campaigns.c.id == run_rollup.c.campaign_id)
+            .outerjoin(exec_rollup, campaigns.c.id == exec_rollup.c.campaign_id)
+            .outerjoin(findings_rollup, campaigns.c.id == findings_rollup.c.campaign_id)
         )
         .order_by(desc(campaigns.c.created_at))
         .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "mode": r.mode,
-            "trigger": r.trigger,
-            "budget": r.budget,
-            "created_at": r.created_at,
-            "project_id": r.project_id,
-            "project_name": r.project_name,
-            "project_env": r.project_env,
-            "run_id": r.run_id,
-            "run_status": r.status,
-            "attacks_fired": int(r.exec_count or 0),
-            "budget_consumed_usd": float(r.usd_total or 0.0),
-            "started_at": r.started_at,
-        }
-        for r in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        run_count = int(r.run_count or 0)
+        running = int(r.running_count or 0)
+        pending = int(r.pending_count or 0)
+        failed = int(r.failed_count or 0)
+        completed = int(r.completed_count or 0)
+        # Campaign-level status: surface the most operationally-interesting
+        # signal. If anything is live, say "running". If everything is
+        # terminal but at least one run failed, say "failed". Otherwise
+        # "completed" when all runs are done, else "pending" / None.
+        if run_count == 0:
+            run_status: str | None = None
+        elif running > 0:
+            run_status = "running"
+        elif pending > 0:
+            run_status = "pending"
+        elif failed > 0 and completed == 0:
+            run_status = "failed"
+        elif completed > 0 and failed == 0:
+            run_status = "completed"
+        elif completed > 0 and failed > 0:
+            run_status = "partial"
+        else:
+            run_status = None
+        # The allocated budget lives in ``campaigns.budget`` as a JSONB
+        # ``{"usd": N}`` blob (see ``create_campaign``); pull the cap out
+        # so the index can render "spent / allocated".
+        budget_allocated_usd: float | None = None
+        if isinstance(r.budget, dict):
+            raw = r.budget.get("usd")
+            if isinstance(raw, int | float):
+                budget_allocated_usd = float(raw)
+        out.append(
+            {
+                "id": r.id,
+                "name": r.name,
+                "mode": r.mode,
+                "trigger": r.trigger,
+                "budget": r.budget,
+                "budget_allocated_usd": budget_allocated_usd,
+                "created_at": r.created_at,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "project_env": r.project_env,
+                "run_status": run_status,
+                "run_count": run_count,
+                "runs_running": running,
+                "runs_pending": pending,
+                "runs_failed": failed,
+                "runs_completed": completed,
+                "attacks_fired": int(r.exec_count or 0),
+                "budget_consumed_usd": float(r.usd_total or 0.0),
+                "findings_count": int(r.findings_count or 0),
+                "started_at": r.first_started_at,
+                "ended_at": r.last_ended_at,
+            }
+        )
+    return out
 
 
 async def create_run_in_campaign(

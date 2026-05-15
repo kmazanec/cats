@@ -2,6 +2,29 @@
 {% block title %}CATS · Campaigns{% endblock %}
 {% block crumb %}Campaigns{% endblock %}
 
+{% block head %}
+<style>
+  /* Whole-row link affordance for the campaign index. Pairs with the
+     keyboard handler at the bottom of the template so the row is
+     reachable via Tab + Enter, not just mouse. */
+  .tbl tr.row-link { cursor: pointer; }
+  .tbl tr.row-link:focus { outline: 2px solid var(--amber); outline-offset: -2px; }
+  .tbl tr.row-link:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+  /* Tighter padding lets us pack more columns without breaking the
+     monospaced grid feel. */
+  .campaigns-grid td, .campaigns-grid th { padding-left: 14px; padding-right: 14px; }
+  .campaigns-grid td.id-cell { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-3); }
+  .campaigns-grid .runs-pill {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+  }
+  .campaigns-grid .runs-pill .total { color: var(--ink); }
+  .campaigns-grid .runs-pill .breakdown { color: var(--ink-3); font-size: 10.5px; letter-spacing: 0.05em; }
+  .campaigns-grid .spend .alloc { color: var(--ink-3); font-size: 11px; }
+  .campaigns-grid .findings-strong { color: var(--amber); }
+</style>
+{% endblock %}
+
 {% block main %}
 <main class="stack" style="gap: 32px;">
 
@@ -26,30 +49,33 @@
   <div class="panel">
     <header>
       <div class="title">All campaigns</div>
-      <div class="meta">newest first · {{ campaigns|length }} shown</div>
+      <div class="meta">newest first · {{ campaigns|length }} shown · click any row to open</div>
     </header>
     <div class="body flush">
       {% if campaigns %}
-        <table class="tbl">
+        <table class="tbl campaigns-grid">
           <thead>
             <tr>
               <th>Name</th>
-              <th style="width: 140px;">Project</th>
-              <th style="width: 80px;">Env</th>
-              <th style="width: 100px;">Status</th>
-              <th class="num" style="width: 90px;">Attacks</th>
-              <th class="num" style="width: 100px;">Spend</th>
-              <th class="num" style="width: 130px;">Fired</th>
-              <th style="width: 80px;"></th>
+              <th style="width: 90px;">ID</th>
+              <th style="width: 160px;">Project</th>
+              <th style="width: 70px;">Env</th>
+              <th style="width: 110px;">Status</th>
+              <th class="num" style="width: 110px;">Runs</th>
+              <th class="num" style="width: 80px;">Attacks</th>
+              <th class="num" style="width: 80px;">Findings</th>
+              <th class="num" style="width: 150px;">Spend / Budget</th>
+              <th class="num" style="width: 140px;">Fired</th>
             </tr>
           </thead>
           <tbody>
             {% for c in campaigns %}
-              <tr>
+              <tr class="row-link" tabindex="0" data-href="/campaigns/{{ c.id }}">
                 <td>
                   <strong>{{ c.name }}</strong>
                   <div class="muted mono" style="font-size: 11px;">{{ c.mode }} · {{ c.trigger }}</div>
                 </td>
+                <td class="id-cell">{{ c.id.hex[:8] }}</td>
                 <td>{{ c.project_name }}</td>
                 <td>
                   <span class="dot {{ 'red' if c.project_env == 'prod' else 'amber' if c.project_env == 'staging' else 'cyan' }}"></span>{{ c.project_env }}
@@ -59,13 +85,30 @@
                   {% elif c.run_status == 'pending' %}<span class="dot cyan"></span>pending
                   {% elif c.run_status == 'completed' %}<span class="dot green"></span>completed
                   {% elif c.run_status == 'failed' %}<span class="dot red"></span>failed
+                  {% elif c.run_status == 'partial' %}<span class="dot amber"></span>partial
                   {% elif c.run_status %}<span class="dot"></span>{{ c.run_status }}
                   {% else %}<span class="dot"></span>—{% endif %}
                 </td>
+                <td class="num">
+                  <span class="runs-pill">
+                    <span class="total">{{ c.run_count or 0 }}</span>
+                    {%- set bits = [] -%}
+                    {%- if c.runs_completed %}{% set _ = bits.append(c.runs_completed ~ '✓') %}{% endif -%}
+                    {%- if c.runs_failed %}{% set _ = bits.append(c.runs_failed ~ '✗') %}{% endif -%}
+                    {%- if c.runs_running %}{% set _ = bits.append(c.runs_running ~ '↻') %}{% endif -%}
+                    {%- if c.runs_pending %}{% set _ = bits.append(c.runs_pending ~ '…') %}{% endif -%}
+                    {%- if bits %}<span class="breakdown">{{ bits|join(' ') }}</span>{% endif -%}
+                  </span>
+                </td>
                 <td class="num">{{ c.attacks_fired or 0 }}</td>
-                <td class="num mono">${{ '%.2f'|format(c.budget_consumed_usd or 0.0) }}</td>
+                <td class="num {% if c.findings_count %}findings-strong{% endif %}">{{ c.findings_count or 0 }}</td>
+                <td class="num mono spend">
+                  ${{ '%.2f'|format(c.budget_consumed_usd or 0.0) }}
+                  {%- if c.budget_allocated_usd is not none %}
+                    <span class="alloc">/ ${{ '%.2f'|format(c.budget_allocated_usd) }}</span>
+                  {%- endif %}
+                </td>
                 <td class="num muted mono">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                <td><a class="nav-link" href="/campaigns/{{ c.id }}">open</a></td>
               </tr>
             {% endfor %}
           </tbody>
@@ -84,4 +127,35 @@
   </div>
 
 </main>
+
+<script>
+  // Make each row click + keyboard navigable to the campaign detail page.
+  // Using a delegated listener so it survives htmx swaps if we ever
+  // partial-refresh the table.
+  (function () {
+    function go(row, newTab) {
+      var href = row.getAttribute('data-href');
+      if (!href) return;
+      if (newTab) {
+        window.open(href, '_blank', 'noopener');
+      } else {
+        window.location.assign(href);
+      }
+    }
+    document.addEventListener('click', function (e) {
+      var row = e.target.closest('tr.row-link');
+      if (!row) return;
+      // Let real anchors / buttons inside the row do their thing.
+      if (e.target.closest('a, button, input, label, select')) return;
+      go(row, e.metaKey || e.ctrlKey || e.button === 1);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var row = e.target.closest && e.target.closest('tr.row-link');
+      if (!row || document.activeElement !== row) return;
+      e.preventDefault();
+      go(row, e.metaKey || e.ctrlKey);
+    });
+  })();
+</script>
 {% endblock %}
