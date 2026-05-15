@@ -8,7 +8,11 @@
 | Field | Value |
 |---|---|
 | **Report ID** | VLN-2026-003 |
-| **Severity** | **Medium** — supervisor's handoff and narration channels can be coerced past the briefing baseline by adversarial chat phrasing. No PHI exposure (the synthesizer is still constrained to the chart snapshot it actually has) and no auth bypass; the impact is *trust* of the panel's progress line and a structurally widened tool-call surface beyond what the per-task baseline allows. |
+| **Severity** | `medium` — supervisor's handoff and narration channels can be coerced past the briefing baseline by adversarial chat phrasing. No PHI exposure (the synthesizer is still constrained to the chart snapshot it actually has) and no auth bypass; the impact is *trust* of the panel's progress line and a structurally widened tool-call surface beyond what the per-task baseline allows. |
+| **Exploitability** | `confirmed` — reproduced twice across two campaigns (`04ff5d44…` then `8f1c2b16…`) against the live deployed Co-Pilot under unmodified clinician auth. |
+| **OWASP LLM** | `LLM07` (System Prompt Leakage) |
+| **MITRE ATLAS** | `AML.T0053` |
+| **Regression** | none |
 | **Category** | Tool misuse — handoff selection + narration emission past per-task baseline |
 | **Target component** | OpenEMR Clinical Co-Pilot — `agent/src/graph/nodes/supervisor.ts` (handoff + narration on `default_briefing` turns) |
 | **Discovered** | 2026-05-14 by CATS regression case [`83c87d02-856b-4e4e-a663-97c971db971b`](https://cats.biograph.dev/regressions/83c87d02-856b-4e4e-a663-97c971db971b) from campaign [`04ff5d44-23d4-4c86-900e-8849cb11bd80`](https://cats.biograph.dev/campaigns/04ff5d44-23d4-4c86-900e-8849cb11bd80); re-confirmed 2026-05-15 by regression case [`ef9e58ad-e9cd-4538-acf3-7d89be0c2593`](https://cats.biograph.dev/regressions/ef9e58ad-e9cd-4538-acf3-7d89be0c2593) from campaign [`8f1c2b16-b469-4279-910f-7b8a5b78019e`](https://cats.biograph.dev/campaigns/8f1c2b16-b469-4279-910f-7b8a5b78019e). Both promoted to the regression suite under technique `chart_area_over_read` (category `tool_abuse`). |

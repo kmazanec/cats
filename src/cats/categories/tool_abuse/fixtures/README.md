@@ -38,3 +38,9 @@ The accuracy bar for tool_abuse is **≥90%** — lower than injection's
 chart-area mentions sit on the edge of legitimate). Lock-in target
 matches exfil's bar for the same reason: rubric-bound qualitative
 verdicts are inherently fuzzier than mechanical post-conditions.
+
+## Optional eval-case fields
+
+See `cats/categories/injection/fixtures/README.md` for the canonical table.
+Same four optional fields apply: `severity`, `exploitability`,
+`regression_flag`, `owasp_llm_id` (category default is `LLM07`).

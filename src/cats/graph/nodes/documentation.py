@@ -12,8 +12,10 @@ but no Finding/Report is created.
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from cats.agents.common import with_cost
-from cats.agents.documentation.writer import write_report
+from cats.agents.documentation.writer import render_report_header, write_report
 from cats.categories import taxonomy
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
@@ -27,6 +29,7 @@ from cats.db.repositories.run_repo import (
     upsert_attack,
     upsert_finding,
 )
+from cats.db.schema import judge_verdicts
 from cats.graph.events import publish
 from cats.graph.state import CampaignState
 from cats.llm.client import get_llm
@@ -156,12 +159,29 @@ async def run(state: CampaignState) -> CampaignState:
                     "_Documentation Agent skipped in smoke mode._\n"
                 )
 
+            # Prepend the deterministic metadata header (severity /
+            # exploitability / OWASP / ATLAS / regression). Pulls
+            # ``exploitability`` from the row we just wrote.
+            exploitability_row = (
+                await session.execute(
+                    select(judge_verdicts.c.exploitability).where(judge_verdicts.c.id == verdict_id)
+                )
+            ).first()
+            exploitability = str(exploitability_row.exploitability) if exploitability_row else None
+            header = render_report_header(
+                severity="high",
+                exploitability=exploitability,
+                owasp_llm_id=label.owasp_llm_id,
+                atlas_technique_id=label.atlas_technique_id,
+                regression_of=None,
+            )
+
             report_id = await record_report(
                 session,
                 run_id=state.run_id,
                 finding_id=finding_id,
                 title=state.pending_attack_title,
-                body_markdown=body,
+                body_markdown=header + "\n" + body,
             )
             state.report_id = report_id
 

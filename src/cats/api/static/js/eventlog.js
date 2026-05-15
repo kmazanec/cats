@@ -394,10 +394,24 @@
     const tr = document.createElement("tr");
     tr.setAttribute("data-run-id", env.run_id);
     tr.className = "fresh";
+    // Severity / OWASP can be derived now from the run_started payload
+    // (category + technique). Exploitability lives on the VLN report
+    // header (only meaningful on confirmed breaches) and is intentionally
+    // not surfaced here, where most rows are non-breach.
+    const sev = p.severity ? escapeHtml(p.severity) : "";
+    const sevCell = sev
+      ? `<td class="run-severity"><span class="sev ${sev}">${sev}</span></td>`
+      : `<td class="run-severity muted">—</td>`;
+    const owasp = p.owasp_llm_id ? escapeHtml(p.owasp_llm_id) : "";
+    const owaspCell = owasp
+      ? `<td class="run-owasp mono">${owasp}</td>`
+      : `<td class="run-owasp mono muted">—</td>`;
     tr.innerHTML =
       `<td class="mono"><a class="nav-link" href="/campaigns/${escapeHtml(campaignId)}/runs/${escapeHtml(env.run_id)}">${escapeHtml(shortId(env.run_id))}</a></td>` +
       `<td class="run-status-cell"><span class="dot amber pulse"></span> <span class="run-status-text">running</span></td>` +
       `<td class="run-judge mono"><span class="muted">—</span></td>` +
+      sevCell +
+      owaspCell +
       techCell +
       `<td class="num run-attacks">0</td>` +
       `<td class="num mono run-spend">$0.0000</td>` +

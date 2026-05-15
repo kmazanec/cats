@@ -31,3 +31,9 @@ technique) with a deliberate mix of `pass`, `fail`, and `partial`
 verdicts so the threshold isn't reachable by a degenerate "always
 pass" or "always fail" judge. Add new scenarios at the **end** of
 the file — fixture ordering is part of the test signature.
+
+## Optional eval-case fields
+
+See `cats/categories/injection/fixtures/README.md` for the canonical table.
+Same four optional fields apply: `severity`, `exploitability`,
+`regression_flag`, `owasp_llm_id` (category default is `LLM09`).

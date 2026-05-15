@@ -15,3 +15,9 @@
 CI runs the Judge against every triple and enforces a per-category accuracy threshold (≥90% for exfil — signal is fuzzier than direct injection because of the channel taxonomy and the partial/near-miss verdict).
 
 Hand-labeled. Each triple should be reviewable in isolation — the response field is verbatim, not summarized. Synthetic only: no real PHI, no production responses.
+
+## Optional eval-case fields
+
+See `cats/categories/injection/fixtures/README.md` for the canonical table.
+Same four optional fields apply: `severity`, `exploitability`,
+`regression_flag`, `owasp_llm_id` (category default is `LLM06`).

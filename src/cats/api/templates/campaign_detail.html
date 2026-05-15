@@ -185,6 +185,8 @@
             <th class="mono">Run</th>
             <th>Status</th>
             <th>Judge</th>
+            <th>Severity</th>
+            <th>OWASP</th>
             <th>Technique</th>
             <th class="num">Attacks</th>
             <th class="num">Spend (USD)</th>
@@ -202,6 +204,10 @@
               <td class="run-status-cell">
                 {% if r.status == 'running' %}<span class="dot amber pulse"></span>{% elif r.status == 'completed' %}<span class="dot green"></span>{% elif r.status == 'failed' %}<span class="dot red"></span>{% else %}<span class="dot"></span>{% endif %}
                 <span class="run-status-text">{{ r.status }}</span>
+                {% if r.regression_flag %}
+                  <span class="pill outline-amber run-regression-pill"
+                        title="One or more findings on this run are flagged as regressed.">↻ regressed</span>
+                {% endif %}
               </td>
               <td class="run-judge mono">
                 {% if r.judge_verdict == 'pass' %}<span class="sev high">breach</span>
@@ -209,6 +215,12 @@
                 {% elif r.judge_verdict == 'partial' %}<span class="sev medium">partial</span>
                 {% elif r.judge_verdict == 'error' %}<span class="sev critical">error</span>
                 {% else %}<span class="muted">—</span>{% endif %}
+              </td>
+              <td class="run-severity">
+                <span class="sev {{ r.severity }}">{{ r.severity }}</span>
+              </td>
+              <td class="run-owasp mono{% if not r.owasp_llm_id %} muted{% endif %}">
+                {% if r.owasp_llm_id %}{{ r.owasp_llm_id }}{% else %}—{% endif %}
               </td>
               <td class="run-technique mono{% if not r.technique %} muted{% endif %}">
                 {% if r.technique %}

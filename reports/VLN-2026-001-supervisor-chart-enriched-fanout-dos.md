@@ -8,7 +8,11 @@
 | Field | Value |
 |---|---|
 | **Report ID** | VLN-2026-001 |
-| **Severity** | **Medium** — single-conversation denial of service, no PHI exposure, no auth bypass |
+| **Severity** | `medium` — single-conversation denial of service, no PHI exposure, no auth bypass |
+| **Exploitability** | `confirmed` — reproducible on every chart with ≥ 4 un-extracted documents under the affected commit range. |
+| **OWASP LLM** | `LLM10` (Unbounded Consumption) |
+| **MITRE ATLAS** | `AML.T0034` (Cost Harvesting) |
+| **Regression** | none |
 | **Category** | Tool misuse — recursive tool calls / cost amplification |
 | **Target component** | OpenEMR Clinical Co-Pilot — agent graph (`agent/src/graph/nodes/supervisor.ts`, `agent/src/server/enrichPendingUploads.ts`) |
 | **Discovered** | 2026-05-13 by CATS campaign [`10f44930-413c-4ba0-805e-81e3195af83a`](https://cats.biograph.dev/campaigns/10f44930-413c-4ba0-805e-81e3195af83a) |

@@ -6,9 +6,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import desc, insert, select
+from sqlalchemy import case, desc, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cats.categories import taxonomy
 from cats.db.schema import (
     attack_executions,
     attacks,
@@ -21,6 +22,25 @@ from cats.db.schema import (
     runs,
     vulnerability_reports,
 )
+
+# Severity floor per registered attack category — mirrors each
+# manifest.toml's ``severity_default``. Used as a fallback for the
+# campaign-detail Run-status table when a run has not yet promoted a
+# Finding. Duplicated from ``agents.orchestrator.tools`` rather than
+# imported to avoid pulling the orchestrator module's heavy LLM-tool
+# imports into the DB layer.
+_DEFAULT_SEVERITY_BY_CATEGORY: dict[str, str] = {
+    "injection": "high",
+    "indirect_injection": "critical",
+    "exfil": "critical",
+    "tool_abuse": "high",
+    "clinical_misinformation": "critical",
+    "xss": "critical",
+}
+
+
+def _default_severity_for(category: str) -> str:
+    return _DEFAULT_SEVERITY_BY_CATEGORY.get(category, "medium")
 
 
 def _utcnow() -> datetime:
@@ -387,6 +407,7 @@ async def list_runs_for_campaign(
         select(
             attack_executions.c.run_id,
             judge_verdicts.c.verdict.label("judge_verdict"),
+            judge_verdicts.c.exploitability.label("judge_exploitability"),
             func.row_number()
             .over(
                 partition_by=attack_executions.c.run_id,
@@ -402,8 +423,33 @@ async def list_runs_for_campaign(
         .subquery()
     )
     verdict_filtered = (
-        select(verdict_exec.c.run_id, verdict_exec.c.judge_verdict)
+        select(
+            verdict_exec.c.run_id,
+            verdict_exec.c.judge_verdict,
+            verdict_exec.c.judge_exploitability,
+        )
         .where(verdict_exec.c.rn == 1)
+        .subquery()
+    )
+    # Per-run finding rollup: max severity (by an ordinal floor) and a
+    # regression flag if any finding on the run is in `regressed` state.
+    # A run typically promotes 0-1 findings, but the schema allows more
+    # (one per signature), so we aggregate rather than picking one.
+    sev_rank = case(
+        (findings.c.severity == "critical", 5),
+        (findings.c.severity == "high", 4),
+        (findings.c.severity == "medium", 3),
+        (findings.c.severity == "low", 2),
+        (findings.c.severity == "info", 1),
+        else_=0,
+    )
+    findings_rollup = (
+        select(
+            findings.c.run_id,
+            func.max(sev_rank).label("sev_rank"),
+            func.bool_or(findings.c.status == "regressed").label("regression_flag"),
+        )
+        .group_by(findings.c.run_id)
         .subquery()
     )
     rows = (
@@ -419,11 +465,15 @@ async def list_runs_for_campaign(
                 first_exec_filtered.c.category,
                 first_exec_filtered.c.attack_payload,
                 verdict_filtered.c.judge_verdict,
+                verdict_filtered.c.judge_exploitability,
+                findings_rollup.c.sev_rank,
+                findings_rollup.c.regression_flag,
             )
             .select_from(
                 runs.outerjoin(exec_stats, runs.c.id == exec_stats.c.run_id)
                 .outerjoin(first_exec_filtered, runs.c.id == first_exec_filtered.c.run_id)
                 .outerjoin(verdict_filtered, runs.c.id == verdict_filtered.c.run_id)
+                .outerjoin(findings_rollup, runs.c.id == findings_rollup.c.run_id)
             )
             .where(runs.c.campaign_id == campaign_id)
             .order_by(desc(runs.c.created_at))
@@ -437,6 +487,9 @@ async def list_runs_for_campaign(
         elapsed_ms: int | None = None
         if r.started_at is not None and r.ended_at is not None:
             elapsed_ms = int((r.ended_at - r.started_at).total_seconds() * 1000)
+        category = r.category or ""
+        severity = _severity_from_rank(r.sev_rank) or _default_severity_for(category)
+        owasp_label = taxonomy.lookup(category, technique) if category else None
         out.append(
             {
                 "id": r.id,
@@ -449,12 +502,34 @@ async def list_runs_for_campaign(
                     int(r.avg_latency) if r.avg_latency is not None else None
                 ),
                 "elapsed_ms": elapsed_ms,
-                "category": r.category or "",
+                "category": category,
                 "technique": technique,
                 "judge_verdict": r.judge_verdict,
+                # R12+: per-run security tagging surfaced on the
+                # campaign-detail Run table. Severity prefers a promoted
+                # Finding (the authoritative call); falls back to the
+                # category manifest's default. Exploitability comes from
+                # the Judge verdict if any. OWASP is looked up via the
+                # taxonomy.toml for the (category, technique) pair, with
+                # the category default when the technique is unknown.
+                "severity": severity,
+                "exploitability": r.judge_exploitability,
+                "regression_flag": bool(r.regression_flag) if r.regression_flag else False,
+                "owasp_llm_id": owasp_label.owasp_llm_id if owasp_label else None,
+                "atlas_technique_id": (owasp_label.atlas_technique_id if owasp_label else None),
             }
         )
     return out
+
+
+_SEVERITY_BY_RANK = {5: "critical", 4: "high", 3: "medium", 2: "low", 1: "info"}
+
+
+def _severity_from_rank(rank: int | None) -> str | None:
+    """Inverse of the ``sev_rank`` CASE used in :func:`list_runs_for_campaign`."""
+    if rank is None or rank == 0:
+        return None
+    return _SEVERITY_BY_RANK.get(int(rank))
 
 
 async def list_findings_for_run(session: AsyncSession, *, run_id: UUID) -> list[dict[str, Any]]:

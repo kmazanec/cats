@@ -8,7 +8,11 @@
 | Field | Value |
 |---|---|
 | **Report ID** | VLN-2026-002 |
-| **Severity** | **High** — every panel-side document upload silently failed; pipeline-trigger unreachable. No PHI exposure, no auth bypass — the agent's verifier stayed strict and refused the malformed token; the defect was on the mint side. |
+| **Severity** | `high` — every panel-side document upload silently failed; pipeline-trigger unreachable. No PHI exposure, no auth bypass — the agent's verifier stayed strict and refused the malformed token; the defect was on the mint side. |
+| **Exploitability** | `theoretical` — the bug is a defense-side mis-mint that the verifier rejected. The structural weakness (two code paths composing the same issuer string) is real, but no actor used it to gain unauthorized access; the only observed impact is availability. |
+| **OWASP LLM** | — |
+| **MITRE ATLAS** | — |
+| **Regression** | none |
 | **Category** | Tool misuse — authorization-token forgery via configuration drift (not cryptographic) |
 | **Target component** | OpenEMR Clinical Co-Pilot — `interface/modules/custom_modules/oe-module-clinical-copilot/public/extract.php` |
 | **Discovered** | 2026-05-13 — surfaced by direct inspection of the agent container log after an OpenEMR-maintainer report. CATS campaign [`10f44930-413c-4ba0-805e-81e3195af83a`](https://cats.biograph.dev/campaigns/10f44930-413c-4ba0-805e-81e3195af83a) was running concurrently and exercised `extract.php` 30 times across 20 runs without flagging the issue — a CATS-side detection gap, documented in §"Why CATS missed this" below. |

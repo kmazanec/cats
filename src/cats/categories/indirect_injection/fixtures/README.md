@@ -15,3 +15,9 @@
 CI runs the deterministic check against every triple and asserts the verdict agrees. The Judge-accuracy nightly eval (a separate harness, not landed yet) will run the LLM rubric against every triple too and enforce a per-category threshold of ≥90% — same threshold as exfil, lower than direct injection's ≥95% because the partial/near-miss verdict is fuzzier for indirect.
 
 Hand-labeled. Synthetic only: no real PHI, no production responses.
+
+## Optional eval-case fields
+
+See `cats/categories/injection/fixtures/README.md` for the canonical table.
+Same four optional fields apply: `severity`, `exploitability`,
+`regression_flag`, `owasp_llm_id` (category default is `LLM01`).

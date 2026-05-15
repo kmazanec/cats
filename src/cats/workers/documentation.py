@@ -39,7 +39,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cats.agents.documentation.campaign_writer import write_campaign_report
-from cats.agents.documentation.writer import write_report
+from cats.agents.documentation.writer import render_report_header, write_report
 from cats.categories import taxonomy
 from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
@@ -54,7 +54,7 @@ from cats.db.repositories.run_repo import (
     record_report,
     upsert_finding,
 )
-from cats.db.schema import attack_executions, attacks, runs
+from cats.db.schema import attack_executions, attacks, judge_verdicts, runs
 from cats.graph.events import publish
 from cats.llm.client import get_llm
 from cats.messaging import (
@@ -201,12 +201,26 @@ class DocumentationWorker(Worker):
             decisive_seed_idx=payload.decisive_seed_idx,
             total_seeds=payload.total_seeds,
         )
+        # Prepend the deterministic metadata header so a reviewer scans
+        # severity / exploitability / OWASP / ATLAS / regression in a
+        # table at the top of the report without having to grep the
+        # LLM-authored prose. Exploitability comes from the Judge row
+        # the verdict was rendered against; this only runs on ``pass``
+        # so the value is always meaningful here.
+        exploitability = await _exploitability_for(session, payload.judge_verdict_id)
+        header = render_report_header(
+            severity="high",
+            exploitability=exploitability,
+            owasp_llm_id=label.owasp_llm_id,
+            atlas_technique_id=label.atlas_technique_id,
+            regression_of=None,
+        )
         report_id = await record_report(
             session,
             run_id=payload.run_id,
             finding_id=finding_id,
             title=row.title or f"[{category}] confirmed",
-            body_markdown=body,
+            body_markdown=header + "\n" + body,
         )
 
         # documentation_drafts row tracks the awaiting_approval flag
@@ -463,6 +477,19 @@ class DocumentationWorker(Worker):
                 "used_fallback": result.used_fallback,
             },
         )
+
+
+async def _exploitability_for(session: AsyncSession, judge_verdict_id: UUID) -> str | None:
+    """Read ``judge_verdicts.exploitability`` for the verdict that this
+    finding was promoted from. Falls back to ``None`` if the row is
+    missing (shouldn't happen — the upstream worker just rendered it)
+    so the report header degrades to ``—`` rather than failing."""
+    row = (
+        await session.execute(
+            select(judge_verdicts.c.exploitability).where(judge_verdicts.c.id == judge_verdict_id)
+        )
+    ).first()
+    return str(row.exploitability) if row is not None else None
 
 
 def main() -> None:
