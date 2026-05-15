@@ -156,6 +156,7 @@ runs = Table(
     Column("ended_at", DateTime(timezone=True), nullable=True),
     Column("budget_consumed_usd", Float, nullable=False, server_default="0"),
     Column("attacks_fired", Integer, nullable=False, server_default="0"),
+    Column("failure_reason", String(64), nullable=True),
     _ts(),
     Index("ix_runs_campaign_id", "campaign_id"),
     CheckConstraint(

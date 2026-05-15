@@ -390,13 +390,19 @@ async def mark_run_completed(
     await session.execute(update(runs).where(runs.c.id == run_id).values(**values))
 
 
-async def mark_run_failed(session: AsyncSession, *, run_id: UUID) -> None:
+async def mark_run_failed(
+    session: AsyncSession, *, run_id: UUID, reason: str | None = None
+) -> None:
     """Mark a Run as failed and stamp ended_at. Used by the worker's
     exception path so a crashed dispatch doesn't leave the Run stuck at
-    'running' in the UI forever."""
-    await session.execute(
-        update(runs).where(runs.c.id == run_id).values(status="failed", ended_at=_utcnow())
-    )
+    'running' in the UI forever. ``reason`` is a short stable code
+    (e.g. ``agent_crash``, ``agent_no_turns``, ``agent_missing_attack``)
+    surfaced in the run-detail view so operators don't have to grep
+    logs to learn why a run failed."""
+    values: dict[str, Any] = {"status": "failed", "ended_at": _utcnow()}
+    if reason is not None:
+        values["failure_reason"] = reason
+    await session.execute(update(runs).where(runs.c.id == run_id).values(**values))
 
 
 async def sweep_orphaned_running_runs(session: AsyncSession) -> list[UUID]:
@@ -411,7 +417,7 @@ async def sweep_orphaned_running_runs(session: AsyncSession) -> list[UUID]:
     result = await session.execute(
         update(runs)
         .where(runs.c.status == "running")
-        .values(status="failed", ended_at=_utcnow())
+        .values(status="failed", ended_at=_utcnow(), failure_reason="orphan_sweep")
         .returning(runs.c.id)
     )
     return [row[0] for row in result.all()]

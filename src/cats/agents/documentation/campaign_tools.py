@@ -77,6 +77,13 @@ async def _per_run_rows(session: AsyncSession, *, campaign_id: UUID) -> list[dic
     # Per-run scenario label: the attack on the first execution
     # (seed_idx = min) is the prompt the agent led with — the right
     # name to call the scenario by.
+    #
+    # Postgres `DISTINCT ON (run_id) ORDER BY run_id, seed_idx` keeps
+    # the lowest-seed_idx execution per run in a single non-correlated
+    # pass. The previous correlated-subquery form needed LATERAL,
+    # which SQLAlchemy won't add through .subquery() — Postgres
+    # rejected the join with UndefinedTableError and aborted the
+    # whole report transaction.
     label_q = (
         select(
             attack_executions.c.run_id.label("run_id"),
@@ -85,13 +92,8 @@ async def _per_run_rows(session: AsyncSession, *, campaign_id: UUID) -> list[dic
             attacks.c.title.label("attack_title"),
         )
         .select_from(attack_executions.join(attacks, attacks.c.id == attack_executions.c.attack_id))
-        .where(
-            attack_executions.c.seed_idx
-            == select(func.min(attack_executions.c.seed_idx))
-            .where(attack_executions.c.run_id == runs.c.id)
-            .correlate(runs)
-            .scalar_subquery()
-        )
+        .distinct(attack_executions.c.run_id)
+        .order_by(attack_executions.c.run_id, attack_executions.c.seed_idx)
         .subquery("run_label")
     )
 

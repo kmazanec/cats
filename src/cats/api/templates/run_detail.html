@@ -171,11 +171,48 @@
       <div class="row" style="gap: 10px;">
         {% if run.status == 'running' %}<span class="pill amber">running</span>
         {% elif run.status == 'completed' %}<span class="pill green">completed</span>
-        {% elif run.status == 'failed' %}<span class="pill red">failed</span>
+        {% elif run.status == 'failed' %}
+          <span class="pill red">failed</span>
+          {% if run.failure_reason %}
+            <span class="pill" title="Platform-side reason this run was marked failed.">
+              reason · <code class="mono">{{ run.failure_reason }}</code>
+            </span>
+          {% endif %}
         {% else %}<span class="pill">{{ run.status }}</span>{% endif %}
       </div>
     </div>
   </section>
+
+  {% if run.status == 'failed' and run.failure_reason %}
+  <section class="card" style="border-color: var(--red); margin-top: 12px;">
+    <div class="card-body">
+      <div class="eyebrow" style="color: var(--red);">— Why this run failed</div>
+      <p style="margin: 6px 0 0;">
+        {% if run.failure_reason == 'orphan_sweep' %}
+          The Red Team worker restarted while this run was in flight; the
+          boot-time sweep marked it failed so it wouldn't sit at
+          <code class="mono">running</code> forever. The kickoff may have
+          completed, but no <code class="mono">AttackEvent</code> was emitted
+          before the restart.
+        {% elif run.failure_reason == 'agent_crash' %}
+          The Red Team agent raised an unhandled exception during this run.
+          Check the <code class="mono">red_team</code> worker logs around
+          {{ run.ended_at.strftime('%Y-%m-%d %H:%M:%S') if run.ended_at else 'this run' }}.
+        {% elif run.failure_reason == 'agent_no_turns' %}
+          The Red Team agent never reached the target — every
+          <code class="mono">fire_at_target</code> attempt errored before
+          turn 1. No transcript was produced.
+        {% elif run.failure_reason == 'agent_missing_attack' %}
+          The Red Team agent submitted without recording a final attack id
+          or turn. This is a platform invariant violation; see the
+          <code class="mono">red_team.agent_missing_last_attack_id</code> log line.
+        {% else %}
+          Failure reason: <code class="mono">{{ run.failure_reason }}</code>
+        {% endif %}
+      </p>
+    </div>
+  </section>
+  {% endif %}
 
   {# --- Hero: single run-level Judge verdict ---------------------- #}
   {% set jv = run_judgment.verdict if run_judgment else 'pending' %}

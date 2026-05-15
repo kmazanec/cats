@@ -206,7 +206,7 @@ class RedTeamWorker(Worker):
                 trace_id=trace_id,
             )
         except Exception:
-            await mark_run_failed(session, run_id=run_id)
+            await mark_run_failed(session, run_id=run_id, reason="agent_crash")
             raise
         budget_usd = sum(c.usd for c in agent_result.costs)
 
@@ -218,7 +218,7 @@ class RedTeamWorker(Worker):
                 attempt_idx=attempt_idx,
                 stop_reason=agent_result.stop_reason,
             )
-            await mark_run_failed(session, run_id=run_id)
+            await mark_run_failed(session, run_id=run_id, reason="agent_no_turns")
             return False
 
         if agent_result.last_attack_id is None or agent_result.last_turn is None:
@@ -228,7 +228,7 @@ class RedTeamWorker(Worker):
                 attempt_idx=attempt_idx,
                 stop_reason=agent_result.stop_reason,
             )
-            await mark_run_failed(session, run_id=run_id)
+            await mark_run_failed(session, run_id=run_id, reason="agent_missing_attack")
             return False
 
         await self._bus.emit(
