@@ -18,6 +18,7 @@ reports.
 |---|---|---|---|
 | [VLN-2026-001](./VLN-2026-001-supervisor-chart-enriched-fanout-dos.md) | Medium | Supervisor chart-enriched fanout exhausts agent graph recursion (DoS) | Resolved — openemr `2ff40efba` |
 | [VLN-2026-002](./VLN-2026-002-extract-php-jwt-issuer-mismatch.md) | High | `extract.php` mints JWTs with the wrong issuer claim | Resolved — openemr `7b2b6c80d` |
+| [VLN-2026-003](./VLN-2026-003-supervisor-chart-area-over-read.md) | Medium | Supervisor coerced past `default_briefing` baseline via adversarial chat phrasing | Resolved (case 1) — openemr `d0eda9986`; case 2 follow_up-tagged variant tracked as a known gap |
 
 Additional reports are added as the Documentation agent promotes
 confirmed Judge verdicts; see `/findings` on
