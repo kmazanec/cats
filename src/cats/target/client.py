@@ -458,11 +458,29 @@ class TargetClient:
                     if isinstance(upload_body, dict)
                     else "referral"
                 )
+                # canonical_ext is what the downstream rasterizer keys off
+                # of — extract.php defaults a missing value to 'pdf', which
+                # makes referral_letter docType fail with rasterize_failed
+                # ("requires docx canonical_ext (got 'pdf')"). The upload
+                # response carries the value the controller derived from
+                # the saved file; forward it verbatim. Fall back to the
+                # attachment filename's extension (indirect_injection only
+                # ships docx today) so a stripped-down test fixture that
+                # omits the field still produces a sensible request.
+                canonical_ext = (
+                    str(upload_body.get("canonical_ext", "")).lower()
+                    if isinstance(upload_body, dict)
+                    else ""
+                )
+                if not canonical_ext:
+                    _, _, ext = attachment.filename.rpartition(".")
+                    canonical_ext = ext.lower() if ext else "docx"
 
                 extract_body: dict[str, Any] = {
                     "pid": pid,
                     "document_uuid": document_uuid,
                     "doc_type": doc_type_guess,
+                    "canonical_ext": canonical_ext,
                     # Must be one of the values OpenEMR's ExtractController
                     # allows: ['panel', 'autosweep', 'cli']. We're a
                     # scripted automated tester; 'cli' is the honest

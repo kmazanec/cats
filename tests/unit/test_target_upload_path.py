@@ -306,3 +306,78 @@ async def test_attachment_spec_default_content_type_is_docx_mime() -> None:
     target's content-type sniffer routes the upload as a docx."""
     spec = AttachmentSpec(filename="x.docx", data=b"PK\x03\x04stub")
     assert spec.content_type.endswith("wordprocessingml.document")
+
+
+async def _capture_extract_body(
+    *,
+    upload_json: dict[str, str],
+    filename: str = "referral.docx",
+) -> dict[str, object]:
+    """Drive the upload-path flow with a stubbed upload response and
+    capture the JSON body posted to extract.php."""
+    import json
+
+    spec, canary = _attachment_for()
+    spec = AttachmentSpec(filename=filename, data=spec.data)
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/interface/login/login.php":
+            return _login_response()
+        if path == "/interface/main/main_screen.php":
+            return httpx.Response(302, headers={"location": "/main"})
+        if path.endswith("/document_upload.php"):
+            return httpx.Response(200, json=upload_json)
+        if path.endswith("/extract.php"):
+            captured["body"] = json.loads(request.content.decode("utf-8"))
+            sse = 'event: assistant\ndata: {"text": "ok"}\n\n'
+            return httpx.Response(200, text=sse)
+        return httpx.Response(404, text=f"unhandled: {path}")
+
+    transport = httpx.MockTransport(handler)
+    client = _client_with_transport(transport)
+    envelope = AttackEnvelope(user_message="x", canary=canary, attachment=spec)
+
+    original_ctor = httpx.AsyncClient.__init__
+
+    def patched_ctor(self: httpx.AsyncClient, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        kwargs["transport"] = transport
+        original_ctor(self, *args, **kwargs)
+
+    with patch.object(httpx.AsyncClient, "__init__", patched_ctor):
+        await client.attack(envelope)
+
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_extract_body_forwards_canonical_ext_from_upload_response() -> None:
+    """When document_upload.php returns canonical_ext, the value is
+    forwarded verbatim into the extract.php POST body. Regression:
+    extract.php silently defaults a missing canonical_ext to 'pdf' and
+    the rasterizer then rejects the docx with rasterize_failed."""
+    captured = await _capture_extract_body(
+        upload_json={
+            "document_uuid": "doc-uuid-x",
+            "doc_type_guess": "referral",
+            "canonical_ext": "docx",
+        },
+    )
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["canonical_ext"] == "docx"
+
+
+@pytest.mark.asyncio
+async def test_extract_body_falls_back_to_filename_extension() -> None:
+    """When the upload response omits canonical_ext, the client derives
+    it from the attachment filename so we never send a bare request that
+    would default to canonical_ext='pdf' downstream."""
+    captured = await _capture_extract_body(
+        upload_json={"document_uuid": "doc-uuid-x", "doc_type_guess": "referral"},
+        filename="referral-CATS.DOCX",
+    )
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["canonical_ext"] == "docx"

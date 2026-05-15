@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cats.agents.documentation.campaign_writer import write_campaign_report
 from cats.agents.documentation.writer import write_report
 from cats.categories import taxonomy
+from cats.db.engine import session_scope
 from cats.db.repositories.audit_repo import write_audit
 from cats.db.repositories.campaign_report_repo import (
     mark_report_completed,
@@ -400,20 +401,30 @@ class DocumentationWorker(Worker):
                 "campaign_report.writer_failed",
                 campaign_id=str(campaign_id),
             )
-            await mark_report_failed(
-                session,
-                campaign_id=campaign_id,
-                reason=f"{type(exc).__name__}: {exc}",
-            )
-            await write_audit(
-                session,
-                actor="cats.platform.documentation",
-                action="campaign_report.failed",
-                target_kind="campaign",
-                target_id=campaign_id,
-                payload={"error": repr(exc), "reason": payload.reason},
-                trace_id=trace_id or None,
-            )
+            # A DB-level error inside the writer (asyncpg constraint
+            # trip, statement timeout, etc.) leaves ``session`` with an
+            # aborted transaction — any subsequent SQL on it fails with
+            # ``InFailedSQLTransactionError`` and masks the real cause.
+            # Roll back, then do the failure bookkeeping on a fresh
+            # session so the real exception lands on the report row
+            # and the audit log instead of being swallowed.
+            await session.rollback()
+            async with session_scope() as cleanup:
+                await mark_report_failed(
+                    cleanup,
+                    campaign_id=campaign_id,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                await write_audit(
+                    cleanup,
+                    actor="cats.platform.documentation",
+                    action="campaign_report.failed",
+                    target_kind="campaign",
+                    target_id=campaign_id,
+                    payload={"error": repr(exc), "reason": payload.reason},
+                    trace_id=trace_id or None,
+                )
+                await cleanup.commit()
             return
         await mark_report_completed(
             session,

@@ -69,6 +69,7 @@ def _make_fake_openemr_with_upload(seen: dict[str, Any]) -> httpx.MockTransport:
                 json={
                     "document_uuid": "fake-doc-uuid-aaaa-bbbb",
                     "doc_type_guess": "referral",
+                    "canonical_ext": "docx",
                 },
             )
         if path.endswith("/extract.php"):
@@ -194,6 +195,10 @@ async def test_indirect_injection_uploads_docx_and_persists_artifact(
     extract_body = json.loads(seen["extract_payload"])
     assert extract_body["document_uuid"] == "fake-doc-uuid-aaaa-bbbb"
     assert extract_body["trigger_source"] == "cli"
+    # Regression: extract.php defaults canonical_ext to 'pdf' when missing,
+    # which fails the rasterizer for referral_letter docType. The upload
+    # response carries the value the controller chose; we must forward it.
+    assert extract_body["canonical_ext"] == "docx"
 
     # Attack-row assertions: metadata is on the payload so forensics +
     # replay can pull the bytes back without re-parsing the envelope.
