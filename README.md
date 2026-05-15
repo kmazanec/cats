@@ -6,11 +6,60 @@ the target.
 
 ![CATS hero image](./docs/hero.png)
 
+## Live deployment
+
+**Production CATS:** <https://cats.biograph.dev>
+**Target under test:** the deployed OpenEMR Clinical Co-Pilot — registered as
+the default Project on the live CATS instance, attacked continuously by the
+four-agent pipeline.
+
+CATS runs live tests against the deployed Co-Pilot — not a mock. A reviewer
+opening the URL will see:
+
+- `/login` — sign in with a reviewer credential (request from the maintainer)
+  or read-only walk through the public pages below.
+- `/campaigns` — every campaign the platform has fired, with per-run verdicts,
+  per-agent token cost, and full execution forensics one click away.
+- `/coverage/<project>` — the live per-category × per-technique coverage
+  matrix. Six categories are exercised today: prompt injection, indirect
+  injection (via `.docx`), PHI / cross-patient exfiltration, tool abuse,
+  clinical misinformation, and XSS payload emission.
+- `/findings` — promoted findings + reports the Documentation agent has
+  produced from confirmed exploits. Critical-severity findings sit behind a
+  human-approval gate before they're filed.
+- `/healthz` — per-dependency reachability + worker heartbeat JSON.
+- `/bus` — in-flight messages on the inter-agent bus, dead-letter queue with
+  re-queue.
+
+### Running the platform against the live target
+
+The deployed CATS instance already has the live Co-Pilot registered as
+Project `OpenEMR Clinical Co-Pilot — prod`. To fire a campaign against it:
+
+1. Sign in at <https://cats.biograph.dev/login>.
+2. Open **Campaigns** → **New campaign** and pick the project.
+3. Choose a category (or leave it on auto — the Orchestrator picks from
+   coverage gaps) and submit. The Orchestrator produces a plan; with
+   `CATS_ORCHESTRATOR_AUTO_APPROVE=false` (the production setting) you
+   approve / edit / reject before any attack fires.
+4. Watch the live execution at `/campaigns/<id>` — the run-detail page is
+   chat-style with a side-drawer of per-turn forensics, judge verdicts,
+   and per-agent cost.
+
+For local-development setup against your own Co-Pilot, see the
+[walkthrough](#walkthrough--register-your-first-target-in-under-10-minutes)
+below.
+
+## Documentation
+
 - Architecture: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 - Threat model: [`THREAT_MODEL.md`](./THREAT_MODEL.md)
 - Personas + workflows: [`USERS.md`](./USERS.md)
+- Cost analysis: [`docs/COST_ANALYSIS.md`](./docs/COST_ANALYSIS.md)
 - Roadmap: [`docs/ROADMAP.md`](./docs/ROADMAP.md)
 - Production deploy: [`docs/DEPLOY.md`](./docs/DEPLOY.md)
+- Vulnerability reports: [`reports/`](./reports/) — written by the
+  Documentation agent from confirmed Judge verdicts.
 
 ## Prereqs
 
