@@ -154,6 +154,6 @@ structural invariant directly, so the gate now catches it.
 
 ## Cross-references
 
-- Originating CATS-internal note: [`docs/resolved/2026-05-13-supervisor-chart-enriched-fanout-dos.md`](../../docs/resolved/2026-05-13-supervisor-chart-enriched-fanout-dos.md)
+- Originating CATS-internal note: [`docs/resolved/2026-05-13-supervisor-chart-enriched-fanout-dos.md`](../docs/resolved/2026-05-13-supervisor-chart-enriched-fanout-dos.md)
 - Related vulnerability discovered same day, separate fix: [`VLN-2026-002`](./VLN-2026-002-extract-php-jwt-issuer-mismatch.md)
 - Upstream fix commit: openemr `2ff40efba` — *"fix(agent): cap chart-enriched pendingUploads to prevent supervisor cap-hit"*

@@ -93,6 +93,16 @@ gates answer the brief's "where does your system stop and ask a
 human" question explicitly: at strategy and at high-blast-radius
 promotion, but not at every individual attack.
 
+The reports the Documentation Agent produces — in the brief's
+prescribed six-section shape — live at
+[`reports/`](./reports/) at the top of the repository. Each
+`VLN-YYYY-NNN-<slug>.md` file is a single discovered finding
+with reproduction sequence, observed-vs-expected behavior,
+remediation, and current fix-validation status. The companion
+CATS-side retros under [`docs/resolved/`](./docs/resolved/) record
+the detection-pipeline lessons each finding taught us; the two
+sets cross-link both ways.
+
 **Failure isolation comes from the bus design.** A crashed Judge
 queues up `AttackEvent` messages until a new worker picks them
 up; a crashed Red Team leaves its per-attack iteration counter

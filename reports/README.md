@@ -8,7 +8,7 @@
 
 These are the reports a senior security engineer who was not present
 when the exploit was found could reproduce, validate, and fix from. The
-companion narratives under [`../../docs/resolved/`](../../docs/resolved/)
+companion narratives under [`../docs/resolved/`](../docs/resolved/)
 are the CATS-side retros on each finding and link back to these
 reports.
 
@@ -36,6 +36,8 @@ In production, the Documentation agent (`src/cats/agents/documentation/`)
 writes a draft when the Judge returns a `pass` verdict and the
 Documentation worker dequeues the `DocumentationRequested` envelope.
 Critical-severity drafts pause for human approval before they're
-promoted (R9 trust gate). The two reports here were written from
-existing `docs/resolved/` notes — they're the same content rendered in
-the brief's prescribed format for reviewer convenience.
+promoted (R9 trust gate). The historical reports here were written
+from existing `docs/resolved/` notes — they're the same content
+rendered in the brief's prescribed format for reviewer convenience.
+VLN-2026-004 is a live-Judge promotion from the production target,
+without a hand-authored intermediate note.

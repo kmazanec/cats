@@ -58,8 +58,10 @@ below.
 - Cost analysis: [`docs/COST_ANALYSIS.md`](./docs/COST_ANALYSIS.md)
 - Roadmap: [`docs/ROADMAP.md`](./docs/ROADMAP.md)
 - Production deploy: [`docs/DEPLOY.md`](./docs/DEPLOY.md)
-- Vulnerability reports: [`reports/`](./reports/) — written by the
-  Documentation agent from confirmed Judge verdicts.
+- Vulnerability reports: [`reports/`](./reports/) — brief-format
+  `VLN-YYYY-NNN-*.md` files for each confirmed Co-Pilot finding,
+  with reproduction, remediation, and fix-validation status. Index:
+  [`reports/README.md`](./reports/README.md).
 
 ## Prereqs
 

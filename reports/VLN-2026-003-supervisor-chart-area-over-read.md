@@ -207,7 +207,7 @@ Validation was performed in three layers:
 
 ## Cross-references
 
-- Originating CATS-internal retro: [`docs/resolved/2026-05-15-supervisor-chart-area-over-read.md`](../../docs/resolved/2026-05-15-supervisor-chart-area-over-read.md)
+- Originating CATS-internal retro: [`docs/resolved/2026-05-15-supervisor-chart-area-over-read.md`](../docs/resolved/2026-05-15-supervisor-chart-area-over-read.md)
 - Same structural-post-filter pattern: [`VLN-2026-001`](./VLN-2026-001-supervisor-chart-enriched-fanout-dos.md) (chart-enriched fanout cap, openemr `2ff40efba`) — different class, same defense shape
 - Per-task baseline this fix tightens enforcement on: `reports/tool_abuse/baselines.md`
 - Upstream fix commit: openemr `d0eda9986` — *"fix(agent): block chart_area_over_read in default_briefing supervisor"*
