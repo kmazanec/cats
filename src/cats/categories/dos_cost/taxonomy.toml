@@ -1,0 +1,36 @@
+# Per-technique MITRE ATLAS + OWASP LLM mapping for the dos_cost
+# category (THREAT_MODEL §2.5).
+#
+# AML.T0029 ("Denial of ML Service") and AML.T0034 ("Cost Harvesting")
+# are the primary ATLAS matches; AML.T0067 ("Excessive Agency") covers
+# the recursive-task-expansion branch where the model fans out work the
+# user did not authorize. OWASP LLM10:2025 ("Unbounded Consumption") is
+# the cleanest LLM-top-10 alignment.
+#
+# Maintenance: when adding a technique, also add its key here AND a
+# matching specialist module under `cats/agents/red_team/dos_cost/`.
+
+[default]
+atlas_technique_id = "AML.T0034"
+owasp_llm_id = "LLM10"
+description = "DoS / cost amplification — drive the Co-Pilot into runaway token / tool-call trajectories"
+
+[techniques.clawdrain_segmented_verification]
+atlas_technique_id = "AML.T0034"
+owasp_llm_id = "LLM10"
+description = "Clawdrain (W3 §8.1) — segmented-verification protocol injection that nudges the supervisor into self-prolonging tool-call loops"
+
+[techniques.output_length_explosion]
+atlas_technique_id = "AML.T0029"
+owasp_llm_id = "LLM10"
+description = "Coerce a response that re-emits chart content N times or expands a list past per-call max_tokens"
+
+[techniques.recursive_task_expansion]
+atlas_technique_id = "AML.T0067"
+owasp_llm_id = "LLM10"
+description = "Frame the request so each tool result spawns N sub-tasks the supervisor then services in turn"
+
+[techniques.tokenizer_drift_amplification]
+atlas_technique_id = "AML.T0034"
+owasp_llm_id = "LLM10"
+description = "Adversarial inputs (zero-width fills, rare-glyph runs) that explode token counts on the supervisor's tokenizer"

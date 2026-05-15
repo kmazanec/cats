@@ -33,6 +33,7 @@ from cats.agents.mutator import generate_variant
 from cats.agents.red_team.clinical_misinformation import (
     dispatcher as clinical_misinformation_dispatcher,
 )
+from cats.agents.red_team.dos_cost import dispatcher as dos_cost_dispatcher
 from cats.agents.red_team.exfil import dispatcher as exfil_dispatcher
 from cats.agents.red_team.indirect_injection import dispatcher as indirect_dispatcher
 from cats.agents.red_team.injection.dispatcher import (
@@ -74,6 +75,7 @@ _SUPPORTED_CATEGORIES: frozenset[str] = frozenset(
         "tool_abuse",
         "clinical_misinformation",
         "xss",
+        "dos_cost",
     }
 )
 
@@ -345,6 +347,26 @@ async def _propose_attack(
             envelope=AttackEnvelope(user_message=misinfo.user_message),
             cost_role="redteam_clinical_misinformation",
             llm_result=misinfo.llm,
+        )
+
+    if category == "dos_cost":
+        dos_cost = await dos_cost_dispatcher.propose_technique(technique=technique, llm=llm)
+        return _NormalizedProposal(
+            title=dos_cost.title,
+            description=dos_cost.description,
+            user_message=dos_cost.user_message,
+            # dos_cost has no canary protocol — the deterministic check
+            # measures the response's size + event count. Leave canary
+            # empty so the attack-row hashing pipeline stays uniform.
+            canary="",
+            technique=dos_cost.technique,
+            payload_extras={
+                "task_type": dos_cost.task_type,
+                "amplification_vector": dos_cost.amplification_vector,
+            },
+            envelope=AttackEnvelope(user_message=dos_cost.user_message),
+            cost_role="redteam_dos_cost",
+            llm_result=dos_cost.llm,
         )
 
     if category == "xss":

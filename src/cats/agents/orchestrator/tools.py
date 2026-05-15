@@ -61,6 +61,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cats.agents.red_team.clinical_misinformation.dispatcher import (
     KNOWN_TECHNIQUES as CLINICAL_MISINFORMATION_TECHNIQUES,
 )
+from cats.agents.red_team.dos_cost.dispatcher import (
+    KNOWN_TECHNIQUES as DOS_COST_TECHNIQUES,
+)
 from cats.agents.red_team.exfil.dispatcher import (
     KNOWN_TECHNIQUES as EXFIL_TECHNIQUES,
 )
@@ -117,6 +120,7 @@ _KNOWN_TECHNIQUES_BY_CATEGORY: Mapping[str, tuple[str, ...]] = {
     "tool_abuse": tuple(sorted(TOOL_ABUSE_TECHNIQUES)),
     "clinical_misinformation": tuple(sorted(CLINICAL_MISINFORMATION_TECHNIQUES)),
     "xss": tuple(sorted(XSS_TECHNIQUES)),
+    "dos_cost": tuple(sorted(DOS_COST_TECHNIQUES)),
 }
 
 # Project-level budget defaults (TODO R5+: replace with a real
@@ -511,6 +515,7 @@ def _default_severity_for(category: str) -> str:
         "tool_abuse": "high",
         "clinical_misinformation": "critical",
         "xss": "critical",
+        "dos_cost": "medium",
     }.get(category, "medium")
 
 

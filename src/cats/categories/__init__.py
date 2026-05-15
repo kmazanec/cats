@@ -15,7 +15,9 @@ from typing import Any
 # from `injection` (direct chat-borne attacks) so its severity, rubric, and
 # fixtures can evolve independently. `clinical_misinformation` (R11) covers
 # false-clinical-premise propagation. `xss` (R12) covers LLM-emitted XSS
-# payloads in chat responses — see categories/xss/.
+# payloads in chat responses — see categories/xss/. `dos_cost` covers
+# THREAT_MODEL §2.5 — denial-of-service / cost amplification, win-condition
+# is a runaway trajectory measured against benign-baseline thresholds.
 REGISTERED_CATEGORIES: list[str] = [
     "injection",
     "indirect_injection",
@@ -23,6 +25,7 @@ REGISTERED_CATEGORIES: list[str] = [
     "tool_abuse",
     "clinical_misinformation",
     "xss",
+    "dos_cost",
 ]
 
 DeterministicCheck = Callable[..., tuple[str, str, dict[str, Any]]]

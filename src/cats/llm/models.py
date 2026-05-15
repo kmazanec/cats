@@ -28,6 +28,7 @@ AgentRole = Literal[
     "redteam_toolabuse",
     "redteam_clinical_misinformation",
     "redteam_xss",
+    "redteam_dos_cost",
     "mutator",
     "judge",
     "judge_third_vote",
@@ -128,6 +129,18 @@ MODEL_REGISTRY: dict[AgentRole, ModelChoice] = {
         primary="nousresearch/hermes-4-405b",
         fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
         notes="Low-refusal XSS payload generation. JSON output only; no tool calls. Specialist prompts include explicit do-not-refuse language because even Hermes occasionally hedges on cookie-exfil framings.",
+    ),
+    # dos_cost content generator. Refusal isn't the differentiator (the
+    # attack content reads as a clinic sign-off / patient-handout / paste-
+    # and-summarize request, not a jailbreak). What matters is *clinical
+    # plausibility* — a 6-step verification protocol must read like a
+    # real clinic's standard sign-off. Hermes 4 405B is the proven
+    # generator across the rest of the red team and handles this
+    # framing well; Dolphin-Venice fallback for provider diversity.
+    "redteam_dos_cost": ModelChoice(
+        primary="nousresearch/hermes-4-405b",
+        fallback="cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+        notes="Clinic-plausible cost-amplification framings (verification protocols, per-item handouts, recursive trend reviews). JSON output only; no tool calls.",
     ),
     "mutator": ModelChoice(
         primary="deepseek/deepseek-chat",

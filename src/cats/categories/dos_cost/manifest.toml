@@ -1,0 +1,8 @@
+name = "dos_cost"
+title = "Denial of Service & Cost Amplification"
+mvp = false
+severity_default = "medium"
+atlas_technique_id = "AML.T0034"
+owasp_llm_id = "LLM10"
+judge_role = "judge"
+notes = "THREAT_MODEL §2.5. Quantitative deterministic check on response size + tool-call event count; LLM rubric fallback on inconclusive. No canary protocol."
