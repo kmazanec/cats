@@ -17,17 +17,21 @@ class ModelPrice:
 
 
 # Best-effort lookup. Unknown models default to a conservative mid-tier price.
+# Prices verified against OpenRouter pricing pages on 2026-05-14; see
+# docs/COST_ANALYSIS.md §3 for the verification table and provenance.
 PRICE_TABLE: dict[str, ModelPrice] = {
     "anthropic/claude-haiku-4.5": ModelPrice(1.00, 5.00),
     "anthropic/claude-sonnet-4.5": ModelPrice(3.00, 15.00),
-    "openai/gpt-5": ModelPrice(2.50, 15.00),
-    "openai/gpt-5-mini": ModelPrice(0.75, 4.50),
-    "google/gemini-2.5-flash": ModelPrice(0.50, 3.00),
-    "deepseek/deepseek-chat": ModelPrice(0.252, 0.378),
+    "openai/gpt-5": ModelPrice(1.25, 10.00),
+    "openai/gpt-5-mini": ModelPrice(0.25, 2.00),
+    "google/gemini-2.5-flash": ModelPrice(0.30, 2.50),
+    "deepseek/deepseek-chat": ModelPrice(0.32, 0.89),
+    "deepseek/deepseek-chat-v3": ModelPrice(0.32, 0.89),
     "meta-llama/llama-3.3-70b-instruct": ModelPrice(0.10, 0.32),
     "nousresearch/hermes-4-405b": ModelPrice(1.00, 3.00),
     "cognitivecomputations/dolphin-mistral-24b-venice-edition": ModelPrice(0.0, 0.0),
-    "qwen/qwen-2.5-72b-instruct": ModelPrice(0.20, 0.60),
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free": ModelPrice(0.0, 0.0),
+    "qwen/qwen-2.5-72b-instruct": ModelPrice(0.36, 0.40),
 }
 
 _DEFAULT = ModelPrice(2.00, 10.00)
