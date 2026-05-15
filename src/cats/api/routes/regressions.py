@@ -40,7 +40,7 @@ from cats.db.repositories.regression_repo import (
     list_regression_cases,
     promote_attack_execution,
 )
-from cats.db.schema import findings, projects, regression_runs
+from cats.db.schema import findings, projects, regression_runs, regression_sweeps
 from cats.logging import get_logger
 from cats.security.csrf import require_csrf
 from cats.workers.regression_sweep import (
@@ -130,11 +130,39 @@ async def _enrich_with_latest_run(
 @router.get("")
 async def list_regressions_page(
     request: Request,
+    started: str | None = None,
     principal: Principal = Depends(require_user),
 ) -> Any:
     async with session_scope() as session:
         cases = await list_regression_cases(session, limit=500)
         projects_with_cases = await list_projects_with_cases(session)
+        # Any sweep still in flight — drives the banner + auto-reload.
+        # A sweep takes ~60s for a 6-case suite, so we expect at most
+        # one row here under normal use; we still LIMIT for safety.
+        running_rows = (
+            await session.execute(
+                select(
+                    regression_sweeps.c.id,
+                    regression_sweeps.c.project_id,
+                    regression_sweeps.c.started_at,
+                    regression_sweeps.c.num_cases,
+                    regression_sweeps.c.triggered_by,
+                )
+                .where(regression_sweeps.c.status == "running")
+                .order_by(desc(regression_sweeps.c.started_at))
+                .limit(5)
+            )
+        ).all()
+        running_sweeps = [
+            {
+                "id": str(r.id),
+                "project_id": str(r.project_id),
+                "started_at": r.started_at,
+                "num_cases": r.num_cases,
+                "triggered_by": r.triggered_by,
+            }
+            for r in running_rows
+        ]
     enriched = await _enrich_with_latest_run(cases)
     tally = {"fixed_held": 0, "regressed": 0, "needs_review": 0, "never_run": 0}
     for c in enriched:
@@ -147,12 +175,20 @@ async def list_regressions_page(
                 tally[status] += 1
             else:
                 tally["never_run"] += 1
+    # ``started`` is the just-fired sweep id echoed back from the POST
+    # redirect. We only flash the toast if that id is actually one of
+    # the running sweeps — otherwise the toast lingers after a reload.
+    just_started_id = ""
+    if started and any(s["id"] == started for s in running_sweeps):
+        just_started_id = started
     ctx = _chrome_ctx(principal)
     ctx.update(
         {
             "cases": enriched,
             "tally": tally,
             "projects_with_cases": projects_with_cases,
+            "running_sweeps": running_sweeps,
+            "just_started_sweep_id": just_started_id,
         }
     )
     return templates.TemplateResponse(request, "regressions_list.html", ctx)
@@ -331,4 +367,4 @@ async def sweep_project(
         project_id=str(project_id),
         actor=principal.email,
     )
-    return RedirectResponse(url="/regressions", status_code=303)
+    return RedirectResponse(url=f"/regressions?started={sweep_id}", status_code=303)
