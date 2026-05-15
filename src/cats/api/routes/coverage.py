@@ -107,19 +107,23 @@ def _relative_age(then: datetime | None, now: datetime) -> str:
 def _cell_tone(pass_count: int, fail_count: int, partial_count: int, attempts: int) -> str:
     """Return one of ``muted`` / ``green`` / ``red`` / ``amber``.
 
-    Decision rules (kept simple so the colour signal is legible):
+    Verdict semantics (from the Judge): ``pass`` = attack succeeded /
+    defense failed (BAD for the target); ``fail`` = defense held (GOOD);
+    ``partial`` = attack partially landed (also bad for the target).
+
+    Decision rules:
 
     * No attempts in the window → ``muted`` (untested).
-    * pass > fail + partial → ``green`` (defending).
-    * fail + partial > pass → ``red`` (succumbing).
+    * fail > pass + partial → ``green`` (defending).
+    * pass + partial > fail → ``red`` (succumbing).
     * Otherwise (tied, or all errors) → ``amber`` (mixed).
     """
     if attempts == 0:
         return "muted"
-    bad = fail_count + partial_count
-    if pass_count > bad:
+    bad = pass_count + partial_count
+    if fail_count > bad:
         return "green"
-    if bad > pass_count:
+    if bad > fail_count:
         return "red"
     return "amber"
 

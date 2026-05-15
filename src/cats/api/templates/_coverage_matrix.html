@@ -50,9 +50,9 @@
               </div>
               {% if cell.attempts > 0 %}
                 <div class="row" style="gap: 10px; margin-top: 6px; font-size: 11px;">
-                  <span class="mono"><span class="dot green"></span>{{ cell.pass }}</span>
-                  <span class="mono"><span class="dot red"></span>{{ cell.fail }}</span>
-                  <span class="mono"><span class="dot amber"></span>{{ cell.partial }}</span>
+                  <span class="mono" title="attack succeeded (defense failed)"><span class="dot red"></span>{{ cell.pass }}</span>
+                  <span class="mono" title="defense held"><span class="dot green"></span>{{ cell.fail }}</span>
+                  <span class="mono" title="partial compliance"><span class="dot amber"></span>{{ cell.partial }}</span>
                 </div>
                 <div class="row between" style="margin-top: 6px; font-size: 11px;">
                   <span class="muted mono">⏱ {{ cell.age }} ago</span>
@@ -73,8 +73,9 @@
   </div>
   <div class="muted mono" style="font-size: 11px; margin-top: 14px;">
     lookback {{ lookback_days }}d ·
-    tone: pass &gt; fail+partial → green; fail+partial &gt; pass → red;
-    tied → amber; zero attempts → grey
+    tone: fail &gt; pass+partial → green (defending); pass+partial &gt; fail → red (succumbing);
+    tied → amber; zero attempts → grey ·
+    dots: <span class="dot red"></span> attack succeeded · <span class="dot green"></span> defense held · <span class="dot amber"></span> partial
   </div>
 {% else %}
   <div class="empty" style="padding: 18px;">
