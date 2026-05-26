@@ -6,8 +6,13 @@ services:
       POSTGRES_USER: cats
       POSTGRES_PASSWORD: cats
       POSTGRES_DB: cats
+    # Bound to 127.0.0.1 so a host-side `psql -h localhost -p 5433` still
+    # works in dev, but the port is never reachable from the public
+    # internet. Compose `ports` semantics MERGE list entries (they do not
+    # replace, even with `ports: []` in an overlay), so the safe way to
+    # keep prod off 0.0.0.0 is to bind here at the base file.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - cats_pg:/var/lib/postgresql/data
     healthcheck:
@@ -19,8 +24,10 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cats-redis
+    # See the note on the postgres `ports` binding above for why this is
+    # 127.0.0.1-only (compose ports merge, they don't replace).
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

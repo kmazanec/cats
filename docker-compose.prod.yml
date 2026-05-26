@@ -1,26 +1,21 @@
 # Prod-only compose overlay for the droplet deploy. Applied with
 # `docker compose -f docker-compose.yml -f docker-compose.prod.yml up`
-# (the deploy job wires this via COMPOSE_FILE). Two things that have
-# to differ on the droplet versus a Mac dev box:
+# (the deploy job wires this via COMPOSE_FILE).
 #
-# 1. The cats-api container joins the existing openemr_default network
-#    so the OpenEMR caddy container can reach it as `cats-api:8400`
-#    without exposing a host port to the public internet.
-# 2. The host port mapping is dropped — caddy is the only thing that
-#    needs to reach the api, and it does so over the docker network.
-#    Removing the port also closes off direct public access on :8400
-#    (right now the droplet's firewall is the only thing keeping
-#    bots away from /healthz).
+# On the droplet the cats-api container joins the existing
+# openemr_default network so the OpenEMR caddy container can reach it
+# as `cats-api:8400` without exposing a host port to the public
+# internet. The base compose binds `8400:8400` on 0.0.0.0 — we keep
+# that here only because the droplet's firewall closes 8400 to the
+# outside world; in dev that binding is what `make api` talks to.
+# Postgres and Redis are bound to 127.0.0.1 in the base file so they
+# are never publicly reachable on either host.
 
 services:
   api:
     networks:
       - default
       - openemr_default
-    # Override the parent compose's port mapping with an empty list to
-    # un-publish :8400. (compose merges the lists, so `[]` here wins
-    # over the parent's `["8400:8400"]`.)
-    ports: []
 
   # Disable dev-only file-watch auto-reload on every worker — a deploy
   # rolls the worker images, we don't want watchmedo SIGTERMing a
