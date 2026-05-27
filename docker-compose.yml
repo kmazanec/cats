@@ -2,6 +2,11 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: cats-postgres
+    # `unless-stopped` so a Docker daemon restart (e.g. for daemon.json
+    # changes on the droplet) brings postgres back automatically. Without
+    # this, the workers (which DO have unless-stopped) come up against a
+    # missing dependency and crash-loop until someone notices.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: cats
       POSTGRES_PASSWORD: cats
@@ -24,6 +29,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cats-redis
+    # See the note on the postgres `restart:` field for why this matters.
+    restart: unless-stopped
     # See the note on the postgres `ports` binding above for why this is
     # 127.0.0.1-only (compose ports merge, they don't replace).
     ports:
@@ -39,6 +46,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: cats-api
+    # See the note on the postgres `restart:` field for why this matters.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
